@@ -1,15 +1,15 @@
 Tutorials - Pipeline
 ====================
 
-This comprehensive tutorial will guide you through creating powerful event-based workflows using the ``nexus`` module and Pointy Language syntax. By the end, you'll understand how to define, visualize, and execute complex pipelines for your applications.
+This comprehensive tutorial will guide you through creating powerful event-based workflows using the ``volnux`` module and Pointy Language syntax. By the end, you'll understand how to define, visualize, and execute complex pipelines for your applications.
 
 
 Setting Up Your First Pipeline
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-To begin using ``nexus``, you'll need to create a custom pipeline class by inheriting from the base ``Pipeline`` class::
+To begin using ``volnux``, you'll need to create a custom pipeline class by inheriting from the base ``Pipeline`` class::
 
-    from nexus import Pipeline
+    from volnux import Pipeline
 
     class MyPipeline(Pipeline):
         # Pipeline definition will go here
@@ -20,10 +20,10 @@ This basic structure serves as the foundation for your pipeline. Next, we'll add
 Defining Input Fields
 ~~~~~~~~~~~~~~~~~~~~~
 
-Input fields define the data that flows through your pipeline. The ``nexus.fields`` module provides field types to specify data requirements::
+Input fields define the data that flows through your pipeline. The ``volnux.fields`` module provides field types to specify data requirements::
 
-    from nexus import Pipeline
-    from nexus.fields import InputDataField
+    from volnux import Pipeline
+    from volnux.fields import InputDataField
 
     class MyPipeline(Pipeline):
         # Define input fields as class attributes
@@ -66,7 +66,7 @@ Create a file with the same name as your pipeline class (e.g., ``MyPipeline.pty`
         1 -> ProcessData
     ) -> SaveResults
 
-The ``nexus`` module will automatically load this file if it has the same name as your pipeline class.
+The ``volnux`` module will automatically load this file if it has the same name as your pipeline class.
 
 2. Using the Meta Subclass
 --------------------------
@@ -193,7 +193,7 @@ This workflow:
 Visualizing Pipelines
 ~~~~~~~~~~~~~~~~~~~~~
 
-The ``nexus`` module provides tools to visualize your pipeline structure:
+The ``volnux`` module provides tools to visualize your pipeline structure:
 
 ASCII Representation
 --------------------
@@ -244,8 +244,8 @@ Complete Example: Document Processing Pipeline
 
 Let's put everything together with a complete example of a document processing pipeline::
 
-    from nexus import Pipeline
-    from nexus.fields import InputDataField
+    from volnux import Pipeline
+    from volnux.fields import InputDataField
 
     class DocumentProcessingPipeline(Pipeline):
         """Pipeline for processing document files."""
@@ -305,7 +305,7 @@ In this example:
 Summary
 ~~~~~~~
 
-The ``nexus`` module combined with Pointy Language provides a powerful framework for defining, visualizing, and executing complex workflows. By leveraging the arrow-based syntax, you can create sophisticated processing pipelines with conditional branching, parallel execution, result piping, and automatic retries.
+The ``volnux`` module combined with Pointy Language provides a powerful framework for defining, visualizing, and executing complex workflows. By leveraging the arrow-based syntax, you can create sophisticated processing pipelines with conditional branching, parallel execution, result piping, and automatic retries.
 
 Key takeaways:
 

@@ -43,8 +43,8 @@ that defines the structure of the pipeline, and the <cite>BatchPipeline</cite> c
 laying out the structure, input fields, and logic for your data processing pipeline.</p>
 <p>This template serves as the blueprint for executing multiple customized pipeline instances depending on the incoming data.</p>
 <p><strong>Example:</strong></p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span><span class="p">,</span> <span class="n">FileInputDataField</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span><span class="p">,</span> <span class="n">FileInputDataField</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Simple</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
     <span class="n">name</span> <span class="o">=</span> <span class="n">InputDataField</span><span class="p">(</span><span class="n">data_type</span><span class="o">=</span><span class="nb">list</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
@@ -63,8 +63,8 @@ laying out the structure, input fields, and logic for your data processing pipel
 <p>Next, define the batch processing class by inheriting from the <cite>BatchPipeline</cite> class. This class is responsible for managing
 parallel execution using the pipeline template you just created.</p>
 <p><strong>Example:</strong></p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.pipeline</span><span class="w"> </span><span class="kn">import</span> <span class="n">BatchPipeline</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal</span><span class="w"> </span><span class="kn">import</span> <span class="n">SoftSignal</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.pipeline</span><span class="w"> </span><span class="kn">import</span> <span class="n">BatchPipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.signal</span><span class="w"> </span><span class="kn">import</span> <span class="n">SoftSignal</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">SimpleBatch</span><span class="p">(</span><span class="n">BatchPipeline</span><span class="p">):</span>
     <span class="n">pipeline_template</span> <span class="o">=</span> <span class="n">Simple</span>
@@ -157,10 +157,10 @@ unless overridden by a custom method.</p>
 </section>
 <section id="full-working-example">
 <h2>7. Full Working Example<a class="headerlink" href="#full-working-example" title="Link to this heading">¶</a></h2>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span><span class="p">,</span> <span class="n">FileInputDataField</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.pipeline</span><span class="w"> </span><span class="kn">import</span> <span class="n">BatchPipeline</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal</span><span class="w"> </span><span class="kn">import</span> <span class="n">SoftSignal</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span><span class="p">,</span> <span class="n">FileInputDataField</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.pipeline</span><span class="w"> </span><span class="kn">import</span> <span class="n">BatchPipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.signal</span><span class="w"> </span><span class="kn">import</span> <span class="n">SoftSignal</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Simple</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
     <span class="n">name</span> <span class="o">=</span> <span class="n">InputDataField</span><span class="p">(</span><span class="n">data_type</span><span class="o">=</span><span class="nb">list</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>

@@ -15,7 +15,7 @@ contains the logic that will be executed when the event is processed.
 
 .. code-block:: python
 
-   from nexus import EventBase
+   from volnux import EventBase
 
    class MyEvent(EventBase):
        def process(self, *args, **kwargs):
@@ -36,7 +36,7 @@ Executors implement the ``Executor`` interface from the ``concurrent.futures._ba
 
 .. code-block:: python
 
-   from nexus.executors import ThreadPoolExecutor
+   from volnux.executors import ThreadPoolExecutor
 
    class MyEvent(EventBase):
        executor = ThreadPoolExecutor  # Specify executor for the event
@@ -80,8 +80,8 @@ Here's an example of how to use the ``ExecutorInitializerConfig`` class:
 
 .. code-block:: python
 
-   from nexus import ExecutorInitializerConfig, EventBase
-   from nexus.executors import ThreadPoolExecutor
+   from volnux import ExecutorInitializerConfig, EventBase
+   from volnux.executors import ThreadPoolExecutor
 
    # Configuring an executor with specific settings
    config = ExecutorInitializerConfig(
@@ -143,7 +143,7 @@ Basic Function-Based Event
 
 .. code-block:: python
 
-   from nexus.decorators import event
+   from volnux.decorators import event
 
    # Define a function-based event using the @event decorator
    @event()
@@ -158,8 +158,8 @@ The ``event`` decorator allows you to configure the executor for the event's exe
 
 .. code-block:: python
 
-   from nexus.decorators import event
-   from nexus.executors import ThreadPoolExecutor
+   from volnux.decorators import event
+   from volnux.executors import ThreadPoolExecutor
 
    # Define a function-based event with configuration
    @event(
@@ -191,7 +191,7 @@ Example Usage
 
 .. code-block:: python
 
-   from nexus import EventBase, EventExecutionEvaluationState
+   from volnux import EventBase, EventExecutionEvaluationState
 
    class MyEvent(EventBase):
        execution_evaluation_state = EventExecutionEvaluationState.SUCCESS_ON_ALL_EVENTS_SUCCESS
@@ -225,7 +225,7 @@ You can create an instance of ``RetryPolicy`` or define it as a dictionary:
 
 .. code-block:: python
 
-   from nexus.base import RetryPolicy
+   from volnux.base import RetryPolicy
 
    # Define a custom retry policy as an instance
    retry_policy = RetryPolicy(
@@ -258,7 +258,7 @@ Once defined, you can assign the retry policy to your event class:
 .. code-block:: python
 
    import typing
-   from nexus import EventBase
+   from volnux import EventBase
 
    class MyEvent(EventBase):
        # Assign instance of RetryPolicy or RetryPolicy dictionary

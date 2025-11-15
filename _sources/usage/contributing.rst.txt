@@ -1,12 +1,12 @@
 Contributing
 ============
 
-This section provides guidelines for contributing to the Nexus project.
+This section provides guidelines for contributing to the volnux project.
 
 Getting Started
 -------------
 
-We welcome contributions! Here's how you can help improve the Nexus library:
+We welcome contributions! Here's how you can help improve the volnux library:
 
 1. Fork the repository
 2. Create a new branch for your changes
@@ -20,8 +20,8 @@ Development Setup
 
    .. code-block:: bash
 
-       git clone https://github.com/nshaibu/nexus.git
-       cd nexus
+       git clone https://github.com/nshaibu/volnux.git
+       cd volnux
 
 2. Create a virtual environment:
 
@@ -50,7 +50,7 @@ For coverage report:
 
 .. code-block:: bash
 
-    pytest --cov=nexus --cov-report=html
+    pytest --cov=volnux --cov-report=html
 
 Code Style
 ---------
@@ -59,7 +59,7 @@ We use Black for code formatting:
 
 .. code-block:: bash
 
-    black nexus
+    black volnux
 
 Documentation
 ------------
@@ -128,7 +128,7 @@ When reporting issues, please include:
 - Expected vs actual behavior
 - Version information:
   - Python version
-  - Nexus version
+  - volnux version
   - OS version
 - Any relevant logs or error messages
 

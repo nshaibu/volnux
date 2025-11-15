@@ -34,13 +34,13 @@
             
   <section id="events">
 <h1>Events<a class="headerlink" href="#events" title="Link to this heading">¶</a></h1>
-<p>This section covers how to create and work with events in the Nexus framework.</p>
+<p>This section covers how to create and work with events in the volnux framework.</p>
 <section id="defining-events">
 <h2>Defining Events<a class="headerlink" href="#defining-events" title="Link to this heading">¶</a></h2>
 <p>Events can be defined either as classes or functions. Here are both approaches:</p>
 <section id="class-based-events">
 <h3>Class-Based Events<a class="headerlink" href="#class-based-events" title="Link to this heading">¶</a></h3>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">MyEvent</span><span class="p">(</span><span class="n">EventBase</span><span class="p">):</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">process</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
@@ -51,7 +51,7 @@
 </section>
 <section id="function-based-events">
 <h3>Function-Based Events<a class="headerlink" href="#function-based-events" title="Link to this heading">¶</a></h3>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.decorators</span><span class="w"> </span><span class="kn">import</span> <span class="n">event</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.decorators</span><span class="w"> </span><span class="kn">import</span> <span class="n">event</span>
 
 <span class="nd">@event</span><span class="p">()</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">my_event</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
@@ -65,7 +65,7 @@
 <h2>Executor Configuration<a class="headerlink" href="#executor-configuration" title="Link to this heading">¶</a></h2>
 <p>Every event needs an executor that defines how it will be executed. The framework provides the ExecutorInitializerConfig class for configuring executors:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">concurrent.futures</span><span class="w"> </span><span class="kn">import</span> <span class="n">ThreadPoolExecutor</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span><span class="p">,</span> <span class="n">ExecutorInitializerConfig</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span><span class="p">,</span> <span class="n">ExecutorInitializerConfig</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">MyEvent</span><span class="p">(</span><span class="n">EventBase</span><span class="p">):</span>
     <span class="n">executor</span> <span class="o">=</span> <span class="n">ThreadPoolExecutor</span>
@@ -96,7 +96,7 @@
 <section id="event-result-evaluation">
 <h2>Event Result Evaluation<a class="headerlink" href="#event-result-evaluation" title="Link to this heading">¶</a></h2>
 <p>The EventExecutionEvaluationState class defines how event success or failure is determined:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span><span class="p">,</span> <span class="n">EventExecutionEvaluationState</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span><span class="p">,</span> <span class="n">EventExecutionEvaluationState</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">MyEvent</span><span class="p">(</span><span class="n">EventBase</span><span class="p">):</span>
     <span class="c1"># Set the execution evaluation state</span>
@@ -118,8 +118,8 @@
 <h2>Retry Policy<a class="headerlink" href="#retry-policy" title="Link to this heading">¶</a></h2>
 <p>Events can be configured with retry policies for handling failures:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">typing</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.base</span><span class="w"> </span><span class="kn">import</span> <span class="n">RetryPolicy</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.base</span><span class="w"> </span><span class="kn">import</span> <span class="n">RetryPolicy</span>
 
 <span class="c1"># Define retry policy</span>
 <span class="n">retry_policy</span> <span class="o">=</span> <span class="n">RetryPolicy</span><span class="p">(</span>

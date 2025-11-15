@@ -1,7 +1,7 @@
 Pipeline
 ========
 
-This section covers everything you need to know about creating and working with pipelines in the Nexus framework.
+This section covers everything you need to know about creating and working with pipelines in the volnux framework.
 
 Defining Pipeline
 ---------------
@@ -10,7 +10,7 @@ To define a pipeline, you need to inherit from the Pipeline class and create you
 
 .. code-block:: python
 
-    from nexus import Pipeline
+    from volnux import Pipeline
 
     class MyPipeline(Pipeline):
         # Your input data fields will go here
@@ -23,8 +23,8 @@ Input fields are defined using the InputDataField class or its variants. These f
 
 .. code-block:: python
 
-    from nexus import Pipeline
-    from nexus.fields import InputDataField
+    from volnux import Pipeline
+    from volnux.fields import InputDataField
 
     class MyPipeline(Pipeline):
         # Define input fields as attributes
@@ -141,8 +141,8 @@ Creating Pipeline Template
 
 .. code-block:: python
 
-    from nexus import Pipeline
-    from nexus.fields import InputDataField, FileInputDataField
+    from volnux import Pipeline
+    from volnux.fields import InputDataField, FileInputDataField
 
     class Simple(Pipeline):
         name = InputDataField(data_type=list, batch_size=5)
@@ -153,8 +153,8 @@ Creating Batch Processing Class
 
 .. code-block:: python
 
-    from nexus.pipeline import BatchPipeline
-    from nexus.signal import SoftSignal
+    from volnux.pipeline import BatchPipeline
+    from volnux.signal import SoftSignal
 
     class SimpleBatch(BatchPipeline):
         pipeline_template = Simple

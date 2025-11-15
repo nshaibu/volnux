@@ -110,7 +110,7 @@ HDFSStoreBackend
 
    **Additional Configuration:**
 
-   :param base_path: Base HDFS path for storage (default: "/nexus")
+   :param base_path: Base HDFS path for storage (default: "/volnux")
 
 Connectors
 ----------

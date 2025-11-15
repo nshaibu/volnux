@@ -42,7 +42,7 @@ Events are the core components that define the processing logic and execution be
 <h3>Define the Event Class<a class="headerlink" href="#define-the-event-class" title="Link to this heading">¶</a></h3>
 <p>To define an event, you need to inherit from the <code class="docutils literal notranslate"><span class="pre">EventBase</span></code> class and override the <code class="docutils literal notranslate"><span class="pre">process</span></code> method. This method
 contains the logic that will be executed when the event is processed.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">MyEvent</span><span class="p">(</span><span class="n">EventBase</span><span class="p">):</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">process</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
@@ -60,7 +60,7 @@ contains the logic that will be executed when the event is processed.</p>
 <h3>Specify the Executor for the Event<a class="headerlink" href="#specify-the-executor-for-the-event" title="Link to this heading">¶</a></h3>
 <p>Every event must specify an executor that defines how the event will be executed. Executors manage the concurrency or parallelism when the event is being processed.</p>
 <p>Executors implement the <code class="docutils literal notranslate"><span class="pre">Executor</span></code> interface from the <code class="docutils literal notranslate"><span class="pre">concurrent.futures._base</span></code> module in the Python standard library. If no executor is specified, the <code class="docutils literal notranslate"><span class="pre">DefaultExecutor</span></code> will be used.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.executors</span><span class="w"> </span><span class="kn">import</span> <span class="n">ThreadPoolExecutor</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.executors</span><span class="w"> </span><span class="kn">import</span> <span class="n">ThreadPoolExecutor</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">MyEvent</span><span class="p">(</span><span class="n">EventBase</span><span class="p">):</span>
     <span class="n">executor</span> <span class="o">=</span> <span class="n">ThreadPoolExecutor</span>  <span class="c1"># Specify executor for the event</span>
@@ -106,8 +106,8 @@ contains the logic that will be executed when the event is processed.</p>
 <section id="example-configuration">
 <h2>Example Configuration<a class="headerlink" href="#example-configuration" title="Link to this heading">¶</a></h2>
 <p>Here’s an example of how to use the <code class="docutils literal notranslate"><span class="pre">ExecutorInitializerConfig</span></code> class:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">ExecutorInitializerConfig</span><span class="p">,</span> <span class="n">EventBase</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.executors</span><span class="w"> </span><span class="kn">import</span> <span class="n">ThreadPoolExecutor</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">ExecutorInitializerConfig</span><span class="p">,</span> <span class="n">EventBase</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.executors</span><span class="w"> </span><span class="kn">import</span> <span class="n">ThreadPoolExecutor</span>
 
 <span class="c1"># Configuring an executor with specific settings</span>
 <span class="n">config</span> <span class="o">=</span> <span class="n">ExecutorInitializerConfig</span><span class="p">(</span>
@@ -163,7 +163,7 @@ contains the logic that will be executed when the event is processed.</p>
 </section>
 <section id="basic-function-based-event">
 <h2>Basic Function-Based Event<a class="headerlink" href="#basic-function-based-event" title="Link to this heading">¶</a></h2>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.decorators</span><span class="w"> </span><span class="kn">import</span> <span class="n">event</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.decorators</span><span class="w"> </span><span class="kn">import</span> <span class="n">event</span>
 
 <span class="c1"># Define a function-based event using the @event decorator</span>
 <span class="nd">@event</span><span class="p">()</span>
@@ -176,8 +176,8 @@ contains the logic that will be executed when the event is processed.</p>
 <section id="configuring-function-based-events">
 <h2>Configuring Function-Based Events<a class="headerlink" href="#configuring-function-based-events" title="Link to this heading">¶</a></h2>
 <p>The <code class="docutils literal notranslate"><span class="pre">event</span></code> decorator allows you to configure the executor for the event’s execution:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.decorators</span><span class="w"> </span><span class="kn">import</span> <span class="n">event</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.executors</span><span class="w"> </span><span class="kn">import</span> <span class="n">ThreadPoolExecutor</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.decorators</span><span class="w"> </span><span class="kn">import</span> <span class="n">event</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.executors</span><span class="w"> </span><span class="kn">import</span> <span class="n">ThreadPoolExecutor</span>
 
 <span class="c1"># Define a function-based event with configuration</span>
 <span class="nd">@event</span><span class="p">(</span>
@@ -208,7 +208,7 @@ contains the logic that will be executed when the event is processed.</p>
 </section>
 <section id="example-usage">
 <h2>Example Usage<a class="headerlink" href="#example-usage" title="Link to this heading">¶</a></h2>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span><span class="p">,</span> <span class="n">EventExecutionEvaluationState</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span><span class="p">,</span> <span class="n">EventExecutionEvaluationState</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">MyEvent</span><span class="p">(</span><span class="n">EventBase</span><span class="p">):</span>
     <span class="n">execution_evaluation_state</span> <span class="o">=</span> <span class="n">EventExecutionEvaluationState</span><span class="o">.</span><span class="n">SUCCESS_ON_ALL_EVENTS_SUCCESS</span>
@@ -237,7 +237,7 @@ contains the logic that will be executed when the event is processed.</p>
 <section id="configuring-the-retrypolicy">
 <h2>Configuring the RetryPolicy<a class="headerlink" href="#configuring-the-retrypolicy" title="Link to this heading">¶</a></h2>
 <p>You can create an instance of <code class="docutils literal notranslate"><span class="pre">RetryPolicy</span></code> or define it as a dictionary:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.base</span><span class="w"> </span><span class="kn">import</span> <span class="n">RetryPolicy</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.base</span><span class="w"> </span><span class="kn">import</span> <span class="n">RetryPolicy</span>
 
 <span class="c1"># Define a custom retry policy as an instance</span>
 <span class="n">retry_policy</span> <span class="o">=</span> <span class="n">RetryPolicy</span><span class="p">(</span>
@@ -268,7 +268,7 @@ contains the logic that will be executed when the event is processed.</p>
 <h2>Assigning the Retry Policy to an Event<a class="headerlink" href="#assigning-the-retry-policy-to-an-event" title="Link to this heading">¶</a></h2>
 <p>Once defined, you can assign the retry policy to your event class:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">typing</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">MyEvent</span><span class="p">(</span><span class="n">EventBase</span><span class="p">):</span>
     <span class="c1"># Assign instance of RetryPolicy or RetryPolicy dictionary</span>

@@ -1,12 +1,12 @@
-.. Nexus documentation master file, created by
+.. volnux documentation master file, created by
    sphinx-quickstart on Sat Mar  1 02:47:26 2025.
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-Nexus
+volnux
 =====
 
-.. image:: ../../img/nexus.svg
+.. image:: ../../img/volnux.svg
    :height: 100px
    :width: 100px
    :align: left
@@ -14,20 +14,20 @@ Nexus
 
 |build-status| |code-style| |status| |latest| |pyv| |prs|
 
-.. |build-status| image:: https://github.com/nshaibu/nexus/actions/workflows/python_package.yml/badge.svg
-   :target: https://github.com/nshaibu/nexus/actions
+.. |build-status| image:: https://github.com/nshaibu/volnux/actions/workflows/python_package.yml/badge.svg
+   :target: https://github.com/nshaibu/volnux/actions
 
 .. |code-style| image:: https://img.shields.io/badge/code%20style-black-000000.svg
    :target: https://github.com/psf/black
 
-.. |status| image:: https://img.shields.io/pypi/status/nexus.svg
-   :target: https://pypi.python.org/pypi/nexus
+.. |status| image:: https://img.shields.io/pypi/status/volnux.svg
+   :target: https://pypi.python.org/pypi/volnux
 
-.. |latest| image:: https://img.shields.io/pypi/v/nexus.svg
-   :target: https://pypi.python.org/pypi/nexus
+.. |latest| image:: https://img.shields.io/pypi/v/volnux.svg
+   :target: https://pypi.python.org/pypi/volnux
 
-.. |pyv| image:: https://img.shields.io/pypi/pyversions/nexus.svg
-   :target: https://pypi.python.org/pypi/nexus
+.. |pyv| image:: https://img.shields.io/pypi/pyversions/volnux.svg
+   :target: https://pypi.python.org/pypi/volnux
 
 .. |prs| image:: https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square
    :target: http://makeapullrequest.com
@@ -58,7 +58,7 @@ To install the library, simply use pip:
 
 .. code-block:: bash
 
-   pip install nexus
+   pip install volnux
 
 Requirements
 ~~~~~~~~~~~

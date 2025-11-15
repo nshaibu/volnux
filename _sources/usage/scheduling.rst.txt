@@ -1,7 +1,7 @@
 Scheduling
 ==========
 
-This section covers how to schedule pipeline execution in the Nexus framework.
+This section covers how to schedule pipeline execution in the volnux framework.
 
 Overview
 --------
@@ -16,8 +16,8 @@ The framework supports CRON-style scheduling for periodic execution of pipelines
 
 .. code-block:: python
 
-    from nexus import Pipeline
-    from nexus.scheduler import PipelineScheduler
+    from volnux import Pipeline
+    from volnux.scheduler import PipelineScheduler
     from datetime import datetime
 
     class MyPipeline(Pipeline):

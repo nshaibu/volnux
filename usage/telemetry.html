@@ -34,10 +34,10 @@
             
   <section id="telemetry">
 <h1>Telemetry<a class="headerlink" href="#telemetry" title="Link to this heading">¶</a></h1>
-<p>This section covers the telemetry capabilities in the Nexus framework.</p>
+<p>This section covers the telemetry capabilities in the volnux framework.</p>
 <section id="overview">
 <h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">¶</a></h2>
-<p>The Nexus library includes built-in telemetry capabilities for monitoring and tracking:</p>
+<p>The volnux library includes built-in telemetry capabilities for monitoring and tracking:</p>
 <ul class="simple">
 <li><p>Event execution (timing, success/failure, retries)</p></li>
 <li><p>Network operation monitoring</p></li>
@@ -48,7 +48,7 @@
 <section id="basic-usage">
 <h2>Basic Usage<a class="headerlink" href="#basic-usage" title="Link to this heading">¶</a></h2>
 <p>Enable and collect telemetry data:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">monitor_events</span><span class="p">,</span> <span class="n">get_metrics</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">monitor_events</span><span class="p">,</span> <span class="n">get_metrics</span>
 
 <span class="c1"># Enable telemetry collection</span>
 <span class="n">monitor_events</span><span class="p">()</span>
@@ -69,7 +69,7 @@
 <section id="network-telemetry">
 <h2>Network Telemetry<a class="headerlink" href="#network-telemetry" title="Link to this heading">¶</a></h2>
 <p>Monitor network operations in remote execution scenarios:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">get_failed_network_ops</span><span class="p">,</span>
     <span class="n">get_slow_network_ops</span>
 <span class="p">)</span>
@@ -93,7 +93,7 @@
 <section id="elasticsearch-publisher">
 <h3>Elasticsearch Publisher<a class="headerlink" href="#elasticsearch-publisher" title="Link to this heading">¶</a></h3>
 <p>Publish metrics to Elasticsearch for Kibana visualization:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">ElasticsearchPublisher</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">ElasticsearchPublisher</span>
 
 <span class="n">es_publisher</span> <span class="o">=</span> <span class="n">ElasticsearchPublisher</span><span class="p">(</span>
     <span class="n">hosts</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;localhost:9200&quot;</span><span class="p">],</span>
@@ -106,7 +106,7 @@
 <section id="prometheus-publisher">
 <h3>Prometheus Publisher<a class="headerlink" href="#prometheus-publisher" title="Link to this heading">¶</a></h3>
 <p>Expose metrics for Prometheus scraping:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">PrometheusPublisher</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">PrometheusPublisher</span>
 
 <span class="n">prometheus_publisher</span> <span class="o">=</span> <span class="n">PrometheusPublisher</span><span class="p">(</span><span class="n">port</span><span class="o">=</span><span class="mi">9090</span><span class="p">)</span>
 <span class="n">monitor_events</span><span class="p">([</span><span class="n">prometheus_publisher</span><span class="p">])</span>
@@ -116,7 +116,7 @@
 <section id="grafana-cloud-publisher">
 <h3>Grafana Cloud Publisher<a class="headerlink" href="#grafana-cloud-publisher" title="Link to this heading">¶</a></h3>
 <p>Publish metrics directly to Grafana Cloud:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">GrafanaCloudPublisher</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">GrafanaCloudPublisher</span>
 
 <span class="n">grafana_publisher</span> <span class="o">=</span> <span class="n">GrafanaCloudPublisher</span><span class="p">(</span>
     <span class="n">api_key</span><span class="o">=</span><span class="s2">&quot;your-api-key&quot;</span><span class="p">,</span>
@@ -129,7 +129,7 @@
 <section id="composite-publisher">
 <h3>Composite Publisher<a class="headerlink" href="#composite-publisher" title="Link to this heading">¶</a></h3>
 <p>Publish metrics to multiple backends simultaneously:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">CompositePublisher</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">CompositePublisher</span>
 
 <span class="n">publisher</span> <span class="o">=</span> <span class="n">CompositePublisher</span><span class="p">([</span>
     <span class="n">es_publisher</span><span class="p">,</span>
@@ -181,7 +181,7 @@
 <section id="custom-publishers">
 <h2>Custom Publishers<a class="headerlink" href="#custom-publishers" title="Link to this heading">¶</a></h2>
 <p>Create custom publishers by implementing the MetricsPublisher interface:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">MetricsPublisher</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">MetricsPublisher</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">CustomPublisher</span><span class="p">(</span><span class="n">MetricsPublisher</span><span class="p">):</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">publish_event_metrics</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">metrics</span><span class="p">:</span> <span class="n">EventMetrics</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>

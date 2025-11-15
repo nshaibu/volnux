@@ -27,8 +27,8 @@ Defined Events
 Events like ``Submit``, ``Validate`` or ``Reject`` are predefined operations that are automatically resolved during pipeline execution.
 These events are defined in two main ways:
 
-- By inheriting from the EventBase class inside the nexus module.
-- By decorating a Python function with the @event decorator from the nexus.decorators module.
+- By inheriting from the EventBase class inside the volnux module.
+- By decorating a Python function with the @event decorator from the volnux.decorators module.
 
 Once defined, these events are automatically detected and registered into the pipeline runtime, requiring no additional configuration
 to participate in the event graph execution. When any of these event names are used within a Pointy script, they are automatically resolved

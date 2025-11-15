@@ -34,11 +34,11 @@
             
   <section id="pipeline">
 <h1>Pipeline<a class="headerlink" href="#pipeline" title="Link to this heading">¶</a></h1>
-<p>This section covers everything you need to know about creating and working with pipelines in the Nexus framework.</p>
+<p>This section covers everything you need to know about creating and working with pipelines in the volnux framework.</p>
 <section id="defining-pipeline">
 <h2>Defining Pipeline<a class="headerlink" href="#defining-pipeline" title="Link to this heading">¶</a></h2>
 <p>To define a pipeline, you need to inherit from the Pipeline class and create your custom implementation:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
     <span class="c1"># Your input data fields will go here</span>
@@ -49,8 +49,8 @@
 <section id="defining-input-data-field">
 <h2>Defining Input Data Field<a class="headerlink" href="#defining-input-data-field" title="Link to this heading">¶</a></h2>
 <p>Input fields are defined using the InputDataField class or its variants. These fields represent the data that will flow through your pipeline:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
     <span class="c1"># Define input fields as attributes</span>
@@ -162,8 +162,8 @@
 <p>For processing multiple batches of data in parallel:</p>
 <section id="creating-pipeline-template">
 <h3>Creating Pipeline Template<a class="headerlink" href="#creating-pipeline-template" title="Link to this heading">¶</a></h3>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span><span class="p">,</span> <span class="n">FileInputDataField</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span><span class="p">,</span> <span class="n">FileInputDataField</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Simple</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
     <span class="n">name</span> <span class="o">=</span> <span class="n">InputDataField</span><span class="p">(</span><span class="n">data_type</span><span class="o">=</span><span class="nb">list</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
@@ -173,8 +173,8 @@
 </section>
 <section id="creating-batch-processing-class">
 <h3>Creating Batch Processing Class<a class="headerlink" href="#creating-batch-processing-class" title="Link to this heading">¶</a></h3>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.pipeline</span><span class="w"> </span><span class="kn">import</span> <span class="n">BatchPipeline</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal</span><span class="w"> </span><span class="kn">import</span> <span class="n">SoftSignal</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.pipeline</span><span class="w"> </span><span class="kn">import</span> <span class="n">BatchPipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.signal</span><span class="w"> </span><span class="kn">import</span> <span class="n">SoftSignal</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">SimpleBatch</span><span class="p">(</span><span class="n">BatchPipeline</span><span class="p">):</span>
     <span class="n">pipeline_template</span> <span class="o">=</span> <span class="n">Simple</span>

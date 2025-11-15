@@ -45,7 +45,7 @@ and its events. This is achieved through the SoftSignal class and a system of si
 <p>The framework provides several built-in signals for different stages of pipeline execution:</p>
 <section id="initialization-signals">
 <h3>Initialization Signals<a class="headerlink" href="#initialization-signals" title="Link to this heading">¶</a></h3>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="n">pipeline_pre_init</span><span class="p">,</span> <span class="n">pipeline_post_init</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="n">pipeline_pre_init</span><span class="p">,</span> <span class="n">pipeline_post_init</span>
 
 <span class="c1"># Signal emitted before pipeline initialization</span>
 <span class="c1"># Arguments: cls, args, kwargs</span>
@@ -59,7 +59,7 @@ and its events. This is achieved through the SoftSignal class and a system of si
 </section>
 <section id="shutdown-signals">
 <h3>Shutdown Signals<a class="headerlink" href="#shutdown-signals" title="Link to this heading">¶</a></h3>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="n">pipeline_shutdown</span><span class="p">,</span> <span class="n">pipeline_stop</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="n">pipeline_shutdown</span><span class="p">,</span> <span class="n">pipeline_stop</span>
 
 <span class="c1"># Signal emitted during pipeline shutdown</span>
 <span class="n">pipeline_shutdown</span>
@@ -71,7 +71,7 @@ and its events. This is achieved through the SoftSignal class and a system of si
 </section>
 <section id="execution-signals">
 <h3>Execution Signals<a class="headerlink" href="#execution-signals" title="Link to this heading">¶</a></h3>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">pipeline_execution_start</span><span class="p">,</span>
     <span class="n">pipeline_execution_end</span>
 <span class="p">)</span>
@@ -88,7 +88,7 @@ and its events. This is achieved through the SoftSignal class and a system of si
 </section>
 <section id="event-execution-signals">
 <h3>Event Execution Signals<a class="headerlink" href="#event-execution-signals" title="Link to this heading">¶</a></h3>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">event_execution_init</span><span class="p">,</span>
     <span class="n">event_execution_start</span><span class="p">,</span>
     <span class="n">event_execution_end</span><span class="p">,</span>
@@ -124,8 +124,8 @@ and its events. This is achieved through the SoftSignal class and a system of si
 <p>There are two ways to connect listeners to signals:</p>
 <section id="using-the-connect-method">
 <h3>Using the connect Method<a class="headerlink" href="#using-the-connect-method" title="Link to this heading">¶</a></h3>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="n">pipeline_execution_start</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="n">pipeline_execution_start</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">my_listener</span><span class="p">(</span><span class="n">pipeline</span><span class="p">):</span>
     <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Execution starting for pipeline: </span><span class="si">{</span><span class="n">pipeline</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
@@ -137,9 +137,9 @@ and its events. This is achieved through the SoftSignal class and a system of si
 </section>
 <section id="using-the-listener-decorator">
 <h3>Using the &#64;listener Decorator<a class="headerlink" href="#using-the-listener-decorator" title="Link to this heading">¶</a></h3>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.decorators</span><span class="w"> </span><span class="kn">import</span> <span class="n">listener</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="n">pipeline_pre_init</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux.decorators</span><span class="w"> </span><span class="kn">import</span> <span class="n">listener</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="n">pipeline_pre_init</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
 
 <span class="nd">@listener</span><span class="p">(</span><span class="n">pipeline_pre_init</span><span class="p">,</span> <span class="n">sender</span><span class="o">=</span><span class="n">Pipeline</span><span class="p">)</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">my_listener</span><span class="p">(</span><span class="n">sender</span><span class="p">,</span> <span class="n">signal</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>

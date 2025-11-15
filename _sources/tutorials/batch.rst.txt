@@ -18,8 +18,8 @@ This template serves as the blueprint for executing multiple customized pipeline
 
 .. code-block:: python
 
-    from nexus import Pipeline
-    from nexus.fields import InputDataField, FileInputDataField
+    from volnux import Pipeline
+    from volnux.fields import InputDataField, FileInputDataField
 
     class Simple(Pipeline):
         name = InputDataField(data_type=list, batch_size=5)
@@ -42,8 +42,8 @@ parallel execution using the pipeline template you just created.
 
 .. code-block:: python
 
-    from nexus.pipeline import BatchPipeline
-    from nexus.signal import SoftSignal
+    from volnux.pipeline import BatchPipeline
+    from volnux.signal import SoftSignal
 
     class SimpleBatch(BatchPipeline):
         pipeline_template = Simple
@@ -151,10 +151,10 @@ Monitoring and optimization are essential for scaling.
 
 .. code-block:: python
 
-    from nexus import Pipeline
-    from nexus.fields import InputDataField, FileInputDataField
-    from nexus.pipeline import BatchPipeline
-    from nexus.signal import SoftSignal
+    from volnux import Pipeline
+    from volnux.fields import InputDataField, FileInputDataField
+    from volnux.pipeline import BatchPipeline
+    from volnux.signal import SoftSignal
 
     class Simple(Pipeline):
         name = InputDataField(data_type=list, batch_size=5)

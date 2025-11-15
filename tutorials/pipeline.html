@@ -34,11 +34,11 @@
             
   <section id="tutorials-pipeline">
 <h1>Tutorials - Pipeline<a class="headerlink" href="#tutorials-pipeline" title="Link to this heading">¶</a></h1>
-<p>This comprehensive tutorial will guide you through creating powerful event-based workflows using the <code class="docutils literal notranslate"><span class="pre">nexus</span></code> module and Pointy Language syntax. By the end, you’ll understand how to define, visualize, and execute complex pipelines for your applications.</p>
+<p>This comprehensive tutorial will guide you through creating powerful event-based workflows using the <code class="docutils literal notranslate"><span class="pre">volnux</span></code> module and Pointy Language syntax. By the end, you’ll understand how to define, visualize, and execute complex pipelines for your applications.</p>
 <section id="setting-up-your-first-pipeline">
 <h2>Setting Up Your First Pipeline<a class="headerlink" href="#setting-up-your-first-pipeline" title="Link to this heading">¶</a></h2>
-<p>To begin using <code class="docutils literal notranslate"><span class="pre">nexus</span></code>, you’ll need to create a custom pipeline class by inheriting from the base <code class="docutils literal notranslate"><span class="pre">Pipeline</span></code> class:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<p>To begin using <code class="docutils literal notranslate"><span class="pre">volnux</span></code>, you’ll need to create a custom pipeline class by inheriting from the base <code class="docutils literal notranslate"><span class="pre">Pipeline</span></code> class:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
     <span class="c1"># Pipeline definition will go here</span>
@@ -49,9 +49,9 @@
 </section>
 <section id="defining-input-fields">
 <h2>Defining Input Fields<a class="headerlink" href="#defining-input-fields" title="Link to this heading">¶</a></h2>
-<p>Input fields define the data that flows through your pipeline. The <code class="docutils literal notranslate"><span class="pre">nexus.fields</span></code> module provides field types to specify data requirements:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span>
+<p>Input fields define the data that flows through your pipeline. The <code class="docutils literal notranslate"><span class="pre">volnux.fields</span></code> module provides field types to specify data requirements:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
     <span class="c1"># Define input fields as class attributes</span>
@@ -93,7 +93,7 @@
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SaveResults</span>
 </pre></div>
 </div>
-<p>The <code class="docutils literal notranslate"><span class="pre">nexus</span></code> module will automatically load this file if it has the same name as your pipeline class.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">volnux</span></code> module will automatically load this file if it has the same name as your pipeline class.</p>
 </section>
 <section id="using-the-meta-subclass">
 <h3>2. Using the Meta Subclass<a class="headerlink" href="#using-the-meta-subclass" title="Link to this heading">¶</a></h3>
@@ -216,7 +216,7 @@
 </section>
 <section id="visualizing-pipelines">
 <h2>Visualizing Pipelines<a class="headerlink" href="#visualizing-pipelines" title="Link to this heading">¶</a></h2>
-<p>The <code class="docutils literal notranslate"><span class="pre">nexus</span></code> module provides tools to visualize your pipeline structure:</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">volnux</span></code> module provides tools to visualize your pipeline structure:</p>
 <section id="ascii-representation">
 <h3>ASCII Representation<a class="headerlink" href="#ascii-representation" title="Link to this heading">¶</a></h3>
 <p>Generate a text-based diagram of your pipeline:</p>
@@ -264,8 +264,8 @@
 <section id="complete-example-document-processing-pipeline">
 <h2>Complete Example: Document Processing Pipeline<a class="headerlink" href="#complete-example-document-processing-pipeline" title="Link to this heading">¶</a></h2>
 <p>Let’s put everything together with a complete example of a document processing pipeline:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">DocumentProcessingPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Pipeline for processing document files.&quot;&quot;&quot;</span>
@@ -327,7 +327,7 @@
 </section>
 <section id="summary">
 <h2>Summary<a class="headerlink" href="#summary" title="Link to this heading">¶</a></h2>
-<p>The <code class="docutils literal notranslate"><span class="pre">nexus</span></code> module combined with Pointy Language provides a powerful framework for defining, visualizing, and executing complex workflows. By leveraging the arrow-based syntax, you can create sophisticated processing pipelines with conditional branching, parallel execution, result piping, and automatic retries.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">volnux</span></code> module combined with Pointy Language provides a powerful framework for defining, visualizing, and executing complex workflows. By leveraging the arrow-based syntax, you can create sophisticated processing pipelines with conditional branching, parallel execution, result piping, and automatic retries.</p>
 <p>Key takeaways:</p>
 <ol class="arabic simple">
 <li><p>Create pipeline classes by inheriting from the <code class="docutils literal notranslate"><span class="pre">Pipeline</span></code> class</p></li>

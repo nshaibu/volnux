@@ -34,7 +34,7 @@
             
   <section id="scheduling">
 <h1>Scheduling<a class="headerlink" href="#scheduling" title="Link to this heading">¶</a></h1>
-<p>This section covers how to schedule pipeline execution in the Nexus framework.</p>
+<p>This section covers how to schedule pipeline execution in the volnux framework.</p>
 <section id="overview">
 <h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">¶</a></h2>
 <p>The Pipeline Scheduler component allows you to manage and schedule pipeline jobs for execution at specified times or intervals.
@@ -43,8 +43,8 @@ It provides a reliable way to automate pipeline execution based on time-based tr
 <section id="cron-based-scheduling">
 <h2>CRON-based Scheduling<a class="headerlink" href="#cron-based-scheduling" title="Link to this heading">¶</a></h2>
 <p>The framework supports CRON-style scheduling for periodic execution of pipelines:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.scheduler</span><span class="w"> </span><span class="kn">import</span> <span class="n">PipelineScheduler</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">volnux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">volnux.scheduler</span><span class="w"> </span><span class="kn">import</span> <span class="n">PipelineScheduler</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">datetime</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>

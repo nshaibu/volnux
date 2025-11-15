@@ -55,8 +55,8 @@ Its primary purpose is to model sequences of operations, conditional branching, 
 <p>Events like <code class="docutils literal notranslate"><span class="pre">Submit</span></code>, <code class="docutils literal notranslate"><span class="pre">Validate</span></code> or <code class="docutils literal notranslate"><span class="pre">Reject</span></code> are predefined operations that are automatically resolved during pipeline execution.
 These events are defined in two main ways:</p>
 <ul class="simple">
-<li><p>By inheriting from the EventBase class inside the nexus module.</p></li>
-<li><p>By decorating a Python function with the &#64;event decorator from the nexus.decorators module.</p></li>
+<li><p>By inheriting from the EventBase class inside the volnux module.</p></li>
+<li><p>By decorating a Python function with the &#64;event decorator from the volnux.decorators module.</p></li>
 </ul>
 <p>Once defined, these events are automatically detected and registered into the pipeline runtime, requiring no additional configuration
 to participate in the event graph execution. When any of these event names are used within a Pointy script, they are automatically resolved

@@ -1,7 +1,7 @@
 Events
 ======
 
-This section covers how to create and work with events in the Nexus framework.
+This section covers how to create and work with events in the volnux framework.
 
 Defining Events
 -------------
@@ -13,7 +13,7 @@ Class-Based Events
 
 .. code-block:: python
 
-    from nexus import EventBase
+    from volnux import EventBase
 
     class MyEvent(EventBase):
         def process(self, *args, **kwargs):
@@ -25,7 +25,7 @@ Function-Based Events
 
 .. code-block:: python
 
-    from nexus.decorators import event
+    from volnux.decorators import event
 
     @event()
     def my_event(*args, **kwargs):
@@ -40,7 +40,7 @@ Every event needs an executor that defines how it will be executed. The framewor
 .. code-block:: python
 
     from concurrent.futures import ThreadPoolExecutor
-    from nexus import EventBase, ExecutorInitializerConfig
+    from volnux import EventBase, ExecutorInitializerConfig
 
     class MyEvent(EventBase):
         executor = ThreadPoolExecutor
@@ -75,7 +75,7 @@ The EventExecutionEvaluationState class defines how event success or failure is 
 
 .. code-block:: python
 
-    from nexus import EventBase, EventExecutionEvaluationState
+    from volnux import EventBase, EventExecutionEvaluationState
 
     class MyEvent(EventBase):
         # Set the execution evaluation state
@@ -99,8 +99,8 @@ Events can be configured with retry policies for handling failures:
 .. code-block:: python
 
     import typing
-    from nexus import EventBase
-    from nexus.base import RetryPolicy
+    from volnux import EventBase
+    from volnux.base import RetryPolicy
 
     # Define retry policy
     retry_policy = RetryPolicy(
