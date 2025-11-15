@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>API Reference - Parser &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="prev" title="API Reference - Mixins" href="mixins.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="api-reference-parser">
+<h1>API Reference - Parser<a class="headerlink" href="#api-reference-parser" title="Link to this heading">¶</a></h1>
+<p>Pipeline task expression parsing and grammar components.</p>
+<section id="lexer">
+<h2>Lexer<a class="headerlink" href="#lexer" title="Link to this heading">¶</a></h2>
+<section id="pointylexer">
+<h3>PointyLexer<a class="headerlink" href="#pointylexer" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="PointyLexer">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">PointyLexer</span></span><a class="headerlink" href="#PointyLexer" title="Link to this definition">¶</a></dt>
+<dd><p>Lexical analyzer for pipeline task expressions.</p>
+<p><strong>Tokens:</strong></p>
+<ul class="simple">
+<li><p>SEPERATOR: Comma separator between tasks (,)</p></li>
+<li><p>POINTER: Task flow indicator (-&gt;)</p></li>
+<li><p>PPOINTER: Parallel task pointer (<a href="#id1"><span class="problematic" id="id2">|</span></a>-&gt;)</p></li>
+<li><p>PARALLEL: Parallel execution indicator (||)</p></li>
+<li><p>RETRY: Task retry indicator (*)</p></li>
+<li><p>TASKNAME: Valid task identifier</p></li>
+<li><p>LPAREN, RPAREN: Parentheses for grouping</p></li>
+<li><p>NUMBER: Numeric literals</p></li>
+<li><p>DIRECTIVE: Parser directives</p></li>
+<li><p>COMMENT: Task expression comments (#)</p></li>
+</ul>
+</dd></dl>
+
+</section>
+</section>
+<section id="grammar-parser">
+<h2>Grammar Parser<a class="headerlink" href="#grammar-parser" title="Link to this heading">¶</a></h2>
+<section id="pointy-parser">
+<h3>pointy_parser<a class="headerlink" href="#pointy-parser" title="Link to this heading">¶</a></h3>
+<dl class="py data">
+<dt class="sig sig-object py" id="pointy_parser">
+<span class="sig-name descname"><span class="pre">pointy_parser</span></span><a class="headerlink" href="#pointy_parser" title="Link to this definition">¶</a></dt>
+<dd><p>PLY-based parser for task expressions. Processes pipeline task definitions and builds an abstract syntax tree.</p>
+<p><strong>Grammar Rules:</strong></p>
+<ul class="simple">
+<li><p>Task Flow: <code class="docutils literal notranslate"><span class="pre">task</span> <span class="pre">-&gt;</span> <span class="pre">task</span></code></p></li>
+<li><p>Parallel Tasks: <code class="docutils literal notranslate"><span class="pre">task</span> <span class="pre">||</span> <span class="pre">task</span></code></p></li>
+<li><p>Task Groups: <code class="docutils literal notranslate"><span class="pre">(task1,</span> <span class="pre">task2)</span></code></p></li>
+<li><p>Task Retry: <code class="docutils literal notranslate"><span class="pre">task</span> <span class="pre">*</span></code></p></li>
+<li><p>Conditional Flow: <code class="docutils literal notranslate"><span class="pre">task(condition)</span></code></p></li>
+</ul>
+</dd></dl>
+
+</section>
+</section>
+<section id="ast-components">
+<h2>AST Components<a class="headerlink" href="#ast-components" title="Link to this heading">¶</a></h2>
+<dl class="py class">
+<dt class="sig sig-object py" id="TaskName">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">TaskName</span></span><a class="headerlink" href="#TaskName" title="Link to this definition">¶</a></dt>
+<dd><p>Represents a task identifier in the AST.</p>
+<dl class="simple">
+<dt><strong>Attributes:</strong></dt><dd><ul class="simple">
+<li><p>name: The task name</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="Descriptor">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">Descriptor</span></span><a class="headerlink" href="#Descriptor" title="Link to this definition">¶</a></dt>
+<dd><p>Represents a task descriptor/number in the AST.</p>
+<dl class="simple">
+<dt><strong>Attributes:</strong></dt><dd><ul class="simple">
+<li><p>value: The descriptor value</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="BinOp">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">BinOp</span></span><a class="headerlink" href="#BinOp" title="Link to this definition">¶</a></dt>
+<dd><p>Represents a binary operation between tasks.</p>
+<dl class="simple">
+<dt><strong>Attributes:</strong></dt><dd><ul class="simple">
+<li><p>left: Left task operand</p></li>
+<li><p>right: Right task operand</p></li>
+<li><p>op: Operation type (pointer, parallel, etc)</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="ConditionalBinOP">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ConditionalBinOP</span></span><a class="headerlink" href="#ConditionalBinOP" title="Link to this definition">¶</a></dt>
+<dd><p>Represents a conditional task flow.</p>
+<dl class="simple">
+<dt><strong>Attributes:</strong></dt><dd><ul class="simple">
+<li><p>task: The task to execute</p></li>
+<li><p>condition: The condition group to evaluate</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="ConditionalGroup">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ConditionalGroup</span></span><a class="headerlink" href="#ConditionalGroup" title="Link to this definition">¶</a></dt>
+<dd><p>Represents a group of conditions.</p>
+<dl class="simple">
+<dt><strong>Attributes:</strong></dt><dd><ul class="simple">
+<li><p>tasks: List of conditional tasks</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+<section id="example-usage">
+<h2>Example Usage<a class="headerlink" href="#example-usage" title="Link to this heading">¶</a></h2>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Simple sequential flow</span>
+<span class="s2">&quot;task1 -&gt; task2 -&gt; task3&quot;</span>
+
+<span class="c1"># Parallel execution</span>
+<span class="s2">&quot;task1 || task2 -&gt; task3&quot;</span>
+
+<span class="c1"># Task groups with retry</span>
+<span class="s2">&quot;(task1, task2) * -&gt; task3&quot;</span>
+
+<span class="c1"># Conditional flow</span>
+<span class="s2">&quot;task1(task2, task3) -&gt; task4&quot;</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/pipeline.html">Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/events.html">Events</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/scheduling.html">Scheduling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/contributing.html">Contributing</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">API Reference</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="events.html">API Reference - Events</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline.html">API Reference - Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fields.html">API Reference - Fields and Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scheduling.html">API Reference - Scheduling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html">API Reference - Metrics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="executors.html">API Reference - Executors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="managers.html">API Reference - Managers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="telemetry.html">API Reference - Telemetry</a></li>
+<li class="toctree-l2"><a class="reference internal" href="result.html">API Reference - Results</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html">API Reference - Backend</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signals.html">API Reference - Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="mixins.html">API Reference - Mixins</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">API Reference - Parser</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#core-components">Core Components</a></li>
+</ul>
+</li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+  <li><a href="index.html">API Reference</a><ul>
+      <li>Previous: <a href="mixins.html" title="previous chapter">API Reference - Mixins</a></li>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/api/parser.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>API Reference - Pipeline &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="API Reference - Fields and Signals" href="fields.html" />
+    <link rel="prev" title="API Reference - Events" href="events.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="api-reference-pipeline">
+<h1>API Reference - Pipeline<a class="headerlink" href="#api-reference-pipeline" title="Link to this heading">¶</a></h1>
+<section id="core-pipeline-classes">
+<h2>Core Pipeline Classes<a class="headerlink" href="#core-pipeline-classes" title="Link to this heading">¶</a></h2>
+<section id="pipeline">
+<h3>Pipeline<a class="headerlink" href="#pipeline" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="Pipeline">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">Pipeline</span></span><a class="headerlink" href="#Pipeline" title="Link to this definition">¶</a></dt>
+<dd><p>Base class for defining pipelines that process events in sequence.</p>
+<p><strong>Class Attributes:</strong></p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="Pipeline.__signature__">
+<span class="sig-name descname"><span class="pre">__signature__</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">Signature</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></em><a class="headerlink" href="#Pipeline.__signature__" title="Link to this definition">¶</a></dt>
+<dd><p>Cached signature for pipeline initialization.</p>
+</dd></dl>
+
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="Pipeline.start">
+<span class="sig-name descname"><span class="pre">start</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">force_rerun</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">bool</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#Pipeline.start" title="Link to this definition">¶</a></dt>
+<dd><p>Starts pipeline execution.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>force_rerun</strong> (<em>bool</em>) – Whether to force rerun of already executed events</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="Pipeline.shutdown">
+<span class="sig-name descname"><span class="pre">shutdown</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#Pipeline.shutdown" title="Link to this definition">¶</a></dt>
+<dd><p>Shuts down the pipeline and cleans up resources.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="Pipeline.stop">
+<span class="sig-name descname"><span class="pre">stop</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#Pipeline.stop" title="Link to this definition">¶</a></dt>
+<dd><p>Stops pipeline execution.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="Pipeline.get_pipeline_tree">
+<span class="sig-name descname"><span class="pre">get_pipeline_tree</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Tree</span></span></span><a class="headerlink" href="#Pipeline.get_pipeline_tree" title="Link to this definition">¶</a></dt>
+<dd><p>Gets a tree representation of the pipeline structure.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Tree object representing pipeline structure</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>Tree</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="Pipeline.draw_ascii_graph">
+<span class="sig-name descname"><span class="pre">draw_ascii_graph</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#Pipeline.draw_ascii_graph" title="Link to this definition">¶</a></dt>
+<dd><p>Generates ASCII representation of pipeline graph.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="Pipeline.draw_graphviz_image">
+<span class="sig-name descname"><span class="pre">draw_graphviz_image</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">directory</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'pipeline-graphs'</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#Pipeline.draw_graphviz_image" title="Link to this definition">¶</a></dt>
+<dd><p>Generates GraphViz visualization of pipeline.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>directory</strong> (<em>str</em>) – Output directory for graph images</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="batchpipeline">
+<h3>BatchPipeline<a class="headerlink" href="#batchpipeline" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="BatchPipeline">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">BatchPipeline</span></span><a class="headerlink" href="#BatchPipeline" title="Link to this definition">¶</a></dt>
+<dd><p>Pipeline class for handling batch processing of events.</p>
+<p><strong>Class Attributes:</strong></p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="BatchPipeline.pipeline_template">
+<span class="sig-name descname"><span class="pre">pipeline_template</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">Type</span><span class="p"><span class="pre">[</span></span><a class="reference internal" href="#Pipeline" title="Pipeline"><span class="pre">Pipeline</span></a><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#BatchPipeline.pipeline_template" title="Link to this definition">¶</a></dt>
+<dd><p>Template pipeline class to use for batch processing.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="BatchPipeline.listen_to_signals">
+<span class="sig-name descname"><span class="pre">listen_to_signals</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#BatchPipeline.listen_to_signals" title="Link to this definition">¶</a></dt>
+<dd><p>List of signals to monitor during batch processing.</p>
+</dd></dl>
+
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="BatchPipeline.execute">
+<span class="sig-name descname"><span class="pre">execute</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#BatchPipeline.execute" title="Link to this definition">¶</a></dt>
+<dd><p>Executes batch processing of pipelines.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="BatchPipeline.get_pipeline_template">
+<span class="sig-name descname"><span class="pre">get_pipeline_template</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#BatchPipeline.get_pipeline_template" title="Link to this definition">¶</a></dt>
+<dd><p>Gets the template pipeline class.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Pipeline class used as template</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>Type[<a class="reference internal" href="#Pipeline" title="Pipeline">Pipeline</a>]</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="pipelinetask">
+<h3>PipelineTask<a class="headerlink" href="#pipelinetask" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="PipelineTask">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">PipelineTask</span></span><a class="headerlink" href="#PipelineTask" title="Link to this definition">¶</a></dt>
+<dd><p>Represents a task node in a pipeline execution graph.</p>
+<p><strong>Attributes:</strong></p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="PipelineTask.event">
+<span class="sig-name descname"><span class="pre">event</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">Type</span><span class="p"><span class="pre">[</span></span><a class="reference internal" href="events.html#EventBase" title="EventBase"><span class="pre">EventBase</span></a><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">str</span></em><a class="headerlink" href="#PipelineTask.event" title="Link to this definition">¶</a></dt>
+<dd><p>Event class or name to execute.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="PipelineTask.parent_node">
+<span class="sig-name descname"><span class="pre">parent_node</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference internal" href="#PipelineTask" title="PipelineTask"><span class="pre">PipelineTask</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></em><a class="headerlink" href="#PipelineTask.parent_node" title="Link to this definition">¶</a></dt>
+<dd><p>Parent task in execution tree.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="PipelineTask.on_success_event">
+<span class="sig-name descname"><span class="pre">on_success_event</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference internal" href="#PipelineTask" title="PipelineTask"><span class="pre">PipelineTask</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></em><a class="headerlink" href="#PipelineTask.on_success_event" title="Link to this definition">¶</a></dt>
+<dd><p>Task to execute on success.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="PipelineTask.on_failure_event">
+<span class="sig-name descname"><span class="pre">on_failure_event</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference internal" href="#PipelineTask" title="PipelineTask"><span class="pre">PipelineTask</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></em><a class="headerlink" href="#PipelineTask.on_failure_event" title="Link to this definition">¶</a></dt>
+<dd><p>Task to execute on failure.</p>
+</dd></dl>
+
+<p><strong>Properties:</strong></p>
+<dl class="py property">
+<dt class="sig sig-object py" id="PipelineTask.is_conditional">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">is_conditional</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">bool</span></em><a class="headerlink" href="#PipelineTask.is_conditional" title="Link to this definition">¶</a></dt>
+<dd><p>Whether task has conditional branches.</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="PipelineTask.is_parallel_execution_node">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">is_parallel_execution_node</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">bool</span></em><a class="headerlink" href="#PipelineTask.is_parallel_execution_node" title="Link to this definition">¶</a></dt>
+<dd><p>Whether task is part of parallel execution.</p>
+</dd></dl>
+
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="PipelineTask.get_children">
+<span class="sig-name descname"><span class="pre">get_children</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><a class="reference internal" href="#PipelineTask" title="PipelineTask"><span class="pre">PipelineTask</span></a><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#PipelineTask.get_children" title="Link to this definition">¶</a></dt>
+<dd><p>Gets child task nodes.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="PipelineTask.get_root">
+<span class="sig-name descname"><span class="pre">get_root</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference internal" href="#PipelineTask" title="PipelineTask"><span class="pre">PipelineTask</span></a></span></span><a class="headerlink" href="#PipelineTask.get_root" title="Link to this definition">¶</a></dt>
+<dd><p>Gets root task in tree.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="PipelineTask.get_descriptor">
+<span class="sig-name descname"><span class="pre">get_descriptor</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">descriptor</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference internal" href="#PipelineTask" title="PipelineTask"><span class="pre">PipelineTask</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span></span><a class="headerlink" href="#PipelineTask.get_descriptor" title="Link to this definition">¶</a></dt>
+<dd><p>Gets task associated with descriptor.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>descriptor</strong> (<em>int</em>) – Descriptor number</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Associated task if found</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Optional[<a class="reference internal" href="#PipelineTask" title="PipelineTask">PipelineTask</a>]</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="eventexecutioncontext">
+<h3>EventExecutionContext<a class="headerlink" href="#eventexecutioncontext" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="EventExecutionContext">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">EventExecutionContext</span></span><a class="headerlink" href="#EventExecutionContext" title="Link to this definition">¶</a></dt>
+<dd><p>Manages execution context for pipeline events.</p>
+<p><strong>Attributes:</strong></p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="EventExecutionContext.task_profiles">
+<span class="sig-name descname"><span class="pre">task_profiles</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">List</span><span class="p"><span class="pre">[</span></span><a class="reference internal" href="#PipelineTask" title="PipelineTask"><span class="pre">PipelineTask</span></a><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#EventExecutionContext.task_profiles" title="Link to this definition">¶</a></dt>
+<dd><p>Tasks being executed.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="EventExecutionContext.pipeline">
+<span class="sig-name descname"><span class="pre">pipeline</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference internal" href="#Pipeline" title="Pipeline"><span class="pre">Pipeline</span></a></em><a class="headerlink" href="#EventExecutionContext.pipeline" title="Link to this definition">¶</a></dt>
+<dd><p>Pipeline instance being executed.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="EventExecutionContext.execution_result">
+<span class="sig-name descname"><span class="pre">execution_result</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference internal" href="result.html#ResultSet" title="ResultSet"><span class="pre">ResultSet</span></a></em><a class="headerlink" href="#EventExecutionContext.execution_result" title="Link to this definition">¶</a></dt>
+<dd><p>Results of task execution.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="EventExecutionContext.state">
+<span class="sig-name descname"><span class="pre">state</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">ExecutionState</span></em><a class="headerlink" href="#EventExecutionContext.state" title="Link to this definition">¶</a></dt>
+<dd><p>Current execution state.</p>
+</dd></dl>
+
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="EventExecutionContext.dispatch">
+<span class="sig-name descname"><span class="pre">dispatch</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">SwitchTask</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span></span><a class="headerlink" href="#EventExecutionContext.dispatch" title="Link to this definition">¶</a></dt>
+<dd><p>Dispatches task execution.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Task switch request if needed</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>Optional[SwitchTask]</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="EventExecutionContext.cancel">
+<span class="sig-name descname"><span class="pre">cancel</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#EventExecutionContext.cancel" title="Link to this definition">¶</a></dt>
+<dd><p>Cancels task execution.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="EventExecutionContext.execution_failed">
+<span class="sig-name descname"><span class="pre">execution_failed</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">bool</span></span></span><a class="headerlink" href="#EventExecutionContext.execution_failed" title="Link to this definition">¶</a></dt>
+<dd><p>Checks if execution failed.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>True if execution failed</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>bool</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="EventExecutionContext.execution_success">
+<span class="sig-name descname"><span class="pre">execution_success</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">bool</span></span></span><a class="headerlink" href="#EventExecutionContext.execution_success" title="Link to this definition">¶</a></dt>
+<dd><p>Checks if execution succeeded.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>True if execution succeeded</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>bool</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/pipeline.html">Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/events.html">Events</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/scheduling.html">Scheduling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/contributing.html">Contributing</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">API Reference</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="events.html">API Reference - Events</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">API Reference - Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fields.html">API Reference - Fields and Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scheduling.html">API Reference - Scheduling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html">API Reference - Metrics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="executors.html">API Reference - Executors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="managers.html">API Reference - Managers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="telemetry.html">API Reference - Telemetry</a></li>
+<li class="toctree-l2"><a class="reference internal" href="result.html">API Reference - Results</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html">API Reference - Backend</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signals.html">API Reference - Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="mixins.html">API Reference - Mixins</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parser.html">API Reference - Parser</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#core-components">Core Components</a></li>
+</ul>
+</li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+  <li><a href="index.html">API Reference</a><ul>
+      <li>Previous: <a href="events.html" title="previous chapter">API Reference - Events</a></li>
+      <li>Next: <a href="fields.html" title="next chapter">API Reference - Fields and Signals</a></li>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/api/pipeline.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>API Reference - Mixins &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="API Reference - Parser" href="parser.html" />
+    <link rel="prev" title="API Reference - Signals" href="signals.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="api-reference-mixins">
+<h1>API Reference - Mixins<a class="headerlink" href="#api-reference-mixins" title="Link to this heading">¶</a></h1>
+<p>Core mixins that provide reusable functionality across the Event Pipeline framework.</p>
+<section id="identity-mixin">
+<h2>Identity Mixin<a class="headerlink" href="#identity-mixin" title="Link to this heading">¶</a></h2>
+<section id="objectidentitymixin">
+<h3>ObjectIdentityMixin<a class="headerlink" href="#objectidentitymixin" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="ObjectIdentityMixin">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ObjectIdentityMixin</span></span><a class="headerlink" href="#ObjectIdentityMixin" title="Link to this definition">¶</a></dt>
+<dd><p>Provides unique identification and state management functionality.</p>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="ObjectIdentityMixin.id">
+<span class="sig-name descname"><span class="pre">id</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#ObjectIdentityMixin.id" title="Link to this definition">¶</a></dt>
+<dd><p>Property that returns a unique identifier for the object.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="ObjectIdentityMixin.__object_import_str__">
+<span class="sig-name descname"><span class="pre">__object_import_str__</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#ObjectIdentityMixin.__object_import_str__" title="Link to this definition">¶</a></dt>
+<dd><p>Property that returns the import string for the object’s class.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="ObjectIdentityMixin.get_state">
+<span class="sig-name descname"><span class="pre">get_state</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#ObjectIdentityMixin.get_state" title="Link to this definition">¶</a></dt>
+<dd><p>Get the serializable state of the object.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="ObjectIdentityMixin.set_state">
+<span class="sig-name descname"><span class="pre">set_state</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#ObjectIdentityMixin.set_state" title="Link to this definition">¶</a></dt>
+<dd><p>Restore the object’s state from a dictionary.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+</section>
+<section id="backend-integration">
+<h2>Backend Integration<a class="headerlink" href="#backend-integration" title="Link to this heading">¶</a></h2>
+<section id="backendintegrationmixin">
+<h3>BackendIntegrationMixin<a class="headerlink" href="#backendintegrationmixin" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="BackendIntegrationMixin">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">BackendIntegrationMixin</span></span><a class="headerlink" href="#BackendIntegrationMixin" title="Link to this definition">¶</a></dt>
+<dd><p>Provides integration with backend storage systems.</p>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="BackendIntegrationMixin.save">
+<span class="sig-name descname"><span class="pre">save</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#BackendIntegrationMixin.save" title="Link to this definition">¶</a></dt>
+<dd><p>Save the object to the backend store.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="BackendIntegrationMixin.reload">
+<span class="sig-name descname"><span class="pre">reload</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#BackendIntegrationMixin.reload" title="Link to this definition">¶</a></dt>
+<dd><p>Reload the object’s state from the backend store.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="BackendIntegrationMixin.delete">
+<span class="sig-name descname"><span class="pre">delete</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#BackendIntegrationMixin.delete" title="Link to this definition">¶</a></dt>
+<dd><p>Delete the object from the backend store.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="BackendIntegrationMixin.update">
+<span class="sig-name descname"><span class="pre">update</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#BackendIntegrationMixin.update" title="Link to this definition">¶</a></dt>
+<dd><p>Update the object’s state in the backend store.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="BackendIntegrationMixin.get_schema_name">
+<span class="sig-name descname"><span class="pre">get_schema_name</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">str</span></span></span><a class="headerlink" href="#BackendIntegrationMixin.get_schema_name" title="Link to this definition">¶</a></dt>
+<dd><p>Get the schema name for backend storage.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+</section>
+<section id="scheduling">
+<h2>Scheduling<a class="headerlink" href="#scheduling" title="Link to this heading">¶</a></h2>
+<section id="schedulemixin">
+<h3>ScheduleMixin<a class="headerlink" href="#schedulemixin" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="ScheduleMixin">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ScheduleMixin</span></span><a class="headerlink" href="#ScheduleMixin" title="Link to this definition">¶</a></dt>
+<dd><p>Provides scheduling capabilities for pipelines.</p>
+<p><strong>Inner Classes:</strong></p>
+<dl class="py class">
+<dt class="sig sig-object py" id="ScheduleMixin.ScheduleTrigger">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ScheduleTrigger</span></span><a class="headerlink" href="#ScheduleMixin.ScheduleTrigger" title="Link to this definition">¶</a></dt>
+<dd><p>Enumeration of available trigger types.</p>
+<ul class="simple">
+<li><p>DATE: One-time scheduled execution</p></li>
+<li><p>INTERVAL: Repeating execution at fixed intervals</p></li>
+<li><p>CRON: Cron-style scheduled execution</p></li>
+</ul>
+</dd></dl>
+
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="ScheduleMixin.schedule_job">
+<span class="sig-name descname"><span class="pre">schedule_job</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">trigger</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="scheduling.html#ScheduleMixin.ScheduleTrigger" title="ScheduleMixin.ScheduleTrigger"><span class="pre">ScheduleTrigger</span></a></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">scheduler_kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#ScheduleMixin.schedule_job" title="Link to this definition">¶</a></dt>
+<dd><p>Schedule a job for execution.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>trigger</strong> – The type of trigger to use</p></li>
+<li><p><strong>scheduler_kwargs</strong> – Arguments for the specific trigger type</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="ScheduleMixin.get_pipeline_scheduler">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_pipeline_scheduler</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#ScheduleMixin.get_pipeline_scheduler" title="Link to this definition">¶</a></dt>
+<dd><p>Get the global pipeline scheduler instance.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/pipeline.html">Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/events.html">Events</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/scheduling.html">Scheduling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/contributing.html">Contributing</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">API Reference</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="events.html">API Reference - Events</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline.html">API Reference - Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fields.html">API Reference - Fields and Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scheduling.html">API Reference - Scheduling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html">API Reference - Metrics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="executors.html">API Reference - Executors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="managers.html">API Reference - Managers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="telemetry.html">API Reference - Telemetry</a></li>
+<li class="toctree-l2"><a class="reference internal" href="result.html">API Reference - Results</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html">API Reference - Backend</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signals.html">API Reference - Signals</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">API Reference - Mixins</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parser.html">API Reference - Parser</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#core-components">Core Components</a></li>
+</ul>
+</li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+  <li><a href="index.html">API Reference</a><ul>
+      <li>Previous: <a href="signals.html" title="previous chapter">API Reference - Signals</a></li>
+      <li>Next: <a href="parser.html" title="next chapter">API Reference - Parser</a></li>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/api/mixins.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

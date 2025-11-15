@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>API Reference - Scheduling &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="API Reference - Metrics" href="metrics.html" />
+    <link rel="prev" title="API Reference - Fields and Signals" href="fields.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="api-reference-scheduling">
+<h1>API Reference - Scheduling<a class="headerlink" href="#api-reference-scheduling" title="Link to this heading">¶</a></h1>
+<section id="scheduling-components">
+<h2>Scheduling Components<a class="headerlink" href="#scheduling-components" title="Link to this heading">¶</a></h2>
+<section id="schedulemixin">
+<h3>ScheduleMixin<a class="headerlink" href="#schedulemixin" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="ScheduleMixin">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ScheduleMixin</span></span><a class="headerlink" href="#ScheduleMixin" title="Link to this definition">¶</a></dt>
+<dd><p>Mixin class that adds scheduling capabilities to pipelines.</p>
+<p><strong>Inner Classes:</strong></p>
+<dl class="py class">
+<dt class="sig sig-object py" id="ScheduleMixin.ScheduleTrigger">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ScheduleTrigger</span></span><a class="headerlink" href="#ScheduleMixin.ScheduleTrigger" title="Link to this definition">¶</a></dt>
+<dd><p>Enum defining supported schedule trigger types.</p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="ScheduleMixin.ScheduleTrigger.DATE">
+<span class="sig-name descname"><span class="pre">DATE</span></span><a class="headerlink" href="#ScheduleMixin.ScheduleTrigger.DATE" title="Link to this definition">¶</a></dt>
+<dd><p>One-time execution at a specific date/time</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="ScheduleMixin.ScheduleTrigger.INTERVAL">
+<span class="sig-name descname"><span class="pre">INTERVAL</span></span><a class="headerlink" href="#ScheduleMixin.ScheduleTrigger.INTERVAL" title="Link to this definition">¶</a></dt>
+<dd><p>Recurring execution at fixed intervals</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="ScheduleMixin.ScheduleTrigger.CRON">
+<span class="sig-name descname"><span class="pre">CRON</span></span><a class="headerlink" href="#ScheduleMixin.ScheduleTrigger.CRON" title="Link to this definition">¶</a></dt>
+<dd><p>Cron-style scheduled execution</p>
+</dd></dl>
+
+</dd></dl>
+
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="ScheduleMixin.schedule_job">
+<span class="sig-name descname"><span class="pre">schedule_job</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">trigger</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#ScheduleMixin.ScheduleTrigger" title="ScheduleMixin.ScheduleTrigger"><span class="pre">ScheduleTrigger</span></a></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">scheduler_kwargs</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Job</span></span></span><a class="headerlink" href="#ScheduleMixin.schedule_job" title="Link to this definition">¶</a></dt>
+<dd><p>Schedules pipeline execution according to the specified trigger.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>trigger</strong> – Type of schedule trigger to use</p></li>
+<li><p><strong>scheduler_kwargs</strong> – Arguments for trigger configuration</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Scheduled job instance</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Job</p>
+</dd>
+</dl>
+<p><strong>Trigger Configuration Options:</strong></p>
+<dl class="simple">
+<dt>DATE trigger kwargs:</dt><dd><ul class="simple">
+<li><p>run_date (datetime|str): The date/time to run the job at</p></li>
+<li><p>timezone (datetime.tzinfo|str): Time zone for run_date</p></li>
+</ul>
+</dd>
+<dt>INTERVAL trigger kwargs:</dt><dd><ul class="simple">
+<li><p>weeks (int): Number of weeks between runs</p></li>
+<li><p>days (int): Number of days between runs</p></li>
+<li><p>hours (int): Number of hours between runs</p></li>
+<li><p>minutes (int): Number of minutes between runs</p></li>
+<li><p>start_date (datetime|str): When to start</p></li>
+<li><p>end_date (datetime|str): When to end</p></li>
+<li><p>timezone (datetime.tzinfo|str): Timezone to use</p></li>
+</ul>
+</dd>
+<dt>CRON trigger kwargs:</dt><dd><ul class="simple">
+<li><p>year (int|str): Year to run on</p></li>
+<li><p>month (int|str): Month to run on</p></li>
+<li><p>day (int|str): Day of month to run on</p></li>
+<li><p>week (int|str): Week of year to run on</p></li>
+<li><p>day_of_week (int|str): Day of week to run on</p></li>
+<li><p>hour (int|str): Hour to run on</p></li>
+<li><p>minute (int|str): Minute to run on</p></li>
+<li><p>timezone (datetime.tzinfo|str): Timezone to use</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="pipelinejob">
+<h3>_PipelineJob<a class="headerlink" href="#pipelinejob" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="PipelineJob">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">_PipelineJob</span></span><a class="headerlink" href="#PipelineJob" title="Link to this definition">¶</a></dt>
+<dd><p>Internal class that wraps pipeline execution for scheduling.</p>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="PipelineJob.run">
+<span class="sig-name descname"><span class="pre">run</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#PipelineJob.run" title="Link to this definition">¶</a></dt>
+<dd><p>Executes the scheduled pipeline.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="PipelineJob.__call__">
+<span class="sig-name descname"><span class="pre">__call__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#PipelineJob.__call__" title="Link to this definition">¶</a></dt>
+<dd><p>Makes the job callable by the scheduler.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+</section>
+<section id="utility-functions">
+<h2>Utility Functions<a class="headerlink" href="#utility-functions" title="Link to this heading">¶</a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="get_pipeline_scheduler">
+<span class="sig-name descname"><span class="pre">get_pipeline_scheduler</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#get_pipeline_scheduler" title="Link to this definition">¶</a></dt>
+<dd><p>Gets the global background scheduler instance.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Background scheduler for pipeline scheduling</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>BackgroundScheduler</p>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/pipeline.html">Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/events.html">Events</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/scheduling.html">Scheduling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/contributing.html">Contributing</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">API Reference</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="events.html">API Reference - Events</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline.html">API Reference - Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fields.html">API Reference - Fields and Signals</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">API Reference - Scheduling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html">API Reference - Metrics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="executors.html">API Reference - Executors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="managers.html">API Reference - Managers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="telemetry.html">API Reference - Telemetry</a></li>
+<li class="toctree-l2"><a class="reference internal" href="result.html">API Reference - Results</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html">API Reference - Backend</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signals.html">API Reference - Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="mixins.html">API Reference - Mixins</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parser.html">API Reference - Parser</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#core-components">Core Components</a></li>
+</ul>
+</li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+  <li><a href="index.html">API Reference</a><ul>
+      <li>Previous: <a href="fields.html" title="previous chapter">API Reference - Fields and Signals</a></li>
+      <li>Next: <a href="metrics.html" title="next chapter">API Reference - Metrics</a></li>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/api/scheduling.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Scheduling &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Signals" href="signals.html" />
+    <link rel="prev" title="Events" href="events.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="scheduling">
+<h1>Scheduling<a class="headerlink" href="#scheduling" title="Link to this heading">¶</a></h1>
+<p>This section covers how to schedule pipeline execution in the Nexus framework.</p>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">¶</a></h2>
+<p>The Pipeline Scheduler component allows you to manage and schedule pipeline jobs for execution at specified times or intervals.
+It provides a reliable way to automate pipeline execution based on time-based triggers.</p>
+</section>
+<section id="cron-based-scheduling">
+<h2>CRON-based Scheduling<a class="headerlink" href="#cron-based-scheduling" title="Link to this heading">¶</a></h2>
+<p>The framework supports CRON-style scheduling for periodic execution of pipelines:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.scheduler</span><span class="w"> </span><span class="kn">import</span> <span class="n">PipelineScheduler</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">datetime</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
+    <span class="k">pass</span>
+
+<span class="c1"># Create scheduler instance</span>
+<span class="n">scheduler</span> <span class="o">=</span> <span class="n">PipelineScheduler</span><span class="p">()</span>
+
+<span class="c1"># Schedule pipeline to run every day at midnight</span>
+<span class="n">scheduler</span><span class="o">.</span><span class="n">add_job</span><span class="p">(</span><span class="n">MyPipeline</span><span class="p">(),</span>
+                 <span class="n">trigger</span><span class="o">=</span><span class="s1">&#39;cron&#39;</span><span class="p">,</span>
+                 <span class="n">hour</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+                 <span class="n">minute</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+
+<span class="c1"># Start the scheduler</span>
+<span class="n">scheduler</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
+<section id="interval-based-scheduling">
+<h2>Interval-based Scheduling<a class="headerlink" href="#interval-based-scheduling" title="Link to this heading">¶</a></h2>
+<p>For regular interval-based execution:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run pipeline every 30 minutes</span>
+<span class="n">scheduler</span><span class="o">.</span><span class="n">add_job</span><span class="p">(</span><span class="n">MyPipeline</span><span class="p">(),</span>
+                 <span class="n">trigger</span><span class="o">=</span><span class="s1">&#39;interval&#39;</span><span class="p">,</span>
+                 <span class="n">minutes</span><span class="o">=</span><span class="mi">30</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="one-time-scheduling">
+<h2>One-time Scheduling<a class="headerlink" href="#one-time-scheduling" title="Link to this heading">¶</a></h2>
+<p>To schedule a pipeline to run once at a specific time:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run pipeline at a specific datetime</span>
+<span class="n">scheduler</span><span class="o">.</span><span class="n">add_job</span><span class="p">(</span><span class="n">MyPipeline</span><span class="p">(),</span>
+                 <span class="n">trigger</span><span class="o">=</span><span class="s1">&#39;date&#39;</span><span class="p">,</span>
+                 <span class="n">run_date</span><span class="o">=</span><span class="n">datetime</span><span class="p">(</span><span class="mi">2025</span><span class="p">,</span> <span class="mi">12</span><span class="p">,</span> <span class="mi">31</span><span class="p">,</span> <span class="mi">23</span><span class="p">,</span> <span class="mi">59</span><span class="p">,</span> <span class="mi">59</span><span class="p">))</span>
+</pre></div>
+</div>
+</section>
+<section id="advanced-configuration">
+<h2>Advanced Configuration<a class="headerlink" href="#advanced-configuration" title="Link to this heading">¶</a></h2>
+<section id="customizing-job-execution">
+<h3>Customizing Job Execution<a class="headerlink" href="#customizing-job-execution" title="Link to this heading">¶</a></h3>
+<p>You can customize various aspects of scheduled jobs:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">scheduler</span><span class="o">.</span><span class="n">add_job</span><span class="p">(</span>
+    <span class="n">MyPipeline</span><span class="p">(),</span>
+    <span class="n">trigger</span><span class="o">=</span><span class="s1">&#39;cron&#39;</span><span class="p">,</span>
+    <span class="n">hour</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+    <span class="n">minute</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+    <span class="n">max_instances</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>  <span class="c1"># Maximum concurrent instances</span>
+    <span class="n">coalesce</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>    <span class="c1"># Combine missed executions</span>
+    <span class="n">misfire_grace_time</span><span class="o">=</span><span class="mi">3600</span>  <span class="c1"># Grace period for missed jobs</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="job-management">
+<h3>Job Management<a class="headerlink" href="#job-management" title="Link to this heading">¶</a></h3>
+<p>Managing scheduled jobs:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Add job with an ID</span>
+<span class="n">job</span> <span class="o">=</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">add_job</span><span class="p">(</span><span class="n">MyPipeline</span><span class="p">(),</span>
+                       <span class="n">trigger</span><span class="o">=</span><span class="s1">&#39;interval&#39;</span><span class="p">,</span>
+                       <span class="n">minutes</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span>
+                       <span class="nb">id</span><span class="o">=</span><span class="s1">&#39;my_pipeline_job&#39;</span><span class="p">)</span>
+
+<span class="c1"># Pause a job</span>
+<span class="n">scheduler</span><span class="o">.</span><span class="n">pause_job</span><span class="p">(</span><span class="s1">&#39;my_pipeline_job&#39;</span><span class="p">)</span>
+
+<span class="c1"># Resume a job</span>
+<span class="n">scheduler</span><span class="o">.</span><span class="n">resume_job</span><span class="p">(</span><span class="s1">&#39;my_pipeline_job&#39;</span><span class="p">)</span>
+
+<span class="c1"># Remove a job</span>
+<span class="n">scheduler</span><span class="o">.</span><span class="n">remove_job</span><span class="p">(</span><span class="s1">&#39;my_pipeline_job&#39;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="error-handling">
+<h3>Error Handling<a class="headerlink" href="#error-handling" title="Link to this heading">¶</a></h3>
+<p>Configure error handling for scheduled jobs:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">error_handler</span><span class="p">(</span><span class="n">event</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Job failed: </span><span class="si">{</span><span class="n">event</span><span class="o">.</span><span class="n">job_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Exception: </span><span class="si">{</span><span class="n">event</span><span class="o">.</span><span class="n">exception</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="n">scheduler</span><span class="o">.</span><span class="n">add_listener</span><span class="p">(</span><span class="n">error_handler</span><span class="p">,</span>
+                     <span class="n">EVENT_JOB_ERROR</span> <span class="o">|</span> <span class="n">EVENT_JOB_MISSED</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="shutdown">
+<h2>Shutdown<a class="headerlink" href="#shutdown" title="Link to this heading">¶</a></h2>
+<p>Properly shutting down the scheduler:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">try</span><span class="p">:</span>
+    <span class="c1"># Your application code</span>
+    <span class="k">pass</span>
+<span class="k">finally</span><span class="p">:</span>
+    <span class="n">scheduler</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="pipeline.html">Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="events.html">Events</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Scheduling</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#cron-based-scheduling">CRON-based Scheduling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#interval-based-scheduling">Interval-based Scheduling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#one-time-scheduling">One-time Scheduling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#advanced-configuration">Advanced Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#shutdown">Shutdown</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/index.html">API Reference</a></li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+      <li>Previous: <a href="events.html" title="previous chapter">Events</a></li>
+      <li>Next: <a href="signals.html" title="next chapter">Signals</a></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/usage/scheduling.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

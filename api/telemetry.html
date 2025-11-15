@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>API Reference - Telemetry &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="API Reference - Results" href="result.html" />
+    <link rel="prev" title="API Reference - Managers" href="managers.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="api-reference-telemetry">
+<h1>API Reference - Telemetry<a class="headerlink" href="#api-reference-telemetry" title="Link to this heading">¶</a></h1>
+<section id="core-components">
+<h2>Core Components<a class="headerlink" href="#core-components" title="Link to this heading">¶</a></h2>
+<section id="eventmetrics">
+<h3>EventMetrics<a class="headerlink" href="#eventmetrics" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="EventMetrics">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">EventMetrics</span></span><a class="headerlink" href="#EventMetrics" title="Link to this definition">¶</a></dt>
+<dd><p>Metrics for a single event execution.</p>
+<p><strong>Attributes:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>event_name</strong> – Name of the event</p></li>
+<li><p><strong>task_id</strong> – Unique task identifier</p></li>
+<li><p><strong>start_time</strong> – Event start timestamp</p></li>
+<li><p><strong>end_time</strong> – Event end timestamp</p></li>
+<li><p><strong>status</strong> – Execution status (pending/completed/failed)</p></li>
+<li><p><strong>error</strong> – Error message if failed</p></li>
+<li><p><strong>retry_count</strong> – Number of retry attempts</p></li>
+<li><p><strong>process_id</strong> – Process ID executing the event</p></li>
+</ul>
+</dd>
+</dl>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="EventMetrics.duration">
+<span class="sig-name descname"><span class="pre">duration</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">float</span></span></span><a class="headerlink" href="#EventMetrics.duration" title="Link to this definition">¶</a></dt>
+<dd><p>Calculate execution duration in seconds.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="networkmetrics">
+<h3>NetworkMetrics<a class="headerlink" href="#networkmetrics" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="NetworkMetrics">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">NetworkMetrics</span></span><a class="headerlink" href="#NetworkMetrics" title="Link to this definition">¶</a></dt>
+<dd><p>Metrics for a network operation.</p>
+<p><strong>Attributes:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>task_id</strong> – Unique task identifier</p></li>
+<li><p><strong>host</strong> – Remote host address</p></li>
+<li><p><strong>port</strong> – Remote port number</p></li>
+<li><p><strong>start_time</strong> – Operation start timestamp</p></li>
+<li><p><strong>end_time</strong> – Operation end timestamp</p></li>
+<li><p><strong>bytes_sent</strong> – Number of bytes sent</p></li>
+<li><p><strong>bytes_received</strong> – Number of bytes received</p></li>
+<li><p><strong>error</strong> – Error message if failed</p></li>
+<li><p><strong>operation</strong> – Operation type identifier</p></li>
+</ul>
+</dd>
+</dl>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="NetworkMetrics.latency">
+<span class="sig-name descname"><span class="pre">latency</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">float</span></span></span><a class="headerlink" href="#NetworkMetrics.latency" title="Link to this definition">¶</a></dt>
+<dd><p>Calculate operation latency in seconds.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+</section>
+<section id="telemetry-collection">
+<h2>Telemetry Collection<a class="headerlink" href="#telemetry-collection" title="Link to this heading">¶</a></h2>
+<section id="telemetrylogger">
+<h3>TelemetryLogger<a class="headerlink" href="#telemetrylogger" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="TelemetryLogger">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">TelemetryLogger</span></span><a class="headerlink" href="#TelemetryLogger" title="Link to this definition">¶</a></dt>
+<dd><p>Thread-safe telemetry logger for event pipeline monitoring.</p>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="TelemetryLogger.start_event">
+<span class="sig-name descname"><span class="pre">start_event</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">event_name</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">task_id</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">process_id</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#TelemetryLogger.start_event" title="Link to this definition">¶</a></dt>
+<dd><p>Record the start of an event execution.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="TelemetryLogger.end_event">
+<span class="sig-name descname"><span class="pre">end_event</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">task_id</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">error</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#TelemetryLogger.end_event" title="Link to this definition">¶</a></dt>
+<dd><p>Record the end of an event execution.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="TelemetryLogger.record_retry">
+<span class="sig-name descname"><span class="pre">record_retry</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">task_id</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#TelemetryLogger.record_retry" title="Link to this definition">¶</a></dt>
+<dd><p>Record a retry attempt for an event.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="TelemetryLogger.get_metrics">
+<span class="sig-name descname"><span class="pre">get_metrics</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">task_id</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference internal" href="#EventMetrics" title="EventMetrics"><span class="pre">EventMetrics</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span></span><a class="headerlink" href="#TelemetryLogger.get_metrics" title="Link to this definition">¶</a></dt>
+<dd><p>Get metrics for a specific task.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="networktelemetry">
+<h3>NetworkTelemetry<a class="headerlink" href="#networktelemetry" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="NetworkTelemetry">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">NetworkTelemetry</span></span><a class="headerlink" href="#NetworkTelemetry" title="Link to this definition">¶</a></dt>
+<dd><p>Thread-safe telemetry for network operations.</p>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="NetworkTelemetry.start_operation">
+<span class="sig-name descname"><span class="pre">start_operation</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">task_id</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">host</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">port</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">operation</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'remote_call'</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#NetworkTelemetry.start_operation" title="Link to this definition">¶</a></dt>
+<dd><p>Record the start of a network operation.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="NetworkTelemetry.end_operation">
+<span class="sig-name descname"><span class="pre">end_operation</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">task_id</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bytes_sent</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bytes_received</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">error</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#NetworkTelemetry.end_operation" title="Link to this definition">¶</a></dt>
+<dd><p>Record the end of a network operation.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="NetworkTelemetry.get_metrics">
+<span class="sig-name descname"><span class="pre">get_metrics</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">task_id</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference internal" href="#NetworkMetrics" title="NetworkMetrics"><span class="pre">NetworkMetrics</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span></span><a class="headerlink" href="#NetworkTelemetry.get_metrics" title="Link to this definition">¶</a></dt>
+<dd><p>Get metrics for a specific operation.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="NetworkTelemetry.get_failed_operations">
+<span class="sig-name descname"><span class="pre">get_failed_operations</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference internal" href="#NetworkMetrics" title="NetworkMetrics"><span class="pre">NetworkMetrics</span></a><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#NetworkTelemetry.get_failed_operations" title="Link to this definition">¶</a></dt>
+<dd><p>Get metrics for all failed operations.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="NetworkTelemetry.get_slow_operations">
+<span class="sig-name descname"><span class="pre">get_slow_operations</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">threshold_seconds</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">1.0</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference internal" href="#NetworkMetrics" title="NetworkMetrics"><span class="pre">NetworkMetrics</span></a><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#NetworkTelemetry.get_slow_operations" title="Link to this definition">¶</a></dt>
+<dd><p>Get metrics for operations that took longer than threshold.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+</section>
+<section id="metrics-publishing">
+<h2>Metrics Publishing<a class="headerlink" href="#metrics-publishing" title="Link to this heading">¶</a></h2>
+<section id="metricspublisher">
+<h3>MetricsPublisher<a class="headerlink" href="#metricspublisher" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="MetricsPublisher">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">MetricsPublisher</span></span><a class="headerlink" href="#MetricsPublisher" title="Link to this definition">¶</a></dt>
+<dd><p>Base interface for metrics publishing adapters.</p>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="MetricsPublisher.publish_event_metrics">
+<span class="sig-name descname"><span class="pre">publish_event_metrics</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">metrics</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#EventMetrics" title="EventMetrics"><span class="pre">EventMetrics</span></a></span></em><span class="sig-paren">)</span><a class="headerlink" href="#MetricsPublisher.publish_event_metrics" title="Link to this definition">¶</a></dt>
+<dd><p>Publish event metrics to the backend system.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="MetricsPublisher.publish_network_metrics">
+<span class="sig-name descname"><span class="pre">publish_network_metrics</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">metrics</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">dict</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#MetricsPublisher.publish_network_metrics" title="Link to this definition">¶</a></dt>
+<dd><p>Publish network metrics to the backend system.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="elasticsearchpublisher">
+<h3>ElasticsearchPublisher<a class="headerlink" href="#elasticsearchpublisher" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="ElasticsearchPublisher">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ElasticsearchPublisher</span></span><a class="headerlink" href="#ElasticsearchPublisher" title="Link to this definition">¶</a></dt>
+<dd><p>Publishes metrics to Elasticsearch.</p>
+<p><strong>Parameters:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>hosts</strong> – List of Elasticsearch hosts</p></li>
+<li><p><strong>index_prefix</strong> – Prefix for metrics indices</p></li>
+<li><p><strong>**kwargs</strong> – <p>Additional Elasticsearch client options</p>
+</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+<section id="prometheuspublisher">
+<h3>PrometheusPublisher<a class="headerlink" href="#prometheuspublisher" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="PrometheusPublisher">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">PrometheusPublisher</span></span><a class="headerlink" href="#PrometheusPublisher" title="Link to this definition">¶</a></dt>
+<dd><p>Exposes metrics for Prometheus scraping.</p>
+<p><strong>Parameters:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>port</strong> – Port to expose metrics on</p></li>
+<li><p><strong>addr</strong> – Interface address to bind to</p></li>
+<li><p><strong>registry</strong> – Custom Prometheus registry</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+<section id="grafanacloudpublisher">
+<h3>GrafanaCloudPublisher<a class="headerlink" href="#grafanacloudpublisher" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="GrafanaCloudPublisher">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">GrafanaCloudPublisher</span></span><a class="headerlink" href="#GrafanaCloudPublisher" title="Link to this definition">¶</a></dt>
+<dd><p>Publishes metrics to Grafana Cloud.</p>
+<p><strong>Parameters:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>api_key</strong> – Grafana Cloud API key</p></li>
+<li><p><strong>org_slug</strong> – Organization identifier</p></li>
+<li><p><strong>endpoint</strong> – Custom API endpoint</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+<section id="compositepublisher">
+<h3>CompositePublisher<a class="headerlink" href="#compositepublisher" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="CompositePublisher">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">CompositePublisher</span></span><a class="headerlink" href="#CompositePublisher" title="Link to this definition">¶</a></dt>
+<dd><p>Publishes metrics to multiple backends simultaneously.</p>
+<p><strong>Parameters:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>publishers</strong> – List of MetricsPublisher instances</p>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+</section>
+<section id="utility-functions">
+<h2>Utility Functions<a class="headerlink" href="#utility-functions" title="Link to this heading">¶</a></h2>
+<dl class="py function">
+<dt class="sig sig-object py" id="monitor_events">
+<span class="sig-name descname"><span class="pre">monitor_events</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">publishers</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><a class="reference internal" href="#MetricsPublisher" title="MetricsPublisher"><span class="pre">MetricsPublisher</span></a><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monitor_events" title="Link to this definition">¶</a></dt>
+<dd><p>Start monitoring pipeline events and collecting metrics.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="get_metrics">
+<span class="sig-name descname"><span class="pre">get_metrics</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">str</span></span></span><a class="headerlink" href="#get_metrics" title="Link to this definition">¶</a></dt>
+<dd><p>Get all collected metrics as JSON string.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="get_failed_events">
+<span class="sig-name descname"><span class="pre">get_failed_events</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">list</span></span></span><a class="headerlink" href="#get_failed_events" title="Link to this definition">¶</a></dt>
+<dd><p>Get metrics for all failed events.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="get_slow_events">
+<span class="sig-name descname"><span class="pre">get_slow_events</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">threshold_seconds</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">1.0</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#get_slow_events" title="Link to this definition">¶</a></dt>
+<dd><p>Get metrics for events that took longer than threshold.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="get_retry_stats">
+<span class="sig-name descname"><span class="pre">get_retry_stats</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#get_retry_stats" title="Link to this definition">¶</a></dt>
+<dd><p>Get retry statistics.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="get_failed_network_ops">
+<span class="sig-name descname"><span class="pre">get_failed_network_ops</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#get_failed_network_ops" title="Link to this definition">¶</a></dt>
+<dd><p>Get metrics for failed network operations.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="get_slow_network_ops">
+<span class="sig-name descname"><span class="pre">get_slow_network_ops</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">threshold_seconds</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">1.0</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#get_slow_network_ops" title="Link to this definition">¶</a></dt>
+<dd><p>Get metrics for slow network operations.</p>
+</dd></dl>
+
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/pipeline.html">Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/events.html">Events</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/scheduling.html">Scheduling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/contributing.html">Contributing</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">API Reference</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="events.html">API Reference - Events</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline.html">API Reference - Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fields.html">API Reference - Fields and Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scheduling.html">API Reference - Scheduling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html">API Reference - Metrics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="executors.html">API Reference - Executors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="managers.html">API Reference - Managers</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">API Reference - Telemetry</a></li>
+<li class="toctree-l2"><a class="reference internal" href="result.html">API Reference - Results</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html">API Reference - Backend</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signals.html">API Reference - Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="mixins.html">API Reference - Mixins</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parser.html">API Reference - Parser</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#core-components">Core Components</a></li>
+</ul>
+</li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+  <li><a href="index.html">API Reference</a><ul>
+      <li>Previous: <a href="managers.html" title="previous chapter">API Reference - Managers</a></li>
+      <li>Next: <a href="result.html" title="next chapter">API Reference - Results</a></li>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/api/telemetry.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

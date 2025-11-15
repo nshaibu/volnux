@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Tutorials - Pipeline &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Tutorials - Batch Processing" href="batch.html" />
+    <link rel="prev" title="Tutorials - Pointy-lang" href="pointy-lang.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="tutorials-pipeline">
+<h1>Tutorials - Pipeline<a class="headerlink" href="#tutorials-pipeline" title="Link to this heading">¶</a></h1>
+<p>This comprehensive tutorial will guide you through creating powerful event-based workflows using the <code class="docutils literal notranslate"><span class="pre">nexus</span></code> module and Pointy Language syntax. By the end, you’ll understand how to define, visualize, and execute complex pipelines for your applications.</p>
+<section id="setting-up-your-first-pipeline">
+<h2>Setting Up Your First Pipeline<a class="headerlink" href="#setting-up-your-first-pipeline" title="Link to this heading">¶</a></h2>
+<p>To begin using <code class="docutils literal notranslate"><span class="pre">nexus</span></code>, you’ll need to create a custom pipeline class by inheriting from the base <code class="docutils literal notranslate"><span class="pre">Pipeline</span></code> class:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
+    <span class="c1"># Pipeline definition will go here</span>
+    <span class="k">pass</span>
+</pre></div>
+</div>
+<p>This basic structure serves as the foundation for your pipeline. Next, we’ll add input fields and define the workflow structure.</p>
+</section>
+<section id="defining-input-fields">
+<h2>Defining Input Fields<a class="headerlink" href="#defining-input-fields" title="Link to this heading">¶</a></h2>
+<p>Input fields define the data that flows through your pipeline. The <code class="docutils literal notranslate"><span class="pre">nexus.fields</span></code> module provides field types to specify data requirements:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
+    <span class="c1"># Define input fields as class attributes</span>
+    <span class="n">username</span> <span class="o">=</span> <span class="n">InputDataField</span><span class="p">(</span><span class="n">data_type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">email</span> <span class="o">=</span> <span class="n">InputDataField</span><span class="p">(</span><span class="n">data_type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">age</span> <span class="o">=</span> <span class="n">InputDataField</span><span class="p">(</span><span class="n">data_type</span><span class="o">=</span><span class="nb">int</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Events in your pipeline can access these fields by including the field name in their <code class="docutils literal notranslate"><span class="pre">process</span></code> method arguments. For example:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">process</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">username</span><span class="p">,</span> <span class="n">email</span><span class="p">):</span>
+    <span class="c1"># Access the input fields directly</span>
+    <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;Processing data for </span><span class="si">{</span><span class="n">username</span><span class="si">}</span><span class="s2"> (</span><span class="si">{</span><span class="n">email</span><span class="si">}</span><span class="s2">)&quot;</span>
+</pre></div>
+</div>
+</section>
+<section id="structuring-workflows-with-pointy-language">
+<h2>Structuring Workflows with Pointy Language<a class="headerlink" href="#structuring-workflows-with-pointy-language" title="Link to this heading">¶</a></h2>
+<section id="pointy-language-basics">
+<h3>Pointy Language Basics<a class="headerlink" href="#pointy-language-basics" title="Link to this heading">¶</a></h3>
+<p>Pointy Language uses arrow-based syntax to define the flow between events. Here are the key operators:</p>
+<ul class="simple">
+<li><p><strong>Directional Operator (-&gt;)</strong>: Sequential execution of events</p></li>
+<li><p><strong>Parallel Operator (||)</strong>: Concurrent execution of events</p></li>
+<li><p><strong>Pipe Result Operator (|-&gt;)</strong>: Pass output from one event as input to another</p></li>
+<li><p><strong>Conditional Branching</strong>: Define different paths based on success/failure</p></li>
+<li><p><strong>Retry Operator (*)</strong>: Automatically retry failed events</p></li>
+</ul>
+</section>
+</section>
+<section id="defining-workflow-structure">
+<h2>Defining Workflow Structure<a class="headerlink" href="#defining-workflow-structure" title="Link to this heading">¶</a></h2>
+<p>There are three ways to define your pipeline structure using Pointy Language:</p>
+<section id="using-external-pty-files">
+<h3>1. Using External <code class="docutils literal notranslate"><span class="pre">.pty</span></code> Files<a class="headerlink" href="#using-external-pty-files" title="Link to this heading">¶</a></h3>
+<p>Create a file with the same name as your pipeline class (e.g., <code class="docutils literal notranslate"><span class="pre">MyPipeline.pty</span></code>):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">FetchData</span> <span class="o">-&gt;</span> <span class="n">ValidateData</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">HandleValidationError</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">ProcessData</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SaveResults</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">nexus</span></code> module will automatically load this file if it has the same name as your pipeline class.</p>
+</section>
+<section id="using-the-meta-subclass">
+<h3>2. Using the Meta Subclass<a class="headerlink" href="#using-the-meta-subclass" title="Link to this heading">¶</a></h3>
+<p>You can embed the Pointy Language script directly in your class:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
+    <span class="n">username</span> <span class="o">=</span> <span class="n">InputDataField</span><span class="p">(</span><span class="n">data_type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">pointy</span> <span class="o">=</span> <span class="s2">&quot;FetchData -&gt; ValidateData (0 -&gt; HandleError, 1 -&gt; ProcessData) -&gt; SaveResults&quot;</span>
+</pre></div>
+</div>
+</section>
+<section id="using-meta-dictionary">
+<h3>3. Using Meta Dictionary<a class="headerlink" href="#using-meta-dictionary" title="Link to this heading">¶</a></h3>
+<p>Alternatively, use a dictionary to define meta options:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
+    <span class="n">username</span> <span class="o">=</span> <span class="n">InputDataField</span><span class="p">(</span><span class="n">data_type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+    <span class="n">meta</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;pointy&quot;</span><span class="p">:</span> <span class="s2">&quot;FetchData -&gt; ValidateData -&gt; ProcessData&quot;</span>
+    <span class="p">}</span>
+</pre></div>
+</div>
+<p>You can also specify a custom file path:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">file</span> <span class="o">=</span> <span class="s2">&quot;/path/to/your/workflow.pty&quot;</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="advanced-pipeline-techniques">
+<h2>Advanced Pipeline Techniques<a class="headerlink" href="#advanced-pipeline-techniques" title="Link to this heading">¶</a></h2>
+<section id="sequential-execution">
+<h3>Sequential Execution<a class="headerlink" href="#sequential-execution" title="Link to this heading">¶</a></h3>
+<p>The most basic flow pattern executes events in sequence:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">A</span> <span class="o">-&gt;</span> <span class="n">B</span> <span class="o">-&gt;</span> <span class="n">C</span>
+</pre></div>
+</div>
+<p>This ensures that event B only starts after event A completes, and event C only starts after event B completes.</p>
+</section>
+<section id="parallel-execution">
+<h3>Parallel Execution<a class="headerlink" href="#parallel-execution" title="Link to this heading">¶</a></h3>
+<p>For concurrent operations, use the parallel operator:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">A</span> <span class="o">-&gt;</span> <span class="p">(</span><span class="n">B</span> <span class="o">||</span> <span class="n">C</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">D</span>
+</pre></div>
+</div>
+<p>In this example, events B and C execute simultaneously after A completes, and D executes once both B and C are finished.</p>
+</section>
+<section id="result-piping">
+<h3>Result Piping<a class="headerlink" href="#result-piping" title="Link to this heading">¶</a></h3>
+<p>When one event depends on data from another:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">A</span> <span class="o">|-&gt;</span> <span class="n">B</span>
+</pre></div>
+</div>
+<p>The output of event A becomes the input for event B.</p>
+</section>
+<section id="conditional-branching">
+<h3>Conditional Branching<a class="headerlink" href="#conditional-branching" title="Link to this heading">¶</a></h3>
+<p>Create different execution paths based on success or failure:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ValidateData</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">HandleValidationError</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">ProcessData</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>In this example:</p>
+<ul class="simple">
+<li><p>If <code class="docutils literal notranslate"><span class="pre">ValidateData</span></code> fails (0), execute <code class="docutils literal notranslate"><span class="pre">HandleValidationError</span></code></p></li>
+<li><p>If <code class="docutils literal notranslate"><span class="pre">ValidateData</span></code> succeeds (1), execute <code class="docutils literal notranslate"><span class="pre">ProcessData</span></code></p></li>
+</ul>
+</section>
+<section id="custom-descriptors">
+<h3>Custom Descriptors<a class="headerlink" href="#custom-descriptors" title="Link to this heading">¶</a></h3>
+<p>Beyond success (1) and failure (0), you can define custom conditions with descriptors 3-9:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">AnalyzeData</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">HandleError</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">ProcessNormalData</span><span class="p">,</span>
+    <span class="mi">3</span> <span class="o">-&gt;</span> <span class="n">ProcessPriorityData</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="automatic-retries">
+<h3>Automatic Retries<a class="headerlink" href="#automatic-retries" title="Link to this heading">¶</a></h3>
+<p>Implement retry logic for events that might fail temporarily:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">SendNotification</span> <span class="o">*</span> <span class="mi">3</span> <span class="o">-&gt;</span> <span class="n">LogResult</span>
+</pre></div>
+</div>
+<p>This will retry the <code class="docutils literal notranslate"><span class="pre">SendNotification</span></code> event up to 3 times if it fails.</p>
+</section>
+<section id="complex-workflow-example">
+<h3>Complex Workflow Example<a class="headerlink" href="#complex-workflow-example" title="Link to this heading">¶</a></h3>
+<p>Here’s a more complex example combining multiple features:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Initialize</span> <span class="o">-&gt;</span> <span class="n">FetchData</span> <span class="o">*</span> <span class="mi">2</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">LogFetchError</span> <span class="o">|-&gt;</span> <span class="n">NotifyAdmin</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">ValidateData</span> <span class="p">(</span>
+        <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">CleanData</span> <span class="o">|-&gt;</span> <span class="n">RetryValidation</span><span class="p">,</span>
+        <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">ProcessMetadata</span> <span class="o">||</span> <span class="n">EnrichData</span> <span class="o">|-&gt;</span> <span class="n">SaveResults</span>
+    <span class="p">)</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SendNotification</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">LogNotificationError</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">MarkComplete</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>This workflow:</p>
+<ol class="arabic simple">
+<li><p>Initializes the pipeline</p></li>
+<li><p>Fetches data with up to 2 retries</p></li>
+<li><p>On fetch failure, logs an error and notifies an admin</p></li>
+<li><p>On fetch success, validates the data</p></li>
+<li><p>On validation failure, cleans the data and retries validation</p></li>
+<li><p>On validation success, processes metadata and enriches data in parallel</p></li>
+<li><p>Saves the results</p></li>
+<li><p>Sends a notification</p></li>
+<li><p>Either logs notification errors or marks the process complete</p></li>
+</ol>
+</section>
+</section>
+<section id="visualizing-pipelines">
+<h2>Visualizing Pipelines<a class="headerlink" href="#visualizing-pipelines" title="Link to this heading">¶</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">nexus</span></code> module provides tools to visualize your pipeline structure:</p>
+<section id="ascii-representation">
+<h3>ASCII Representation<a class="headerlink" href="#ascii-representation" title="Link to this heading">¶</a></h3>
+<p>Generate a text-based diagram of your pipeline:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Instantiate your pipeline</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">MyPipeline</span><span class="p">()</span>
+
+<span class="c1"># Print ASCII representation</span>
+<span class="n">pipeline</span><span class="o">.</span><span class="n">draw_ascii_graph</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
+<section id="graphviz-visualization">
+<h3>Graphviz Visualization<a class="headerlink" href="#graphviz-visualization" title="Link to this heading">¶</a></h3>
+<p>For a more detailed graphical representation (requires Graphviz and xdot):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Generate and save a graphical representation</span>
+<span class="n">pipeline</span><span class="o">.</span><span class="n">draw_graphviz_image</span><span class="p">(</span><span class="n">directory</span><span class="o">=</span><span class="s2">&quot;/path/to/output/directory&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>This creates a visual diagram showing the flow between events, including branches and conditions.</p>
+</section>
+</section>
+<section id="executing-pipelines">
+<h2>Executing Pipelines<a class="headerlink" href="#executing-pipelines" title="Link to this heading">¶</a></h2>
+<p>To run your pipeline, instantiate it with input values and call the <code class="docutils literal notranslate"><span class="pre">start</span></code> method:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Create pipeline instance with input values</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">MyPipeline</span><span class="p">(</span>
+    <span class="n">username</span><span class="o">=</span><span class="s2">&quot;john_doe&quot;</span><span class="p">,</span>
+    <span class="n">email</span><span class="o">=</span><span class="s2">&quot;john@example.com&quot;</span><span class="p">,</span>
+    <span class="n">age</span><span class="o">=</span><span class="mi">30</span>
+<span class="p">)</span>
+
+<span class="c1"># Execute the pipeline</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+
+<span class="c1"># Access the result</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>You can also provide input values when starting the pipeline:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">pipeline</span> <span class="o">=</span> <span class="n">MyPipeline</span><span class="p">()</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">start</span><span class="p">(</span><span class="n">username</span><span class="o">=</span><span class="s2">&quot;john_doe&quot;</span><span class="p">,</span> <span class="n">email</span><span class="o">=</span><span class="s2">&quot;john@example.com&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="complete-example-document-processing-pipeline">
+<h2>Complete Example: Document Processing Pipeline<a class="headerlink" href="#complete-example-document-processing-pipeline" title="Link to this heading">¶</a></h2>
+<p>Let’s put everything together with a complete example of a document processing pipeline:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">DocumentProcessingPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Pipeline for processing document files.&quot;&quot;&quot;</span>
+
+    <span class="c1"># Define input fields</span>
+    <span class="n">document_path</span> <span class="o">=</span> <span class="n">InputDataField</span><span class="p">(</span><span class="n">data_type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">user_id</span> <span class="o">=</span> <span class="n">InputDataField</span><span class="p">(</span><span class="n">data_type</span><span class="o">=</span><span class="nb">int</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">priority</span> <span class="o">=</span> <span class="n">InputDataField</span><span class="p">(</span><span class="n">data_type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="s2">&quot;normal&quot;</span><span class="p">)</span>
+
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">pointy</span> <span class="o">=</span> <span class="s2">&quot;&quot;&quot;</span>
+<span class="s2">        ValidateDocument -&gt; ExtractMetadata (</span>
+<span class="s2">            0 -&gt; LogExtractionError |-&gt; NotifyUser,</span>
+<span class="s2">            1 -&gt; (</span>
+<span class="s2">                IndexContent ||</span>
+<span class="s2">                GenerateThumbnail ||</span>
+<span class="s2">                AnalyzeContent</span>
+<span class="s2">            ) |-&gt; SaveResults</span>
+<span class="s2">        ) -&gt; UpdateUserQuota (</span>
+<span class="s2">            0 -&gt; LogQuotaError,</span>
+<span class="s2">            1 -&gt; SendSuccessNotification</span>
+<span class="s2">        ) * 3</span>
+<span class="s2">        &quot;&quot;&quot;</span>
+
+<span class="c1"># Example usage</span>
+<span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+    <span class="c1"># Create pipeline instance</span>
+    <span class="n">pipeline</span> <span class="o">=</span> <span class="n">DocumentProcessingPipeline</span><span class="p">(</span>
+        <span class="n">document_path</span><span class="o">=</span><span class="s2">&quot;/path/to/document.pdf&quot;</span><span class="p">,</span>
+        <span class="n">user_id</span><span class="o">=</span><span class="mi">12345</span><span class="p">,</span>
+        <span class="n">priority</span><span class="o">=</span><span class="s2">&quot;high&quot;</span>
+    <span class="p">)</span>
+
+    <span class="c1"># Visualize the pipeline structure</span>
+    <span class="n">pipeline</span><span class="o">.</span><span class="n">draw_ascii_graph</span><span class="p">()</span>
+
+    <span class="c1"># Execute the pipeline</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Pipeline execution completed with result: </span><span class="si">{</span><span class="n">result</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>In this example:</p>
+<ol class="arabic simple">
+<li><p>We define a document processing pipeline with three input fields</p></li>
+<li><p>The pipeline structure:</p>
+<ul class="simple">
+<li><p>Validates the document</p></li>
+<li><p>Extracts metadata</p></li>
+<li><p>On extraction failure, logs an error and notifies the user</p></li>
+<li><p>On extraction success, performs three operations in parallel (indexing, thumbnail generation, and content analysis)</p></li>
+<li><p>Saves the combined results</p></li>
+<li><p>Updates the user’s quota with up to 3 retries</p></li>
+<li><p>Either logs quota errors or sends a success notification</p></li>
+</ul>
+</li>
+<li><p>We visualize the pipeline using ASCII representation</p></li>
+<li><p>We execute the pipeline with sample input values</p></li>
+</ol>
+</section>
+<section id="summary">
+<h2>Summary<a class="headerlink" href="#summary" title="Link to this heading">¶</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">nexus</span></code> module combined with Pointy Language provides a powerful framework for defining, visualizing, and executing complex workflows. By leveraging the arrow-based syntax, you can create sophisticated processing pipelines with conditional branching, parallel execution, result piping, and automatic retries.</p>
+<p>Key takeaways:</p>
+<ol class="arabic simple">
+<li><p>Create pipeline classes by inheriting from the <code class="docutils literal notranslate"><span class="pre">Pipeline</span></code> class</p></li>
+<li><p>Define input fields using <code class="docutils literal notranslate"><span class="pre">InputDataField</span></code> and other field types</p></li>
+<li><p>Structure your workflow using Pointy Language syntax</p></li>
+<li><p>Visualize pipelines with ASCII or Graphviz representations</p></li>
+<li><p>Execute pipelines by instantiating with input values and calling <code class="docutils literal notranslate"><span class="pre">start()</span></code></p></li>
+</ol>
+<p>With these tools, you can build reliable, maintainable, and visually comprehensible workflows for a wide range of applications.</p>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Tutorials</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="events.html">Tutorials - Events</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pointy-lang.html">Tutorials - Pointy-lang</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Tutorials - Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="batch.html">Tutorials - Batch Processing</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/pipeline.html">Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/events.html">Events</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/scheduling.html">Scheduling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/index.html">API Reference</a></li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+  <li><a href="index.html">Tutorials</a><ul>
+      <li>Previous: <a href="pointy-lang.html" title="previous chapter">Tutorials - Pointy-lang</a></li>
+      <li>Next: <a href="batch.html" title="next chapter">Tutorials - Batch Processing</a></li>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/tutorials/pipeline.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Events &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Scheduling" href="scheduling.html" />
+    <link rel="prev" title="Pipeline" href="pipeline.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="events">
+<h1>Events<a class="headerlink" href="#events" title="Link to this heading">¶</a></h1>
+<p>This section covers how to create and work with events in the Nexus framework.</p>
+<section id="defining-events">
+<h2>Defining Events<a class="headerlink" href="#defining-events" title="Link to this heading">¶</a></h2>
+<p>Events can be defined either as classes or functions. Here are both approaches:</p>
+<section id="class-based-events">
+<h3>Class-Based Events<a class="headerlink" href="#class-based-events" title="Link to this heading">¶</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyEvent</span><span class="p">(</span><span class="n">EventBase</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">process</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="c1"># Event processing logic here</span>
+        <span class="k">return</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;Event processed successfully&quot;</span>
+</pre></div>
+</div>
+</section>
+<section id="function-based-events">
+<h3>Function-Based Events<a class="headerlink" href="#function-based-events" title="Link to this heading">¶</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.decorators</span><span class="w"> </span><span class="kn">import</span> <span class="n">event</span>
+
+<span class="nd">@event</span><span class="p">()</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">my_event</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="c1"># Event processing logic here</span>
+    <span class="k">return</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;Event processed successfully&quot;</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="executor-configuration">
+<h2>Executor Configuration<a class="headerlink" href="#executor-configuration" title="Link to this heading">¶</a></h2>
+<p>Every event needs an executor that defines how it will be executed. The framework provides the ExecutorInitializerConfig class for configuring executors:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">concurrent.futures</span><span class="w"> </span><span class="kn">import</span> <span class="n">ThreadPoolExecutor</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span><span class="p">,</span> <span class="n">ExecutorInitializerConfig</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyEvent</span><span class="p">(</span><span class="n">EventBase</span><span class="p">):</span>
+    <span class="n">executor</span> <span class="o">=</span> <span class="n">ThreadPoolExecutor</span>
+
+    <span class="c1"># Configure the executor using ExecutorInitializerConfig</span>
+    <span class="n">executor_config</span> <span class="o">=</span> <span class="n">ExecutorInitializerConfig</span><span class="p">(</span>
+        <span class="n">max_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+        <span class="n">max_tasks_per_child</span><span class="o">=</span><span class="mi">50</span><span class="p">,</span>
+        <span class="n">thread_name_prefix</span><span class="o">=</span><span class="s2">&quot;event_executor_&quot;</span>
+    <span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">process</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="k">return</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;Event processed successfully&quot;</span>
+</pre></div>
+</div>
+<p>Or using dictionary configuration:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">MyEvent</span><span class="p">(</span><span class="n">EventBase</span><span class="p">):</span>
+    <span class="n">executor</span> <span class="o">=</span> <span class="n">ThreadPoolExecutor</span>
+
+    <span class="n">executor_config</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;max_workers&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span>
+        <span class="s2">&quot;max_tasks_per_child&quot;</span><span class="p">:</span> <span class="mi">50</span><span class="p">,</span>
+        <span class="s2">&quot;thread_name_prefix&quot;</span><span class="p">:</span> <span class="s2">&quot;event_executor_&quot;</span>
+    <span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="event-result-evaluation">
+<h2>Event Result Evaluation<a class="headerlink" href="#event-result-evaluation" title="Link to this heading">¶</a></h2>
+<p>The EventExecutionEvaluationState class defines how event success or failure is determined:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span><span class="p">,</span> <span class="n">EventExecutionEvaluationState</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyEvent</span><span class="p">(</span><span class="n">EventBase</span><span class="p">):</span>
+    <span class="c1"># Set the execution evaluation state</span>
+    <span class="n">execution_evaluation_state</span> <span class="o">=</span> <span class="n">EventExecutionEvaluationState</span><span class="o">.</span><span class="n">SUCCESS_ON_ALL_EVENTS_SUCCESS</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">process</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="k">return</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;Success&quot;</span>
+</pre></div>
+</div>
+<p>Available Evaluation States:</p>
+<ul class="simple">
+<li><p><strong>SUCCESS_ON_ALL_EVENTS_SUCCESS</strong>: Success only if all tasks succeed (default)</p></li>
+<li><p><strong>FAILURE_FOR_PARTIAL_ERROR</strong>: Failure if any task fails</p></li>
+<li><p><strong>SUCCESS_FOR_PARTIAL_SUCCESS</strong>: Success if at least one task succeeds</p></li>
+<li><p><strong>FAILURE_FOR_ALL_EVENTS_FAILURE</strong>: Failure only if all tasks fail</p></li>
+</ul>
+</section>
+<section id="retry-policy">
+<h2>Retry Policy<a class="headerlink" href="#retry-policy" title="Link to this heading">¶</a></h2>
+<p>Events can be configured with retry policies for handling failures:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">typing</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventBase</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.base</span><span class="w"> </span><span class="kn">import</span> <span class="n">RetryPolicy</span>
+
+<span class="c1"># Define retry policy</span>
+<span class="n">retry_policy</span> <span class="o">=</span> <span class="n">RetryPolicy</span><span class="p">(</span>
+    <span class="n">max_attempts</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span>
+    <span class="n">backoff_factor</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span>
+    <span class="n">max_backoff</span><span class="o">=</span><span class="mf">5.0</span><span class="p">,</span>
+    <span class="n">retry_on_exceptions</span><span class="o">=</span><span class="p">[</span><span class="ne">ConnectionError</span><span class="p">,</span> <span class="ne">TimeoutError</span><span class="p">]</span>
+<span class="p">)</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyEvent</span><span class="p">(</span><span class="n">EventBase</span><span class="p">):</span>
+    <span class="c1"># Assign retry policy to event</span>
+    <span class="n">retry_policy</span> <span class="o">=</span> <span class="n">retry_policy</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">process</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">typing</span><span class="o">.</span><span class="n">Tuple</span><span class="p">[</span><span class="nb">bool</span><span class="p">,</span> <span class="n">typing</span><span class="o">.</span><span class="n">Any</span><span class="p">]:</span>
+        <span class="c1"># Event processing logic</span>
+        <span class="k">pass</span>
+</pre></div>
+</div>
+<p>Alternative dictionary configuration:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">MyEvent</span><span class="p">(</span><span class="n">EventBase</span><span class="p">):</span>
+    <span class="n">retry_policy</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;max_attempts&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">,</span>
+        <span class="s2">&quot;backoff_factor&quot;</span><span class="p">:</span> <span class="mf">0.1</span><span class="p">,</span>
+        <span class="s2">&quot;max_backoff&quot;</span><span class="p">:</span> <span class="mf">5.0</span><span class="p">,</span>
+        <span class="s2">&quot;retry_on_exceptions&quot;</span><span class="p">:</span> <span class="p">[</span><span class="ne">ConnectionError</span><span class="p">,</span> <span class="ne">TimeoutError</span><span class="p">]</span>
+    <span class="p">}</span>
+</pre></div>
+</div>
+<p>The retry policy determines:
+- Maximum number of retry attempts
+- Backoff time between retries
+- Maximum allowed backoff time
+- Which exceptions trigger retries</p>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="pipeline.html">Pipeline</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Events</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#defining-events">Defining Events</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#executor-configuration">Executor Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#event-result-evaluation">Event Result Evaluation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#retry-policy">Retry Policy</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="scheduling.html">Scheduling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/index.html">API Reference</a></li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+      <li>Previous: <a href="pipeline.html" title="previous chapter">Pipeline</a></li>
+      <li>Next: <a href="scheduling.html" title="next chapter">Scheduling</a></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/usage/events.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

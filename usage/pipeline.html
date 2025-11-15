@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Pipeline &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Events" href="events.html" />
+    <link rel="prev" title="Tutorials - Batch Processing" href="../tutorials/batch.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="pipeline">
+<h1>Pipeline<a class="headerlink" href="#pipeline" title="Link to this heading">¶</a></h1>
+<p>This section covers everything you need to know about creating and working with pipelines in the Nexus framework.</p>
+<section id="defining-pipeline">
+<h2>Defining Pipeline<a class="headerlink" href="#defining-pipeline" title="Link to this heading">¶</a></h2>
+<p>To define a pipeline, you need to inherit from the Pipeline class and create your custom implementation:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
+    <span class="c1"># Your input data fields will go here</span>
+    <span class="k">pass</span>
+</pre></div>
+</div>
+</section>
+<section id="defining-input-data-field">
+<h2>Defining Input Data Field<a class="headerlink" href="#defining-input-data-field" title="Link to this heading">¶</a></h2>
+<p>Input fields are defined using the InputDataField class or its variants. These fields represent the data that will flow through your pipeline:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
+    <span class="c1"># Define input fields as attributes</span>
+    <span class="n">input_field</span> <span class="o">=</span> <span class="n">InputDataField</span><span class="p">(</span><span class="n">data_type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="defining-pipeline-structure">
+<h2>Defining Pipeline Structure<a class="headerlink" href="#defining-pipeline-structure" title="Link to this heading">¶</a></h2>
+<p>Pipeline structure is defined using the Pointy language, which provides a structured format to describe task execution flow.</p>
+<section id="basic-pointy-file">
+<h3>Basic Pointy File<a class="headerlink" href="#basic-pointy-file" title="Link to this heading">¶</a></h3>
+<p>Create a file with the <cite>.pty</cite> extension matching your pipeline class name (e.g., <cite>MyPipeline.pty</cite>):</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Fetch-&gt;Process-&gt;Execute-&gt;SaveToDB-&gt;Return
+</pre></div>
+</div>
+</section>
+<section id="alternative-configuration">
+<h3>Alternative Configuration<a class="headerlink" href="#alternative-configuration" title="Link to this heading">¶</a></h3>
+<p>You can also define the pipeline structure within your class using a Meta subclass:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
+    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+        <span class="n">pointy</span> <span class="o">=</span> <span class="s2">&quot;A-&gt;B-&gt;C&quot;</span>  <span class="c1"># Pointy script</span>
+        <span class="c1"># OR</span>
+        <span class="n">file</span> <span class="o">=</span> <span class="s2">&quot;/path/to/your/custom_pipeline.pty&quot;</span>
+
+    <span class="c1"># Or using dictionary format</span>
+    <span class="n">meta</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;pointy&quot;</span><span class="p">:</span> <span class="s2">&quot;A-&gt;B-&gt;C&quot;</span><span class="p">,</span>
+        <span class="c1"># OR</span>
+        <span class="s2">&quot;file&quot;</span><span class="p">:</span> <span class="s2">&quot;/path/to/your/custom_pipeline.pty&quot;</span>
+    <span class="p">}</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="pointy-language-syntax">
+<h2>Pointy Language Syntax<a class="headerlink" href="#pointy-language-syntax" title="Link to this heading">¶</a></h2>
+<section id="operators">
+<h3>Operators<a class="headerlink" href="#operators" title="Link to this heading">¶</a></h3>
+<ul>
+<li><dl>
+<dt><strong>Directional Operator (-&gt;)</strong>:</dt><dd><p>Defines sequential flow:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>A -&gt; B   # Execute event A, then B
+</pre></div>
+</div>
+</dd>
+</dl>
+</li>
+<li><dl>
+<dt><strong>Parallel Operator (||)</strong>:</dt><dd><p>Executes events concurrently:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>A || B   # Execute A and B in parallel
+</pre></div>
+</div>
+</dd>
+</dl>
+</li>
+<li><dl>
+<dt><strong>Pipe Result Operator (|-&gt;)</strong>:</dt><dd><p>Pipes results between events:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>A |-&gt; B  # Pipe result of A into B
+</pre></div>
+</div>
+</dd>
+</dl>
+</li>
+<li><dl>
+<dt><strong>Conditional Branching</strong>:</dt><dd><p>Define execution paths based on event outcomes:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>A -&gt; B (0 -&gt; C, 1 -&gt; D)  # If B fails (0) execute C, if succeeds (1) execute D
+</pre></div>
+</div>
+</dd>
+</dl>
+</li>
+<li><dl>
+<dt><strong>Retry Operator (*)</strong>:</dt><dd><p>Specifies retry attempts for events:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>A * 3  # Retry event A up to 3 times
+</pre></div>
+</div>
+</dd>
+</dl>
+</li>
+</ul>
+</section>
+</section>
+<section id="executing-pipeline">
+<h2>Executing Pipeline<a class="headerlink" href="#executing-pipeline" title="Link to this heading">¶</a></h2>
+<p>To execute your pipeline:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Instantiate your pipeline class</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">MyPipeline</span><span class="p">(</span><span class="n">input_field</span><span class="o">=</span><span class="s2">&quot;value&quot;</span><span class="p">)</span>
+
+<span class="c1"># Execute the pipeline</span>
+<span class="n">pipeline</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
+<section id="visualizing-pipeline">
+<h2>Visualizing Pipeline<a class="headerlink" href="#visualizing-pipeline" title="Link to this heading">¶</a></h2>
+<p>You can visualize your pipeline structure using ASCII or graphviz:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># ASCII representation</span>
+<span class="n">pipeline</span><span class="o">.</span><span class="n">draw_ascii_graph</span><span class="p">()</span>
+
+<span class="c1"># Graphical representation (requires graphviz)</span>
+<span class="n">pipeline</span><span class="o">.</span><span class="n">draw_graphviz_image</span><span class="p">(</span><span class="n">directory</span><span class="o">=</span><span class="s2">&quot;path/to/output&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="batch-processing">
+<h2>Batch Processing<a class="headerlink" href="#batch-processing" title="Link to this heading">¶</a></h2>
+<p>For processing multiple batches of data in parallel:</p>
+<section id="creating-pipeline-template">
+<h3>Creating Pipeline Template<a class="headerlink" href="#creating-pipeline-template" title="Link to this heading">¶</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">InputDataField</span><span class="p">,</span> <span class="n">FileInputDataField</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">Simple</span><span class="p">(</span><span class="n">Pipeline</span><span class="p">):</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="n">InputDataField</span><span class="p">(</span><span class="n">data_type</span><span class="o">=</span><span class="nb">list</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
+    <span class="n">book</span> <span class="o">=</span> <span class="n">FileInputDataField</span><span class="p">(</span><span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">chunk_size</span><span class="o">=</span><span class="mi">1024</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="creating-batch-processing-class">
+<h3>Creating Batch Processing Class<a class="headerlink" href="#creating-batch-processing-class" title="Link to this heading">¶</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.pipeline</span><span class="w"> </span><span class="kn">import</span> <span class="n">BatchPipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal</span><span class="w"> </span><span class="kn">import</span> <span class="n">SoftSignal</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">SimpleBatch</span><span class="p">(</span><span class="n">BatchPipeline</span><span class="p">):</span>
+    <span class="n">pipeline_template</span> <span class="o">=</span> <span class="n">Simple</span>
+    <span class="n">listen_to_signals</span> <span class="o">=</span> <span class="p">[</span><span class="n">SoftSignal</span><span class="p">(</span><span class="s1">&#39;task_completed&#39;</span><span class="p">),</span> <span class="n">SoftSignal</span><span class="p">(</span><span class="s1">&#39;task_failed&#39;</span><span class="p">)]</span>
+</pre></div>
+</div>
+<p>The batch processing system will automatically handle parallel execution of pipeline instances based on your configuration.</p>
+</section>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Pipeline</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#defining-pipeline">Defining Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#defining-input-data-field">Defining Input Data Field</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#defining-pipeline-structure">Defining Pipeline Structure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#pointy-language-syntax">Pointy Language Syntax</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#executing-pipeline">Executing Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#visualizing-pipeline">Visualizing Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#batch-processing">Batch Processing</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="events.html">Events</a></li>
+<li class="toctree-l1"><a class="reference internal" href="scheduling.html">Scheduling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/index.html">API Reference</a></li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+      <li>Previous: <a href="../tutorials/batch.html" title="previous chapter">Tutorials - Batch Processing</a></li>
+      <li>Next: <a href="events.html" title="next chapter">Events</a></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/usage/pipeline.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

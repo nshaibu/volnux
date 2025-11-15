@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>API Reference - Executors &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="API Reference - Managers" href="managers.html" />
+    <link rel="prev" title="API Reference - Metrics" href="metrics.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="api-reference-executors">
+<h1>API Reference - Executors<a class="headerlink" href="#api-reference-executors" title="Link to this heading">¶</a></h1>
+<section id="core-executor-classes">
+<h2>Core Executor Classes<a class="headerlink" href="#core-executor-classes" title="Link to this heading">¶</a></h2>
+<section id="defaultexecutor">
+<h3>DefaultExecutor<a class="headerlink" href="#defaultexecutor" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="DefaultExecutor">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">DefaultExecutor</span></span><a class="headerlink" href="#DefaultExecutor" title="Link to this definition">¶</a></dt>
+<dd><p>The simplest executor that runs tasks synchronously in the current thread.</p>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="DefaultExecutor.submit">
+<span class="sig-name descname"><span class="pre">submit</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fn</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">/</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Future</span></span></span><a class="headerlink" href="#DefaultExecutor.submit" title="Link to this definition">¶</a></dt>
+<dd><p>Executes the function immediately in the current thread.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>fn</strong> – Function to execute</p></li>
+<li><p><strong>args</strong> – Positional arguments</p></li>
+<li><p><strong>kwargs</strong> – Keyword arguments</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Future object with the result</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Future</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="threadpoolexecutor-processpoolexecutor">
+<h3>ThreadPoolExecutor &amp; ProcessPoolExecutor<a class="headerlink" href="#threadpoolexecutor-processpoolexecutor" title="Link to this heading">¶</a></h3>
+<p>Standard Python concurrent.futures executors for parallel execution.</p>
+<p><strong>Configuration:</strong></p>
+<ul class="simple">
+<li><p>max_workers: Number of worker threads/processes</p></li>
+<li><p>thread_name_prefix: Prefix for worker thread names (ThreadPoolExecutor only)</p></li>
+<li><p>max_tasks_per_child: Maximum tasks per worker process (ProcessPoolExecutor only)</p></li>
+</ul>
+</section>
+</section>
+<section id="remote-executors">
+<h2>Remote Executors<a class="headerlink" href="#remote-executors" title="Link to this heading">¶</a></h2>
+<section id="remoteexecutor">
+<h3>RemoteExecutor<a class="headerlink" href="#remoteexecutor" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="RemoteExecutor">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">RemoteExecutor</span></span><a class="headerlink" href="#RemoteExecutor" title="Link to this definition">¶</a></dt>
+<dd><p>Executes tasks on remote servers using raw socket connections.</p>
+<p><strong>Parameters:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>host</strong> – Remote server hostname/IP</p></li>
+<li><p><strong>port</strong> – Remote server port</p></li>
+<li><p><strong>timeout</strong> – Connection timeout in seconds</p></li>
+<li><p><strong>use_encryption</strong> – Whether to use SSL/TLS encryption</p></li>
+<li><p><strong>client_cert_path</strong> – Path to client certificate file</p></li>
+<li><p><strong>client_key_path</strong> – Path to client private key file</p></li>
+<li><p><strong>ca_cert_path</strong> – Path to CA certificate file</p></li>
+</ul>
+</dd>
+</dl>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="RemoteExecutor.submit">
+<span class="sig-name descname"><span class="pre">submit</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fn</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">/</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Future</span></span></span><a class="headerlink" href="#RemoteExecutor.submit" title="Link to this definition">¶</a></dt>
+<dd><p>Submit task for remote execution.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>fn</strong> – Function to execute</p></li>
+<li><p><strong>args</strong> – Positional arguments</p></li>
+<li><p><strong>kwargs</strong> – Keyword arguments</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Future representing the remote execution</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Future</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="xmlrpcexecutor">
+<h3>XMLRPCExecutor<a class="headerlink" href="#xmlrpcexecutor" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="XMLRPCExecutor">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">XMLRPCExecutor</span></span><a class="headerlink" href="#XMLRPCExecutor" title="Link to this definition">¶</a></dt>
+<dd><p>Executes tasks on remote servers using XML-RPC protocol.</p>
+<p><strong>Parameters:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>host</strong> – Remote server hostname/IP</p></li>
+<li><p><strong>port</strong> – Remote server port</p></li>
+<li><p><strong>max_workers</strong> – Maximum number of worker threads</p></li>
+<li><p><strong>use_encryption</strong> – Whether to use SSL/TLS</p></li>
+<li><p><strong>client_cert_path</strong> – Path to client certificate</p></li>
+<li><p><strong>client_key_path</strong> – Path to client key</p></li>
+<li><p><strong>ca_cert_path</strong> – Path to CA certificate</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+<section id="grpcexecutor">
+<h3>GRPCExecutor<a class="headerlink" href="#grpcexecutor" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="GRPCExecutor">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">GRPCExecutor</span></span><a class="headerlink" href="#GRPCExecutor" title="Link to this definition">¶</a></dt>
+<dd><p>Executes tasks on remote servers using gRPC protocol.</p>
+<p><strong>Parameters:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>host</strong> – Remote server hostname/IP</p></li>
+<li><p><strong>port</strong> – Remote server port</p></li>
+<li><p><strong>max_workers</strong> – Maximum number of worker threads</p></li>
+<li><p><strong>use_encryption</strong> – Whether to use SSL/TLS</p></li>
+<li><p><strong>client_cert_path</strong> – Path to client certificate</p></li>
+<li><p><strong>client_key_path</strong> – Path to client key</p></li>
+<li><p><strong>ca_cert_path</strong> – Path to CA certificate</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+</section>
+<section id="distributed-executors">
+<h2>Distributed Executors<a class="headerlink" href="#distributed-executors" title="Link to this heading">¶</a></h2>
+<section id="hadoopexecutor">
+<h3>HadoopExecutor<a class="headerlink" href="#hadoopexecutor" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="HadoopExecutor">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">HadoopExecutor</span></span><a class="headerlink" href="#HadoopExecutor" title="Link to this definition">¶</a></dt>
+<dd><p>Executes tasks on a Hadoop cluster using MapReduce.</p>
+<p><strong>Parameters:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>host</strong> – Hadoop namenode hostname</p></li>
+<li><p><strong>port</strong> – Hadoop namenode port</p></li>
+<li><p><strong>username</strong> – Username for authentication</p></li>
+<li><p><strong>password</strong> – Password for authentication</p></li>
+<li><p><strong>kerb_ticket</strong> – Path to Kerberos ticket file</p></li>
+<li><p><strong>hdfs_config</strong> – Additional HDFS configuration</p></li>
+<li><p><strong>yarn_config</strong> – Additional YARN configuration</p></li>
+<li><p><strong>max_workers</strong> – Maximum concurrent workers</p></li>
+<li><p><strong>poll_interval</strong> – Job status polling interval</p></li>
+</ul>
+</dd>
+</dl>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="HadoopExecutor.submit">
+<span class="sig-name descname"><span class="pre">submit</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fn</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">/</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Future</span></span></span><a class="headerlink" href="#HadoopExecutor.submit" title="Link to this definition">¶</a></dt>
+<dd><p>Submit task for Hadoop execution.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>fn</strong> – Function to execute (must be EventBase instance)</p></li>
+<li><p><strong>args</strong> – Positional arguments</p></li>
+<li><p><strong>kwargs</strong> – Keyword arguments</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Future representing the Hadoop job</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Future</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="HadoopExecutor.submit_batch">
+<span class="sig-name descname"><span class="pre">submit_batch</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fns</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">Callable</span><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args_list</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">Future</span><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#HadoopExecutor.submit_batch" title="Link to this definition">¶</a></dt>
+<dd><p>Submit multiple tasks as a batch.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>fns</strong> – List of functions to execute</p></li>
+<li><p><strong>args_list</strong> – Arguments for each function</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>List of Futures</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>List[Future]</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="HadoopExecutor.cancel">
+<span class="sig-name descname"><span class="pre">cancel</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">future</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Future</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">bool</span></span></span><a class="headerlink" href="#HadoopExecutor.cancel" title="Link to this definition">¶</a></dt>
+<dd><p>Cancel a submitted job.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>future</strong> – Future representing the job</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>True if cancellation successful</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>bool</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/pipeline.html">Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/events.html">Events</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/scheduling.html">Scheduling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/contributing.html">Contributing</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">API Reference</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="events.html">API Reference - Events</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline.html">API Reference - Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fields.html">API Reference - Fields and Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scheduling.html">API Reference - Scheduling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html">API Reference - Metrics</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">API Reference - Executors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="managers.html">API Reference - Managers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="telemetry.html">API Reference - Telemetry</a></li>
+<li class="toctree-l2"><a class="reference internal" href="result.html">API Reference - Results</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html">API Reference - Backend</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signals.html">API Reference - Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="mixins.html">API Reference - Mixins</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parser.html">API Reference - Parser</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#core-components">Core Components</a></li>
+</ul>
+</li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+  <li><a href="index.html">API Reference</a><ul>
+      <li>Previous: <a href="metrics.html" title="previous chapter">API Reference - Metrics</a></li>
+      <li>Next: <a href="managers.html" title="next chapter">API Reference - Managers</a></li>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/api/executors.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

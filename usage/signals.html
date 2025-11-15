@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Signals &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Telemetry" href="telemetry.html" />
+    <link rel="prev" title="Scheduling" href="scheduling.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="signals">
+<h1>Signals<a class="headerlink" href="#signals" title="Link to this heading">¶</a></h1>
+<p>This section covers the Soft Signaling Framework in the Event Pipeline library.</p>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">¶</a></h2>
+<p>The Signaling Framework enables you to connect custom behaviors to specific points in the lifecycle of a pipeline
+and its events. This is achieved through the SoftSignal class and a system of signal listeners.</p>
+</section>
+<section id="default-signals">
+<h2>Default Signals<a class="headerlink" href="#default-signals" title="Link to this heading">¶</a></h2>
+<p>The framework provides several built-in signals for different stages of pipeline execution:</p>
+<section id="initialization-signals">
+<h3>Initialization Signals<a class="headerlink" href="#initialization-signals" title="Link to this heading">¶</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="n">pipeline_pre_init</span><span class="p">,</span> <span class="n">pipeline_post_init</span>
+
+<span class="c1"># Signal emitted before pipeline initialization</span>
+<span class="c1"># Arguments: cls, args, kwargs</span>
+<span class="n">pipeline_pre_init</span>
+
+<span class="c1"># Signal emitted after pipeline initialization</span>
+<span class="c1"># Arguments: pipeline</span>
+<span class="n">pipeline_post_init</span>
+</pre></div>
+</div>
+</section>
+<section id="shutdown-signals">
+<h3>Shutdown Signals<a class="headerlink" href="#shutdown-signals" title="Link to this heading">¶</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="n">pipeline_shutdown</span><span class="p">,</span> <span class="n">pipeline_stop</span>
+
+<span class="c1"># Signal emitted during pipeline shutdown</span>
+<span class="n">pipeline_shutdown</span>
+
+<span class="c1"># Signal emitted when pipeline is stopped</span>
+<span class="n">pipeline_stop</span>
+</pre></div>
+</div>
+</section>
+<section id="execution-signals">
+<h3>Execution Signals<a class="headerlink" href="#execution-signals" title="Link to this heading">¶</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">pipeline_execution_start</span><span class="p">,</span>
+    <span class="n">pipeline_execution_end</span>
+<span class="p">)</span>
+
+<span class="c1"># Signal emitted when pipeline execution begins</span>
+<span class="c1"># Arguments: pipeline</span>
+<span class="n">pipeline_execution_start</span>
+
+<span class="c1"># Signal emitted when pipeline execution completes</span>
+<span class="c1"># Arguments: execution_context</span>
+<span class="n">pipeline_execution_end</span>
+</pre></div>
+</div>
+</section>
+<section id="event-execution-signals">
+<h3>Event Execution Signals<a class="headerlink" href="#event-execution-signals" title="Link to this heading">¶</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">event_execution_init</span><span class="p">,</span>
+    <span class="n">event_execution_start</span><span class="p">,</span>
+    <span class="n">event_execution_end</span><span class="p">,</span>
+    <span class="n">event_execution_retry</span><span class="p">,</span>
+    <span class="n">event_execution_retry_done</span>
+<span class="p">)</span>
+
+<span class="c1"># Signal emitted when event execution is initialized</span>
+<span class="c1"># Arguments: event, execution_context, executor, call_kwargs</span>
+<span class="n">event_execution_init</span>
+
+<span class="c1"># Signal emitted when event execution starts</span>
+<span class="c1"># Arguments: event, execution_context</span>
+<span class="n">event_execution_start</span>
+
+<span class="c1"># Signal emitted when event execution ends</span>
+<span class="c1"># Arguments: event, execution_context, future</span>
+<span class="n">event_execution_end</span>
+
+<span class="c1"># Signal emitted when event execution is retried</span>
+<span class="c1"># Arguments: event, execution_context, task_id, backoff, retry_count, max_attempts</span>
+<span class="n">event_execution_retry</span>
+
+<span class="c1"># Signal emitted when event retry is completed</span>
+<span class="c1"># Arguments: event, execution_context, task_id, max_attempts</span>
+<span class="n">event_execution_retry_done</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="connecting-signal-listeners">
+<h2>Connecting Signal Listeners<a class="headerlink" href="#connecting-signal-listeners" title="Link to this heading">¶</a></h2>
+<p>There are two ways to connect listeners to signals:</p>
+<section id="using-the-connect-method">
+<h3>Using the connect Method<a class="headerlink" href="#using-the-connect-method" title="Link to this heading">¶</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="n">pipeline_execution_start</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">my_listener</span><span class="p">(</span><span class="n">pipeline</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Execution starting for pipeline: </span><span class="si">{</span><span class="n">pipeline</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="c1"># Connect listener to signal</span>
+<span class="n">pipeline_execution_start</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">my_listener</span><span class="p">,</span> <span class="n">sender</span><span class="o">=</span><span class="n">Pipeline</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="using-the-listener-decorator">
+<h3>Using the &#64;listener Decorator<a class="headerlink" href="#using-the-listener-decorator" title="Link to this heading">¶</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nexus.decorators</span><span class="w"> </span><span class="kn">import</span> <span class="n">listener</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nexus.signal.signals</span><span class="w"> </span><span class="kn">import</span> <span class="n">pipeline_pre_init</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nexus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Pipeline</span>
+
+<span class="nd">@listener</span><span class="p">(</span><span class="n">pipeline_pre_init</span><span class="p">,</span> <span class="n">sender</span><span class="o">=</span><span class="n">Pipeline</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">my_listener</span><span class="p">(</span><span class="n">sender</span><span class="p">,</span> <span class="n">signal</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Pipeline execution starting&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="best-practices">
+<h2>Best Practices<a class="headerlink" href="#best-practices" title="Link to this heading">¶</a></h2>
+<section id="signal-handler-performance">
+<h3>Signal Handler Performance<a class="headerlink" href="#signal-handler-performance" title="Link to this heading">¶</a></h3>
+<p>Keep signal handlers lightweight and fast:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Good - Fast operation</span>
+<span class="nd">@listener</span><span class="p">(</span><span class="n">pipeline_execution_start</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">good_listener</span><span class="p">(</span><span class="n">pipeline</span><span class="p">):</span>
+    <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Pipeline started&quot;</span><span class="p">)</span>
+
+<span class="c1"># Bad - Slow operation that could block pipeline</span>
+<span class="nd">@listener</span><span class="p">(</span><span class="n">pipeline_execution_start</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">bad_listener</span><span class="p">(</span><span class="n">pipeline</span><span class="p">):</span>
+    <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">5</span><span class="p">)</span>  <span class="c1"># Blocking operation</span>
+    <span class="n">perform_heavy_computation</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
+<section id="error-handling">
+<h3>Error Handling<a class="headerlink" href="#error-handling" title="Link to this heading">¶</a></h3>
+<p>Always handle exceptions in signal listeners:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@listener</span><span class="p">(</span><span class="n">pipeline_execution_start</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">safe_listener</span><span class="p">(</span><span class="n">pipeline</span><span class="p">):</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="c1"># Your signal handling logic</span>
+        <span class="k">pass</span>
+    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+        <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Error in signal handler: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="c1"># Don&#39;t re-raise the exception to avoid affecting the pipeline</span>
+</pre></div>
+</div>
+</section>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="pipeline.html">Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="events.html">Events</a></li>
+<li class="toctree-l1"><a class="reference internal" href="scheduling.html">Scheduling</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Signals</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#default-signals">Default Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#connecting-signal-listeners">Connecting Signal Listeners</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#best-practices">Best Practices</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/index.html">API Reference</a></li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+      <li>Previous: <a href="scheduling.html" title="previous chapter">Scheduling</a></li>
+      <li>Next: <a href="telemetry.html" title="next chapter">Telemetry</a></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/usage/signals.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

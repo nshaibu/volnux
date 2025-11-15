@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>API Reference - Signals &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="API Reference - Mixins" href="mixins.html" />
+    <link rel="prev" title="API Reference - Backend" href="backend.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="api-reference-signals">
+<h1>API Reference - Signals<a class="headerlink" href="#api-reference-signals" title="Link to this heading">¶</a></h1>
+<p>Core signal system components and built-in signals.</p>
+<section id="signal-system">
+<h2>Signal System<a class="headerlink" href="#signal-system" title="Link to this heading">¶</a></h2>
+<section id="softsignal">
+<h3>SoftSignal<a class="headerlink" href="#softsignal" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="SoftSignal">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">SoftSignal</span></span><a class="headerlink" href="#SoftSignal" title="Link to this definition">¶</a></dt>
+<dd><p>Base class for implementing the soft signal system.</p>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="SoftSignal.connect">
+<span class="sig-name descname"><span class="pre">connect</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">sender</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Any</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">listener</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Callable</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#SoftSignal.connect" title="Link to this definition">¶</a></dt>
+<dd><p>Connect a listener function to this signal.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>sender</strong> – The sender class/instance to listen for</p></li>
+<li><p><strong>listener</strong> – The callback function to execute</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="SoftSignal.disconnect">
+<span class="sig-name descname"><span class="pre">disconnect</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">sender</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Any</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">listener</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Callable</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#SoftSignal.disconnect" title="Link to this definition">¶</a></dt>
+<dd><p>Disconnect a listener from this signal.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="SoftSignal.emit">
+<span class="sig-name descname"><span class="pre">emit</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">sender</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Any</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">Any</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#SoftSignal.emit" title="Link to this definition">¶</a></dt>
+<dd><p>Emit the signal to all registered listeners.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>sender</strong> – The sender instance triggering the signal</p></li>
+<li><p><strong>kwargs</strong> – Additional data to pass to listeners</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>List of (listener, response) tuples</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+</section>
+<section id="built-in-signals">
+<h2>Built-in Signals<a class="headerlink" href="#built-in-signals" title="Link to this heading">¶</a></h2>
+<section id="pipeline-lifecycle">
+<h3>Pipeline Lifecycle<a class="headerlink" href="#pipeline-lifecycle" title="Link to this heading">¶</a></h3>
+<dl class="py data">
+<dt class="sig sig-object py" id="pipeline_pre_init">
+<span class="sig-name descname"><span class="pre">pipeline_pre_init</span></span><a class="headerlink" href="#pipeline_pre_init" title="Link to this definition">¶</a></dt>
+<dd><p>Signal emitted before pipeline initialization.</p>
+<dl class="simple">
+<dt><strong>Arguments:</strong></dt><dd><ul class="simple">
+<li><p>cls: The pipeline class</p></li>
+<li><p>args: Initialization positional arguments</p></li>
+<li><p>kwargs: Initialization keyword arguments</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py data">
+<dt class="sig sig-object py" id="pipeline_post_init">
+<span class="sig-name descname"><span class="pre">pipeline_post_init</span></span><a class="headerlink" href="#pipeline_post_init" title="Link to this definition">¶</a></dt>
+<dd><p>Signal emitted after pipeline initialization.</p>
+<dl class="simple">
+<dt><strong>Arguments:</strong></dt><dd><ul class="simple">
+<li><p>pipeline: The initialized pipeline instance</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py data">
+<dt class="sig sig-object py" id="pipeline_shutdown">
+<span class="sig-name descname"><span class="pre">pipeline_shutdown</span></span><a class="headerlink" href="#pipeline_shutdown" title="Link to this definition">¶</a></dt>
+<dd><p>Signal emitted during pipeline shutdown.</p>
+<dl class="simple">
+<dt><strong>Arguments:</strong></dt><dd><ul class="simple">
+<li><p>pipeline: The pipeline instance</p></li>
+<li><p>execution_context: Current execution context</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py data">
+<dt class="sig sig-object py" id="pipeline_stop">
+<span class="sig-name descname"><span class="pre">pipeline_stop</span></span><a class="headerlink" href="#pipeline_stop" title="Link to this definition">¶</a></dt>
+<dd><p>Signal emitted when pipeline is stopped.</p>
+<dl class="simple">
+<dt><strong>Arguments:</strong></dt><dd><ul class="simple">
+<li><p>pipeline: The pipeline instance</p></li>
+<li><p>execution_context: Current execution context</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+<section id="pipeline-execution">
+<h3>Pipeline Execution<a class="headerlink" href="#pipeline-execution" title="Link to this heading">¶</a></h3>
+<dl class="py data">
+<dt class="sig sig-object py" id="pipeline_execution_start">
+<span class="sig-name descname"><span class="pre">pipeline_execution_start</span></span><a class="headerlink" href="#pipeline_execution_start" title="Link to this definition">¶</a></dt>
+<dd><p>Signal emitted when pipeline execution begins.</p>
+<dl class="simple">
+<dt><strong>Arguments:</strong></dt><dd><ul class="simple">
+<li><p>pipeline: The pipeline instance</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py data">
+<dt class="sig sig-object py" id="pipeline_execution_end">
+<span class="sig-name descname"><span class="pre">pipeline_execution_end</span></span><a class="headerlink" href="#pipeline_execution_end" title="Link to this definition">¶</a></dt>
+<dd><p>Signal emitted when pipeline execution completes.</p>
+<dl class="simple">
+<dt><strong>Arguments:</strong></dt><dd><ul class="simple">
+<li><p>execution_context: Final execution context</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+<section id="event-execution">
+<h3>Event Execution<a class="headerlink" href="#event-execution" title="Link to this heading">¶</a></h3>
+<dl class="py data">
+<dt class="sig sig-object py" id="event_execution_init">
+<span class="sig-name descname"><span class="pre">event_execution_init</span></span><a class="headerlink" href="#event_execution_init" title="Link to this definition">¶</a></dt>
+<dd><p>Signal emitted when event execution is initialized.</p>
+<dl class="simple">
+<dt><strong>Arguments:</strong></dt><dd><ul class="simple">
+<li><p>event: The event being executed</p></li>
+<li><p>execution_context: Current execution context</p></li>
+<li><p>executor: The executor instance</p></li>
+<li><p>call_kwargs: Event call arguments</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py data">
+<dt class="sig sig-object py" id="event_execution_start">
+<span class="sig-name descname"><span class="pre">event_execution_start</span></span><a class="headerlink" href="#event_execution_start" title="Link to this definition">¶</a></dt>
+<dd><p>Signal emitted when event execution starts.</p>
+<dl class="simple">
+<dt><strong>Arguments:</strong></dt><dd><ul class="simple">
+<li><p>event: The event being executed</p></li>
+<li><p>execution_context: Current execution context</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py data">
+<dt class="sig sig-object py" id="event_execution_end">
+<span class="sig-name descname"><span class="pre">event_execution_end</span></span><a class="headerlink" href="#event_execution_end" title="Link to this definition">¶</a></dt>
+<dd><p>Signal emitted when event execution ends.</p>
+<dl class="simple">
+<dt><strong>Arguments:</strong></dt><dd><ul class="simple">
+<li><p>event: The completed event</p></li>
+<li><p>execution_context: Current execution context</p></li>
+<li><p>future: The execution future object</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py data">
+<dt class="sig sig-object py" id="event_execution_retry">
+<span class="sig-name descname"><span class="pre">event_execution_retry</span></span><a class="headerlink" href="#event_execution_retry" title="Link to this definition">¶</a></dt>
+<dd><p>Signal emitted when event execution is retried.</p>
+<dl class="simple">
+<dt><strong>Arguments:</strong></dt><dd><ul class="simple">
+<li><p>event: The event being retried</p></li>
+<li><p>execution_context: Current execution context</p></li>
+<li><p>task_id: ID of the task being retried</p></li>
+<li><p>backoff: Backoff strategy/duration</p></li>
+<li><p>retry_count: Current retry attempt number</p></li>
+<li><p>max_attempts: Maximum retry attempts allowed</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py data">
+<dt class="sig sig-object py" id="event_execution_retry_done">
+<span class="sig-name descname"><span class="pre">event_execution_retry_done</span></span><a class="headerlink" href="#event_execution_retry_done" title="Link to this definition">¶</a></dt>
+<dd><p>Signal emitted when event retry is completed.</p>
+<dl class="simple">
+<dt><strong>Arguments:</strong></dt><dd><ul class="simple">
+<li><p>event: The retried event</p></li>
+<li><p>execution_context: Current execution context</p></li>
+<li><p>task_id: ID of the retried task</p></li>
+<li><p>max_attempts: Maximum attempts allowed</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/pipeline.html">Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/events.html">Events</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/scheduling.html">Scheduling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/contributing.html">Contributing</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">API Reference</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="events.html">API Reference - Events</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline.html">API Reference - Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fields.html">API Reference - Fields and Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scheduling.html">API Reference - Scheduling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html">API Reference - Metrics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="executors.html">API Reference - Executors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="managers.html">API Reference - Managers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="telemetry.html">API Reference - Telemetry</a></li>
+<li class="toctree-l2"><a class="reference internal" href="result.html">API Reference - Results</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html">API Reference - Backend</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">API Reference - Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="mixins.html">API Reference - Mixins</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parser.html">API Reference - Parser</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#core-components">Core Components</a></li>
+</ul>
+</li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+  <li><a href="index.html">API Reference</a><ul>
+      <li>Previous: <a href="backend.html" title="previous chapter">API Reference - Backend</a></li>
+      <li>Next: <a href="mixins.html" title="next chapter">API Reference - Mixins</a></li>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/api/signals.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

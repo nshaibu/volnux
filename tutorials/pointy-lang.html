@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Tutorials - Pointy-lang &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Tutorials - Pipeline" href="pipeline.html" />
+    <link rel="prev" title="Tutorials - Events" href="events.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="tutorials-pointy-lang">
+<h1>Tutorials - Pointy-lang<a class="headerlink" href="#tutorials-pointy-lang" title="Link to this heading">¶</a></h1>
+<p>Pointy Language is a powerful domain-specific language (DSL) for creating event-based workflows. This tutorial will
+guide you from basic concepts to advanced workflows using Pointy Language’s intuitive arrow-based syntax.</p>
+<section id="introduction-to-pointy-language">
+<h2>1. Introduction to Pointy Language<a class="headerlink" href="#introduction-to-pointy-language" title="Link to this heading">¶</a></h2>
+<p>Pointy Language uses arrows and operators to represent event flow, making it easy to visualize and define workflows.
+Its primary purpose is to model sequences of operations, conditional branching, parallel execution, and result piping.</p>
+<section id="core-features">
+<h3>Core Features:<a class="headerlink" href="#core-features" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p>Sequential execution of events</p></li>
+<li><p>Parallel processing</p></li>
+<li><p>Conditional branching based on success/failure</p></li>
+<li><p>Result piping between events</p></li>
+<li><p>Retry mechanisms for handling failures</p></li>
+</ul>
+</section>
+<section id="defined-events">
+<h3>Defined Events<a class="headerlink" href="#defined-events" title="Link to this heading">¶</a></h3>
+<p>Events like <code class="docutils literal notranslate"><span class="pre">Submit</span></code>, <code class="docutils literal notranslate"><span class="pre">Validate</span></code> or <code class="docutils literal notranslate"><span class="pre">Reject</span></code> are predefined operations that are automatically resolved during pipeline execution.
+These events are defined in two main ways:</p>
+<ul class="simple">
+<li><p>By inheriting from the EventBase class inside the nexus module.</p></li>
+<li><p>By decorating a Python function with the &#64;event decorator from the nexus.decorators module.</p></li>
+</ul>
+<p>Once defined, these events are automatically detected and registered into the pipeline runtime, requiring no additional configuration
+to participate in the event graph execution. When any of these event names are used within a Pointy script, they are automatically resolved
+by the pipeline engine and executed according to their Python definitions.</p>
+<p>This mechanism enables Pointy Language to serve as a thin, expressive orchestration layer on top of reusable Python logic,
+allowing you to abstract low-level function implementation while building high-level, declarative workflows.</p>
+</section>
+</section>
+<section id="basic-syntax-and-operators">
+<h2>2. Basic Syntax and Operators<a class="headerlink" href="#basic-syntax-and-operators" title="Link to this heading">¶</a></h2>
+<section id="single-events">
+<h3>Single Events<a class="headerlink" href="#single-events" title="Link to this heading">¶</a></h3>
+<p>The most basic element in Pointy Language is a single event, represented by a name:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">A</span>    <span class="c1"># This defines a single event named A</span>
+</pre></div>
+</div>
+<p>Events are units of work that get executed as part of your workflow.</p>
+</section>
+<section id="directional-operator">
+<h3>Directional Operator (-&gt;)<a class="headerlink" href="#directional-operator" title="Link to this heading">¶</a></h3>
+<p>The arrow operator defines sequential flow between events:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">A</span> <span class="o">-&gt;</span> <span class="n">B</span>    <span class="c1"># Execute event A, then execute event B</span>
+</pre></div>
+</div>
+<p>This indicates that event B will only start after event A has completed.</p>
+</section>
+<section id="parallel-operator">
+<h3>Parallel Operator (||)<a class="headerlink" href="#parallel-operator" title="Link to this heading">¶</a></h3>
+<p>The parallel operator runs events concurrently:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">A</span> <span class="o">||</span> <span class="n">B</span>    <span class="c1"># Execute event A and event B in parallel</span>
+</pre></div>
+</div>
+<p>Both events start at the same time and run independently.</p>
+</section>
+<section id="pipe-result-operator">
+<h3>Pipe Result Operator (<code class="docutils literal notranslate"><span class="pre">|-&gt;</span></code>)<a class="headerlink" href="#pipe-result-operator" title="Link to this heading">¶</a></h3>
+<p>This operator passes the output from one event as input to another:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">A</span> <span class="o">|-&gt;</span> <span class="n">B</span>    <span class="c1"># The result of event A becomes the input for event B</span>
+</pre></div>
+</div>
+<p>This is useful when one event depends on data produced by another.</p>
+</section>
+<section id="conditional-branching">
+<h3>Conditional Branching<a class="headerlink" href="#conditional-branching" title="Link to this heading">¶</a></h3>
+<p>Pointy Language uses descriptors (numbers) to define different execution paths:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">A</span> <span class="o">-&gt;</span> <span class="n">B</span> <span class="p">(</span><span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">C</span><span class="p">,</span> <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">D</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>In this example:</p>
+<ul class="simple">
+<li><p>If B fails (descriptor 0), execute C</p></li>
+<li><p>If B succeeds (descriptor 1), execute D</p></li>
+</ul>
+</section>
+<section id="retry-operator">
+<h3>Retry Operator (*)<a class="headerlink" href="#retry-operator" title="Link to this heading">¶</a></h3>
+<p>The asterisk operator defines retry behavior for events:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">A</span> <span class="o">*</span> <span class="mi">3</span>    <span class="c1"># Retry event A up to 3 times if it fails</span>
+</pre></div>
+</div>
+<p>This increases reliability by automatically retrying failed events.</p>
+</section>
+</section>
+<section id="building-your-first-workflow">
+<h2>3. Building Your First Workflow<a class="headerlink" href="#building-your-first-workflow" title="Link to this heading">¶</a></h2>
+<p>Let’s create a simple workflow for processing a document:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ReceiveDocument</span> <span class="o">-&gt;</span> <span class="n">ValidateFormat</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">NotifyFormatError</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">ExtractData</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SaveToDatabase</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">LogDatabaseError</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">SendConfirmation</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>This workflow:</p>
+<ol class="arabic simple">
+<li><p>Receives a document</p></li>
+<li><p>Validates its format</p></li>
+<li><p>On valid format, extracts data; otherwise notifies of an error</p></li>
+<li><p>Attempts to save to a database</p></li>
+<li><p>On successful save, sends confirmation; otherwise logs the error</p></li>
+</ol>
+</section>
+<section id="intermediate-concepts">
+<h2>4. Intermediate Concepts<a class="headerlink" href="#intermediate-concepts" title="Link to this heading">¶</a></h2>
+<section id="combining-parallel-and-sequential-operations">
+<h3>Combining Parallel and Sequential Operations<a class="headerlink" href="#combining-parallel-and-sequential-operations" title="Link to this heading">¶</a></h3>
+<p>You can mix parallel operations with sequential ones:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">A</span> <span class="o">-&gt;</span> <span class="n">B</span> <span class="o">||</span> <span class="n">C</span> <span class="o">-&gt;</span> <span class="n">D</span>
+</pre></div>
+</div>
+<p>This executes A first, then B and C in parallel, and finally D after both B and C complete.</p>
+</section>
+<section id="piping-results-from-parallel-operations">
+<h3>Piping Results from Parallel Operations<a class="headerlink" href="#piping-results-from-parallel-operations" title="Link to this heading">¶</a></h3>
+<p>Results from parallel operations can be piped to subsequent events:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">A</span> <span class="o">||</span> <span class="n">B</span> <span class="o">|-&gt;</span> <span class="n">C</span>
+</pre></div>
+</div>
+<p>Here, the results of both A and B are combined and passed to C.</p>
+</section>
+<section id="multiple-branches-with-sink">
+<h3>Multiple Branches with Sink<a class="headerlink" href="#multiple-branches-with-sink" title="Link to this heading">¶</a></h3>
+<p>Create complex decision trees with multiple branches that reunite:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">A</span> <span class="p">(</span><span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">B</span><span class="p">,</span> <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">C</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">D</span>
+</pre></div>
+</div>
+<p>This executes A, then either B (if A fails) or C (if A succeeds), and finally D regardless of which branch was taken.</p>
+</section>
+</section>
+<section id="advanced-workflows">
+<h2>5. Advanced Workflows<a class="headerlink" href="#advanced-workflows" title="Link to this heading">¶</a></h2>
+<section id="error-handling-with-result-piping">
+<h3>Error Handling with Result Piping<a class="headerlink" href="#error-handling-with-result-piping" title="Link to this heading">¶</a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ProcessOrder</span> <span class="o">-&gt;</span> <span class="n">ValidatePayment</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">|-&gt;</span> <span class="n">LogPaymentError</span> <span class="o">-&gt;</span> <span class="n">NotifyCustomer</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">FulfillOrder</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>This workflow pipes error information from a failed validation directly to the logging step.</p>
+</section>
+<section id="custom-descriptors">
+<h3>Custom Descriptors<a class="headerlink" href="#custom-descriptors" title="Link to this heading">¶</a></h3>
+<p>Pointy Language allows descriptors 3-9 for user-defined conditions:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">AnalyzeData</span> <span class="o">-&gt;</span> <span class="n">EvaluateResults</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">HandleError</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">ProcessSuccess</span><span class="p">,</span>
+    <span class="mi">3</span> <span class="o">-&gt;</span> <span class="n">ReviewManually</span>  <span class="c1"># Custom condition for cases requiring human review</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="complex-nested-workflow">
+<h3>Complex Nested Workflow<a class="headerlink" href="#complex-nested-workflow" title="Link to this heading">¶</a></h3>
+<p>Let’s build a more sophisticated order processing workflow:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ReceiveOrder</span> <span class="o">-&gt;</span> <span class="n">ValidateInventory</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">NotifyOutOfStock</span> <span class="o">|-&gt;</span> <span class="n">SuggestAlternatives</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">ProcessPayment</span> <span class="p">(</span>
+        <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">RefundCustomer</span><span class="p">,</span>
+        <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">PrepareShipment</span> <span class="o">||</span> <span class="n">GenerateInvoice</span> <span class="o">|-&gt;</span> <span class="n">NotifyWarehouse</span>
+    <span class="p">)</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">UpdateOrderStatus</span> <span class="o">*</span> <span class="mi">3</span>
+</pre></div>
+</div>
+<p>This workflow:</p>
+<ol class="arabic simple">
+<li><p>Validates inventory availability</p></li>
+<li><p>Handles out-of-stock situations with notifications and suggestions</p></li>
+<li><p>Processes payment when items are available</p></li>
+<li><p>On payment success, prepares shipment and generates invoice in parallel</p></li>
+<li><p>Notifies the warehouse with combined shipment and invoice data</p></li>
+<li><p>Updates order status with retry capability (up to 3 attempts)</p></li>
+</ol>
+</section>
+</section>
+<section id="best-practices">
+<h2>6. Best Practices<a class="headerlink" href="#best-practices" title="Link to this heading">¶</a></h2>
+<section id="naming-conventions">
+<h3>Naming Conventions<a class="headerlink" href="#naming-conventions" title="Link to this heading">¶</a></h3>
+<p>Use descriptive event names that clearly indicate the action being performed.</p>
+</section>
+<section id="error-handling">
+<h3>Error Handling<a class="headerlink" href="#error-handling" title="Link to this heading">¶</a></h3>
+<p>Always define paths for both success and failure cases to ensure robust workflows.</p>
+</section>
+<section id="modularization">
+<h3>Modularization<a class="headerlink" href="#modularization" title="Link to this heading">¶</a></h3>
+<p>Break complex workflows into smaller, reusable components.</p>
+</section>
+<section id="documentation">
+<h3>Documentation<a class="headerlink" href="#documentation" title="Link to this heading">¶</a></h3>
+<p>Comment complex sections of your workflow to explain decision points and conditions.</p>
+</section>
+</section>
+<section id="practical-example-customer-onboarding-workflow">
+<h2>7. Practical Example: Customer Onboarding Workflow<a class="headerlink" href="#practical-example-customer-onboarding-workflow" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ReceiveApplication</span> <span class="o">-&gt;</span> <span class="n">ValidateInformation</span> <span class="o">*</span> <span class="mi">2</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">RequestCorrections</span> <span class="o">|-&gt;</span> <span class="n">NotifyApplicant</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">PerformCreditCheck</span> <span class="p">(</span>
+        <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">AssessRisk</span> <span class="o">||</span> <span class="n">OfferLimitedServices</span> <span class="o">|-&gt;</span> <span class="n">NotifyDecision</span><span class="p">,</span>
+        <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">CreateAccount</span> <span class="o">||</span> <span class="n">PrepareWelcomePackage</span> <span class="o">||</span> <span class="n">SetupAutopay</span> <span class="o">|-&gt;</span> <span class="n">ActivateServices</span>
+    <span class="p">)</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SendConfirmationEmail</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">LogEmailFailure</span> <span class="o">-&gt;</span> <span class="n">AttemptSMS</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">ScheduleFollowUp</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>This comprehensive workflow handles a new customer application with:</p>
+<ol class="arabic simple">
+<li><p>Information validation with retry capability</p></li>
+<li><p>Credit check with different paths based on results</p></li>
+<li><p>Parallel processes for account setup</p></li>
+<li><p>Fallback communication methods</p></li>
+<li><p>Follow-up scheduling</p></li>
+</ol>
+</section>
+<section id="real-world-example-data-ingestion-pipeline">
+<h2>8. Real-World Example: Data Ingestion Pipeline<a class="headerlink" href="#real-world-example-data-ingestion-pipeline" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Preprocess</span> <span class="o">*</span> <span class="mi">3</span> <span class="o">-&gt;</span> <span class="n">Validate</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">FailHandler</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">Enrich</span>
+<span class="p">)</span> <span class="o">||</span> <span class="n">LogPreprocessing</span> <span class="o">-&gt;</span> <span class="n">Enrich</span> <span class="o">-&gt;</span> <span class="n">StoreData</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">RetryStore</span> <span class="o">*</span> <span class="mi">2</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">NotifySuccess</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>Explanation:</p>
+<ol class="arabic simple">
+<li><p>Retry Preprocess up to 3 times.</p></li>
+<li><p>If Validate fails, run FailHandler; else go to Enrich.</p></li>
+<li><p>LogPreprocessing executes in parallel.</p></li>
+<li><p>Enrich is followed by StoreData.</p></li>
+<li><p>If StoreData fails, RetryStore executes up to 2 retries.</p></li>
+<li><p>On success, NotifySuccess runs.</p></li>
+</ol>
+</section>
+<section id="use-case-scheduled-etl-pipeline">
+<h2>9. Use Case: Scheduled ETL Pipeline<a class="headerlink" href="#use-case-scheduled-etl-pipeline" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Extract</span> <span class="o">-&gt;</span> <span class="n">Clean</span> <span class="o">||</span> <span class="n">Validate</span> <span class="o">||</span> <span class="n">Deduplicate</span> <span class="o">|-&gt;</span> <span class="n">Transform</span> <span class="o">-&gt;</span> <span class="n">Load</span> <span class="p">(</span><span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">AlertAdmin</span><span class="p">,</span> <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">SuccessLog</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Explanation:</p>
+<ol class="arabic simple">
+<li><p>Data is extracted and passed to three parallel stages: cleaning, validation, and deduplication.</p></li>
+<li><p>Results are piped into a transformation step.</p></li>
+<li><p>Load step attempts to store data; on failure, notify admin, otherwise log success.</p></li>
+</ol>
+</section>
+<section id="highly-parallel-workflow-with-result-routing">
+<h2>10. Highly Parallel Workflow with Result Routing<a class="headerlink" href="#highly-parallel-workflow-with-result-routing" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">A</span> <span class="o">||</span> <span class="n">B</span> <span class="o">||</span> <span class="n">C</span> <span class="o">|-&gt;</span> <span class="n">D</span> <span class="p">(</span><span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">ErrorHandler</span><span class="p">,</span> <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">Finalize</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Use Case:</p>
+<p>Concurrent processing of services A, B, and C, combined into D. Depending on D’s result,
+route to either ErrorHandler or Finalize.</p>
+</section>
+<section id="dynamic-routing-with-custom-condition">
+<h2>11. Dynamic Routing with Custom Condition<a class="headerlink" href="#dynamic-routing-with-custom-condition" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Review</span> <span class="o">-&gt;</span> <span class="n">Decision</span> <span class="p">(</span><span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">Rework</span><span class="p">,</span> <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">Approve</span><span class="p">,</span> <span class="mi">3</span> <span class="o">-&gt;</span> <span class="n">AuditTrail</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Explanation:</p>
+<ol class="arabic simple">
+<li><p>Descriptor 3 can represent “needs manual audit”.</p></li>
+<li><p>Route outcome accordingly.</p></li>
+</ol>
+</section>
+<section id="nested-parallel-with-retry-and-conditional-sink">
+<h2>12. Nested Parallel with Retry and Conditional Sink<a class="headerlink" href="#nested-parallel-with-retry-and-conditional-sink" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Init</span> <span class="o">*</span> <span class="mi">2</span> <span class="o">-&gt;</span> <span class="p">(</span><span class="n">Fetch</span> <span class="o">||</span> <span class="n">Parse</span> <span class="o">||</span> <span class="n">Normalize</span><span class="p">)</span> <span class="o">|-&gt;</span> <span class="n">Aggregate</span> <span class="p">(</span><span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">AlertOps</span><span class="p">,</span> <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">Save</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Explanation:</p>
+<ol class="arabic simple">
+<li><p>Init is retried twice.</p></li>
+<li><p>Three events execute in parallel.</p></li>
+<li><p>Results are aggregated.</p></li>
+<li><p>If aggregation fails, notify ops. Else save results.</p></li>
+</ol>
+</section>
+<section id="complex-approval-workflow-with-decision-sink">
+<h2>13. Complex Approval Workflow with Decision Sink<a class="headerlink" href="#complex-approval-workflow-with-decision-sink" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Submit</span> <span class="o">-&gt;</span> <span class="n">Validate</span> <span class="p">(</span>
+    <span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">Reject</span><span class="p">,</span>
+    <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">AutoApprove</span> <span class="o">||</span> <span class="n">HumanReview</span> <span class="o">|-&gt;</span> <span class="n">FinalApproval</span> <span class="p">(</span><span class="mi">0</span> <span class="o">-&gt;</span> <span class="n">Escalate</span><span class="p">,</span> <span class="mi">1</span> <span class="o">-&gt;</span> <span class="n">NotifyUser</span><span class="p">)</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>Scenario:</p>
+<ol class="arabic simple">
+<li><p>A form submission is validated.</p></li>
+<li><p>On success, it goes to approval, which can be automatic or manual.</p></li>
+<li><p>Results go to final decision.</p></li>
+<li><p>If failed, escalate; if passed, notify the user.</p></li>
+</ol>
+</section>
+<section id="conclusion">
+<h2>14. Conclusion<a class="headerlink" href="#conclusion" title="Link to this heading">¶</a></h2>
+<p>Pointy Language provides an elegant solution for defining complex workflows with its intuitive arrow-based syntax. By combining
+sequential operations, parallel processing, conditional branching, and result piping, you can create sophisticated event-based
+systems that handle both happy paths and error conditions seamlessly.</p>
+<p>As you become more familiar with Pointy Language, you’ll find it increasingly natural to express even the most complex business
+processes in this concise and visual format.</p>
+<p>This makes it ideal for event-driven systems, data processing flows, microservice orchestration, ETL pipelines,
+and any scenario requiring dynamic, observable execution control.</p>
+</section>
+<section id="appendix-quick-reference">
+<h2>Appendix: Quick Reference<a class="headerlink" href="#appendix-quick-reference" title="Link to this heading">¶</a></h2>
+<section id="operators">
+<h3>Operators<a class="headerlink" href="#operators" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">-&gt;</span></code> : Sequential execution</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">||</span></code> : Parallel execution</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">|-&gt;</span></code> : Result piping</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">*</span></code> : Retry mechanism</p></li>
+</ul>
+</section>
+<section id="descriptors">
+<h3>Descriptors<a class="headerlink" href="#descriptors" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">0</span></code> : Failure path</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">1</span></code> : Success path</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">3-9</span></code> : User-defined conditions</p></li>
+</ul>
+</section>
+<section id="common-patterns">
+<h3>Common Patterns<a class="headerlink" href="#common-patterns" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">A</span> <span class="pre">-&gt;</span> <span class="pre">B</span></code> : Basic sequence</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">A</span> <span class="pre">||</span> <span class="pre">B</span></code> : Parallel execution</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">A</span> <span class="pre">|-&gt;</span> <span class="pre">B</span></code> : Result piping</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">A</span> <span class="pre">-&gt;</span> <span class="pre">B</span> <span class="pre">(0</span> <span class="pre">-&gt;</span> <span class="pre">C,</span> <span class="pre">1</span> <span class="pre">-&gt;</span> <span class="pre">D)</span></code> : Conditional branching</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">A</span> <span class="pre">*</span> <span class="pre">3</span></code> : Retry logic</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">A</span> <span class="pre">||</span> <span class="pre">B</span> <span class="pre">|-&gt;</span> <span class="pre">C</span></code> : Parallel with combined results</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">A</span> <span class="pre">(0</span> <span class="pre">-&gt;</span> <span class="pre">B,</span> <span class="pre">1</span> <span class="pre">-&gt;</span> <span class="pre">C)</span> <span class="pre">-&gt;</span> <span class="pre">D</span></code> : Multiple branches with sink</p></li>
+</ul>
+</section>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Tutorials</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="events.html">Tutorials - Events</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Tutorials - Pointy-lang</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline.html">Tutorials - Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="batch.html">Tutorials - Batch Processing</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/pipeline.html">Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/events.html">Events</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/scheduling.html">Scheduling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/index.html">API Reference</a></li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+  <li><a href="index.html">Tutorials</a><ul>
+      <li>Previous: <a href="events.html" title="previous chapter">Tutorials - Events</a></li>
+      <li>Next: <a href="pipeline.html" title="next chapter">Tutorials - Pipeline</a></li>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/tutorials/pointy-lang.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

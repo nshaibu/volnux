@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>API Reference - Backend &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="API Reference - Signals" href="signals.html" />
+    <link rel="prev" title="API Reference - Results" href="result.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="api-reference-backend">
+<h1>API Reference - Backend<a class="headerlink" href="#api-reference-backend" title="Link to this heading">¶</a></h1>
+<p>The backend system provides a flexible storage and persistence layer with support for multiple storage backends.</p>
+<section id="core-components">
+<h2>Core Components<a class="headerlink" href="#core-components" title="Link to this heading">¶</a></h2>
+<section id="backendconnectorbase">
+<h3>BackendConnectorBase<a class="headerlink" href="#backendconnectorbase" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="BackendConnectorBase">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">BackendConnectorBase</span></span><a class="headerlink" href="#BackendConnectorBase" title="Link to this definition">¶</a></dt>
+<dd><p>Abstract base class for handling backend connections.</p>
+<p><strong>Attributes:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>host</strong> – Backend server host</p></li>
+<li><p><strong>port</strong> – Backend server port</p></li>
+<li><p><strong>username</strong> – Authentication username</p></li>
+<li><p><strong>password</strong> – Authentication password</p></li>
+<li><p><strong>db</strong> – Database name/number</p></li>
+</ul>
+</dd>
+</dl>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="BackendConnectorBase.connect">
+<span class="sig-name descname"><span class="pre">connect</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#BackendConnectorBase.connect" title="Link to this definition">¶</a></dt>
+<dd><p>Establish connection to the backend.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="BackendConnectorBase.disconnect">
+<span class="sig-name descname"><span class="pre">disconnect</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#BackendConnectorBase.disconnect" title="Link to this definition">¶</a></dt>
+<dd><p>Close the backend connection.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="BackendConnectorBase.is_connected">
+<span class="sig-name descname"><span class="pre">is_connected</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">bool</span></span></span><a class="headerlink" href="#BackendConnectorBase.is_connected" title="Link to this definition">¶</a></dt>
+<dd><p>Check if currently connected to the backend.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+</section>
+<section id="key-value-store">
+<h2>Key-Value Store<a class="headerlink" href="#key-value-store" title="Link to this heading">¶</a></h2>
+<section id="keyvaluestorebackendbase">
+<h3>KeyValueStoreBackendBase<a class="headerlink" href="#keyvaluestorebackendbase" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="KeyValueStoreBackendBase">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">KeyValueStoreBackendBase</span></span><a class="headerlink" href="#KeyValueStoreBackendBase" title="Link to this definition">¶</a></dt>
+<dd><p>Abstract base class for key-value store implementations.</p>
+<p><strong>Attributes:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>connector_klass</strong> – The connector class to use for this store</p>
+</dd>
+</dl>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="KeyValueStoreBackendBase.exists">
+<span class="sig-name descname"><span class="pre">exists</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">schema_name</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">record_key</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">bool</span></span></span><a class="headerlink" href="#KeyValueStoreBackendBase.exists" title="Link to this definition">¶</a></dt>
+<dd><p>Check if a record exists.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="KeyValueStoreBackendBase.count">
+<span class="sig-name descname"><span class="pre">count</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">schema_name</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">int</span></span></span><a class="headerlink" href="#KeyValueStoreBackendBase.count" title="Link to this definition">¶</a></dt>
+<dd><p>Get the number of records in a schema.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="KeyValueStoreBackendBase.insert_record">
+<span class="sig-name descname"><span class="pre">insert_record</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">schema_name</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">record_key</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">record</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="mixins.html#BackendIntegrationMixin" title="BackendIntegrationMixin"><span class="pre">BackendIntegrationMixin</span></a></span></em><span class="sig-paren">)</span><a class="headerlink" href="#KeyValueStoreBackendBase.insert_record" title="Link to this definition">¶</a></dt>
+<dd><p>Insert a new record.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="KeyValueStoreBackendBase.update_record">
+<span class="sig-name descname"><span class="pre">update_record</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">schema_name</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">record_key</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">record</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="mixins.html#BackendIntegrationMixin" title="BackendIntegrationMixin"><span class="pre">BackendIntegrationMixin</span></a></span></em><span class="sig-paren">)</span><a class="headerlink" href="#KeyValueStoreBackendBase.update_record" title="Link to this definition">¶</a></dt>
+<dd><p>Update an existing record.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="KeyValueStoreBackendBase.delete_record">
+<span class="sig-name descname"><span class="pre">delete_record</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">schema_name</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">record_key</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#KeyValueStoreBackendBase.delete_record" title="Link to this definition">¶</a></dt>
+<dd><p>Delete a record.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="KeyValueStoreBackendBase.get_record">
+<span class="sig-name descname"><span class="pre">get_record</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">schema_name</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">klass</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Type</span><span class="p"><span class="pre">[</span></span><a class="reference internal" href="mixins.html#BackendIntegrationMixin" title="BackendIntegrationMixin"><span class="pre">BackendIntegrationMixin</span></a><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="n"><span class="pre">record_key</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">int</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#KeyValueStoreBackendBase.get_record" title="Link to this definition">¶</a></dt>
+<dd><p>Retrieve a specific record.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="KeyValueStoreBackendBase.reload_record">
+<span class="sig-name descname"><span class="pre">reload_record</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">schema_name</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">record</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="mixins.html#BackendIntegrationMixin" title="BackendIntegrationMixin"><span class="pre">BackendIntegrationMixin</span></a></span></em><span class="sig-paren">)</span><a class="headerlink" href="#KeyValueStoreBackendBase.reload_record" title="Link to this definition">¶</a></dt>
+<dd><p>Reload a record’s data from storage.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="KeyValueStoreBackendBase.filter_record">
+<span class="sig-name descname"><span class="pre">filter_record</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">schema_name</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">record_klass</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Type</span><span class="p"><span class="pre">[</span></span><a class="reference internal" href="mixins.html#BackendIntegrationMixin" title="BackendIntegrationMixin"><span class="pre">BackendIntegrationMixin</span></a><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">filter_kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#KeyValueStoreBackendBase.filter_record" title="Link to this definition">¶</a></dt>
+<dd><p>Filter records based on criteria.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+</section>
+<section id="backend-implementations">
+<h2>Backend Implementations<a class="headerlink" href="#backend-implementations" title="Link to this heading">¶</a></h2>
+<section id="inmemorykeyvaluestorebackend">
+<h3>InMemoryKeyValueStoreBackend<a class="headerlink" href="#inmemorykeyvaluestorebackend" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="InMemoryKeyValueStoreBackend">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">InMemoryKeyValueStoreBackend</span></span><a class="headerlink" href="#InMemoryKeyValueStoreBackend" title="Link to this definition">¶</a></dt>
+<dd><p>In-memory implementation of key-value store.</p>
+<p>Uses a simple dictionary-based storage for testing and development.</p>
+</dd></dl>
+
+</section>
+<section id="redisstorebackend">
+<h3>RedisStoreBackend<a class="headerlink" href="#redisstorebackend" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="RedisStoreBackend">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">RedisStoreBackend</span></span><a class="headerlink" href="#RedisStoreBackend" title="Link to this definition">¶</a></dt>
+<dd><p>Redis-based implementation of key-value store.</p>
+<p>Uses Redis hash sets for schema-based record storage with support for atomic operations.</p>
+</dd></dl>
+
+</section>
+<section id="hdfsstorebackend">
+<h3>HDFSStoreBackend<a class="headerlink" href="#hdfsstorebackend" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="HDFSStoreBackend">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">HDFSStoreBackend</span></span><a class="headerlink" href="#HDFSStoreBackend" title="Link to this definition">¶</a></dt>
+<dd><p>HDFS implementation of key-value store.</p>
+<p>Stores records as JSON files in HDFS with schema-based directory organization.</p>
+<p><strong>Additional Configuration:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>base_path</strong> – Base HDFS path for storage (default: “/nexus”)</p>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+</section>
+<section id="connectors">
+<h2>Connectors<a class="headerlink" href="#connectors" title="Link to this heading">¶</a></h2>
+<section id="redisconnector">
+<h3>RedisConnector<a class="headerlink" href="#redisconnector" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="RedisConnector">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">RedisConnector</span></span><a class="headerlink" href="#RedisConnector" title="Link to this definition">¶</a></dt>
+<dd><p>Redis connection handler.</p>
+<p><strong>Parameters:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>host</strong> – Redis server host</p></li>
+<li><p><strong>port</strong> – Redis server port</p></li>
+<li><p><strong>db</strong> – Redis database number</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+<section id="hdfsconnector">
+<h3>HDFSConnector<a class="headerlink" href="#hdfsconnector" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="HDFSConnector">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">HDFSConnector</span></span><a class="headerlink" href="#HDFSConnector" title="Link to this definition">¶</a></dt>
+<dd><p>HDFS connection handler.</p>
+<p><strong>Parameters:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>host</strong> – HDFS namenode host</p></li>
+<li><p><strong>port</strong> – HDFS namenode port</p></li>
+<li><p><strong>username</strong> – HDFS username</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+</section>
+<section id="connection-management">
+<h2>Connection Management<a class="headerlink" href="#connection-management" title="Link to this heading">¶</a></h2>
+<section id="connectionmode">
+<h3>ConnectionMode<a class="headerlink" href="#connectionmode" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="ConnectionMode">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ConnectionMode</span></span><a class="headerlink" href="#ConnectionMode" title="Link to this definition">¶</a></dt>
+<dd><p>Enumeration of connection management modes.</p>
+<p><strong>Values:</strong></p>
+<ul class="simple">
+<li><p>SINGLE: Single shared connection</p></li>
+<li><p>POOLED: Connection pooling</p></li>
+</ul>
+</dd></dl>
+
+</section>
+<section id="connectormanagerfactory">
+<h3>ConnectorManagerFactory<a class="headerlink" href="#connectormanagerfactory" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="ConnectorManagerFactory">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ConnectorManagerFactory</span></span><a class="headerlink" href="#ConnectorManagerFactory" title="Link to this definition">¶</a></dt>
+<dd><p>Factory for creating appropriate connector managers.</p>
+<p><strong>Methods:</strong></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="ConnectorManagerFactory.create_manager">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">create_manager</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">connector_class</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">connector_config</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">dict</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">connection_mode</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#ConnectionMode" title="ConnectionMode"><span class="pre">ConnectionMode</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#ConnectorManagerFactory.create_manager" title="Link to this definition">¶</a></dt>
+<dd><p>Create a connector manager based on backend type and configuration.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="singleconnectormanager">
+<h3>SingleConnectorManager<a class="headerlink" href="#singleconnectormanager" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="SingleConnectorManager">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">SingleConnectorManager</span></span><a class="headerlink" href="#SingleConnectorManager" title="Link to this definition">¶</a></dt>
+<dd><p>Manages a single shared connection to a backend store.</p>
+</dd></dl>
+
+</section>
+<section id="pooledconnectormanager">
+<h3>PooledConnectorManager<a class="headerlink" href="#pooledconnectormanager" title="Link to this heading">¶</a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="PooledConnectorManager">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">PooledConnectorManager</span></span><a class="headerlink" href="#PooledConnectorManager" title="Link to this definition">¶</a></dt>
+<dd><p>Manages a pool of connections to a backend store.</p>
+<p><strong>Parameters:</strong></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>max_connections</strong> – Maximum number of connections in pool</p></li>
+<li><p><strong>connection_timeout</strong> – Timeout for connection acquisition</p></li>
+<li><p><strong>idle_timeout</strong> – Maximum idle time before connection cleanup</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/pipeline.html">Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/events.html">Events</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/scheduling.html">Scheduling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/contributing.html">Contributing</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">API Reference</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="events.html">API Reference - Events</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline.html">API Reference - Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fields.html">API Reference - Fields and Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scheduling.html">API Reference - Scheduling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html">API Reference - Metrics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="executors.html">API Reference - Executors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="managers.html">API Reference - Managers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="telemetry.html">API Reference - Telemetry</a></li>
+<li class="toctree-l2"><a class="reference internal" href="result.html">API Reference - Results</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">API Reference - Backend</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signals.html">API Reference - Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="mixins.html">API Reference - Mixins</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parser.html">API Reference - Parser</a></li>
+<li class="toctree-l2"><a class="reference internal" href="index.html#core-components">Core Components</a></li>
+</ul>
+</li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+  <li><a href="index.html">API Reference</a><ul>
+      <li>Previous: <a href="result.html" title="previous chapter">API Reference - Results</a></li>
+      <li>Next: <a href="signals.html" title="next chapter">API Reference - Signals</a></li>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/api/backend.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>API Reference &#8212; Nexus 2.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../_static/alabaster.css?v=12dfc556" />
+    <script src="../_static/documentation_options.js?v=51b770b3"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="API Reference - Events" href="events.html" />
+    <link rel="prev" title="Contributing" href="../usage/contributing.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="api-reference">
+<h1>API Reference<a class="headerlink" href="#api-reference" title="Link to this heading">¶</a></h1>
+<p>This section provides detailed API documentation for the Event Pipeline framework.</p>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Core Components:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="events.html">API Reference - Events</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="events.html#core-event-classes">Core Event Classes</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="pipeline.html">API Reference - Pipeline</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="pipeline.html#core-pipeline-classes">Core Pipeline Classes</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="fields.html">API Reference - Fields and Signals</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="fields.html#field-classes">Field Classes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fields.html#signal-classes">Signal Classes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fields.html#built-in-signals">Built-in Signals</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="scheduling.html">API Reference - Scheduling</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="scheduling.html#scheduling-components">Scheduling Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scheduling.html#utility-functions">Utility Functions</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="metrics.html">API Reference - Metrics</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html#core-metric-classes">Core Metric Classes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html#publisher-classes">Publisher Classes</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="executors.html">API Reference - Executors</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="executors.html#core-executor-classes">Core Executor Classes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="executors.html#remote-executors">Remote Executors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="executors.html#distributed-executors">Distributed Executors</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="managers.html">API Reference - Managers</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="managers.html#base-manager">Base Manager</a></li>
+<li class="toctree-l2"><a class="reference internal" href="managers.html#remote-managers">Remote Managers</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="telemetry.html">API Reference - Telemetry</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="telemetry.html#core-components">Core Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="telemetry.html#telemetry-collection">Telemetry Collection</a></li>
+<li class="toctree-l2"><a class="reference internal" href="telemetry.html#metrics-publishing">Metrics Publishing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="telemetry.html#utility-functions">Utility Functions</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="result.html">API Reference - Results</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="result.html#event-results">Event Results</a></li>
+<li class="toctree-l2"><a class="reference internal" href="result.html#result-collections">Result Collections</a></li>
+<li class="toctree-l2"><a class="reference internal" href="result.html#entity-types">Entity Types</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="backend.html">API Reference - Backend</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="backend.html#core-components">Core Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html#key-value-store">Key-Value Store</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html#backend-implementations">Backend Implementations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html#connectors">Connectors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html#connection-management">Connection Management</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="signals.html">API Reference - Signals</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="signals.html#signal-system">Signal System</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signals.html#built-in-signals">Built-in Signals</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="mixins.html">API Reference - Mixins</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="mixins.html#identity-mixin">Identity Mixin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="mixins.html#backend-integration">Backend Integration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="mixins.html#scheduling">Scheduling</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="parser.html">API Reference - Parser</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="parser.html#lexer">Lexer</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parser.html#grammar-parser">Grammar Parser</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parser.html#ast-components">AST Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parser.html#example-usage">Example Usage</a></li>
+</ul>
+</li>
+</ul>
+</div>
+<section id="core-components">
+<h2>Core Components<a class="headerlink" href="#core-components" title="Link to this heading">¶</a></h2>
+<p>The Event Pipeline framework consists of several core components:</p>
+<section id="events-pipeline">
+<h3>Events &amp; Pipeline<a class="headerlink" href="#events-pipeline" title="Link to this heading">¶</a></h3>
+<p>Core execution components that define event behavior and pipeline structure:</p>
+<ul class="simple">
+<li><p>Event system (<a class="reference internal" href="events.html"><span class="doc">API Reference - Events</span></a>)</p></li>
+<li><p>Pipeline execution (<a class="reference internal" href="pipeline.html"><span class="doc">API Reference - Pipeline</span></a>)</p></li>
+<li><p>Event results (<a class="reference internal" href="result.html"><span class="doc">API Reference - Results</span></a>)</p></li>
+</ul>
+</section>
+<section id="data-signals">
+<h3>Data &amp; Signals<a class="headerlink" href="#data-signals" title="Link to this heading">¶</a></h3>
+<p>Data handling and communication components:</p>
+<ul class="simple">
+<li><p>Data fields (<a class="reference internal" href="fields.html"><span class="doc">API Reference - Fields and Signals</span></a>)</p></li>
+<li><p>Signaling system (<a class="reference internal" href="signals.html"><span class="doc">API Reference - Signals</span></a>)</p></li>
+<li><p>Pipeline parsers (<a class="reference internal" href="parser.html"><span class="doc">API Reference - Parser</span></a>)</p></li>
+</ul>
+</section>
+<section id="infrastructure">
+<h3>Infrastructure<a class="headerlink" href="#infrastructure" title="Link to this heading">¶</a></h3>
+<p>Backend and execution infrastructure:</p>
+<ul class="simple">
+<li><p>Backend storage (<a class="reference internal" href="backend.html"><span class="doc">API Reference - Backend</span></a>)</p></li>
+<li><p>Execution management (<a class="reference internal" href="executors.html"><span class="doc">API Reference - Executors</span></a>)</p></li>
+<li><p>Task managers (<a class="reference internal" href="managers.html"><span class="doc">API Reference - Managers</span></a>)</p></li>
+<li><p>Reusable mixins (<a class="reference internal" href="mixins.html"><span class="doc">API Reference - Mixins</span></a>)</p></li>
+</ul>
+</section>
+<section id="monitoring-management">
+<h3>Monitoring &amp; Management<a class="headerlink" href="#monitoring-management" title="Link to this heading">¶</a></h3>
+<p>Operational management components:</p>
+<ul class="simple">
+<li><p>Scheduling (<a class="reference internal" href="scheduling.html"><span class="doc">API Reference - Scheduling</span></a>)</p></li>
+<li><p>Metrics collection (<a class="reference internal" href="metrics.html"><span class="doc">API Reference - Metrics</span></a>)</p></li>
+<li><p>Telemetry (<a class="reference internal" href="telemetry.html"><span class="doc">API Reference - Telemetry</span></a>)</p></li>
+</ul>
+</section>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../index.html">Nexus</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/pipeline.html">Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/events.html">Events</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/scheduling.html">Scheduling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/signals.html">Signals</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/telemetry.html">Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../usage/contributing.html">Contributing</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">API Reference</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="events.html">API Reference - Events</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline.html">API Reference - Pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fields.html">API Reference - Fields and Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scheduling.html">API Reference - Scheduling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html">API Reference - Metrics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="executors.html">API Reference - Executors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="managers.html">API Reference - Managers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="telemetry.html">API Reference - Telemetry</a></li>
+<li class="toctree-l2"><a class="reference internal" href="result.html">API Reference - Results</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html">API Reference - Backend</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signals.html">API Reference - Signals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="mixins.html">API Reference - Mixins</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parser.html">API Reference - Parser</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#core-components">Core Components</a></li>
+</ul>
+</li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+      <li>Previous: <a href="../usage/contributing.html" title="previous chapter">Contributing</a></li>
+      <li>Next: <a href="events.html" title="next chapter">API Reference - Events</a></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Nexus.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.4.7</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="../_sources/api/index.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>
