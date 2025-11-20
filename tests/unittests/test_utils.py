@@ -1,14 +1,12 @@
 import inspect
 from unittest import mock
-from volnux.utils import (
-    generate_unique_id,
-    get_function_call_args,
-    build_event_arguments_from_pipeline,
-    _extend_recursion_depth,
-    get_expected_args,
-    get_obj_state,
-    get_obj_klass_import_str,
-)
+
+from volnux.parser.options import StopCondition
+from volnux.utils import (_extend_recursion_depth,
+                          build_event_arguments_from_pipeline,
+                          generate_unique_id, get_expected_args,
+                          get_function_call_args, get_obj_klass_import_str,
+                          get_obj_state)
 
 
 def test_generate_unique_id():
@@ -83,10 +81,9 @@ def test_build_event_arguments_from_pipeline():
             "execution_context": None,
             "task_id": None,
             "previous_result": None,
-            "stop_on_exception": False,
-            "stop_on_success": False,
-            "stop_on_error": False,
+            "stop_condition": StopCondition.NEVER,
             "run_bypass_event_checks": False,
+            "options": None,
         },
         {"name": "nafiu", "school": "knust"},
     )

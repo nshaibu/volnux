@@ -1,4 +1,5 @@
 import psycopg
+
 from volnux.backends.connection import BackendConnectorBase
 
 
@@ -31,7 +32,7 @@ class PostgresConnector(BackendConnectorBase):
                 raise ConnectionError(f"Error connecting to PostgreSQL: {str(e)}")
         return self._cursor
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         if self._cursor:
             self._cursor.close()
         self._cursor = None
@@ -39,7 +40,7 @@ class PostgresConnector(BackendConnectorBase):
     def is_connected(self) -> bool:
         try:
             if self._connection is not None:
-                self._cursor.execute("SELECT 1")
+                self._cursor.execute("SELECT 1")  # type: ignore
                 return True
             return False
         except (psycopg.Error, AttributeError):

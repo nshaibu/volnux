@@ -1,21 +1,20 @@
-import typing
-import pickle
 import logging
+import pickle
+import typing
 from functools import partial
-from volnux.exceptions import ObjectExistError
-from volnux.import_utils import import_string
-from volnux.conf import ConfigLoader
-from volnux.exceptions import StopProcessingError
-from volnux.mixins.identity import ObjectIdentityMixin
+
 from volnux.backends.store import KeyValueStoreBackendBase
-from volnux.utils import get_obj_klass_import_str
+from volnux.conf import ConfigLoader
+from volnux.exceptions import ObjectExistError, StopProcessingError
+from volnux.import_utils import import_string
+from volnux.mixins.identity import ObjectIdentityMixin
 from volnux.mixins.utils.connector import (
-    ConnectorManagerFactory,
-    ConnectionMode,
     BaseConnectorManager,
+    ConnectionMode,
+    ConnectorManagerFactory,
     connector_action_register,
 )
-
+from volnux.utils import get_obj_klass_import_str
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +69,12 @@ class BackendIntegrationMixin(ObjectIdentityMixin):
 
         self.save()
 
-    def with_connection(self, method, *args, **kwargs):
+    def with_connection(
+        self,
+        method: typing.Callable,
+        *args: typing.Tuple[typing.Any],
+        **kwargs: typing.Dict[str, typing.Any],
+    ) -> typing.Any:
         """
         Execute a function with a connection from the manager.
         Args:
@@ -101,7 +105,7 @@ class BackendIntegrationMixin(ObjectIdentityMixin):
         """
         return self._connector_manager.get_connection()
 
-    def release_connection(self, connection):
+    def release_connection(self, connection) -> None:
         """
         Release a connection back to the manager.
         Args:
@@ -109,7 +113,7 @@ class BackendIntegrationMixin(ObjectIdentityMixin):
         """
         self._connector_manager.release_connection(connection)
 
-    def __getstate__(self):
+    def __getstate__(self) -> typing.Dict[str, typing.Any]:
         """
         Prepare object for pickling by removing the lock.
         """
@@ -128,7 +132,7 @@ class BackendIntegrationMixin(ObjectIdentityMixin):
             )
         return state
 
-    def __setstate__(self, state):
+    def __setstate__(self, state: typing.Dict[str, typing.Any]) -> None:
         """
         Restore object state after unpickling and recreate the lock.
         """
@@ -149,7 +153,7 @@ class BackendIntegrationMixin(ObjectIdentityMixin):
         return self.__class__.__name__
 
     @connector_action_register
-    def save(self, connector: KeyValueStoreBackendBase):
+    def save(self, connector: KeyValueStoreBackendBase) -> None:
         try:
             connector.insert_record(
                 schema_name=self.get_schema_name(), record_key=self.id, record=self
@@ -160,15 +164,15 @@ class BackendIntegrationMixin(ObjectIdentityMixin):
             )
 
     @connector_action_register
-    def reload(self, connector: KeyValueStoreBackendBase):
+    def reload(self, connector: KeyValueStoreBackendBase) -> None:
         connector.reload_record(self.get_schema_name(), self)
 
     @connector_action_register
-    def delete(self, connector: KeyValueStoreBackendBase):
+    def delete(self, connector: KeyValueStoreBackendBase) -> None:
         connector.delete_record(schema_name=self.get_schema_name(), record_key=self.id)
 
     @connector_action_register
-    def update(self, connector: KeyValueStoreBackendBase):
+    def update(self, connector: KeyValueStoreBackendBase) -> None:
         connector.update_record(
             schema_name=self.get_schema_name(), record_key=self.id, record=self
         )

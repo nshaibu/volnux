@@ -32,6 +32,9 @@ class EventMetrics(ObjectIdentityMixin):
     process_id: typing.Optional[int] = None
     pipeline_id: typing.Optional[str] = None
 
+    def __hash__(self) -> int:
+        return hash(self.id)
+
     def duration(self) -> float:
         """Calculate execution duration in seconds"""
         if not self.end_time:

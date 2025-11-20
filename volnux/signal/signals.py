@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import threading
 import typing
@@ -131,6 +132,20 @@ class SoftSignal(ObjectIdentityMixin):
 
         return responses
 
+    async def emit_async(
+        self, sender: typing.Any, **kwargs
+    ) -> typing.List[typing.Tuple[typing.Any, typing.Any]]:
+        """
+        Asynchronously emit a signal to all connected listeners for a given sender.
+
+        Args:
+            sender: The object sending the signal.
+            **kwargs: Additional keyword arguments to pass to listeners.
+        Return:
+            A list of tuples containing (listener, response).
+        """
+        return await asyncio.to_thread(self.emit, sender, **kwargs)
+
     def clean(self, sender: typing.Any) -> None:
         """
         Clean up all listeners associated with the sender.
@@ -231,6 +246,10 @@ pipeline_execution_end = SoftSignal(
 
 
 event_init = SoftSignal("event_init", provide_args=["event", "init_kwargs"])
+event_called = SoftSignal(
+    "event_called",
+    provide_args=["event", "init_kwargs", "call_kwargs", "hook_type", "result"],
+)
 
 event_execution_init = SoftSignal(
     "event_execution_init",
@@ -265,6 +284,12 @@ event_execution_aborted = SoftSignal(
     "event_execution_aborted",
     provide_args=["task_profiles", "execution_context", "state"],
 )
+event_execution_failed = SoftSignal(
+    "event_execution_failed",
+    provide_args=["task_profiles", "execution_context", "state"],
+)
+
+# Batch Pipeline signals
 batch_pipeline_started = SoftSignal(
     name="batch_pipeline_started",
     provide_args=["batch", "total_pipelines", "timestamp"],

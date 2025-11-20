@@ -1,20 +1,15 @@
-from unittest import TestCase
 import time
-from volnux.result import ResultSet, EventResult
-from volnux.constants import EMPTY
-from volnux.exceptions import StopProcessingError, SwitchTask
+from unittest import TestCase
 from unittest.mock import Mock, patch
-from volnux.base import _RetryMixin, RetryPolicy
-from volnux.exceptions import MaxRetryError
-from volnux.constants import MAX_BACKOFF, MAX_BACKOFF_FACTOR
 
-from volnux.base import (
-    EventBase,
-    RetryPolicy,
-    ExecutorInitializerConfig,
-    EventExecutionEvaluationState,
-    EvaluationContext,
-)
+import pytest
+
+from volnux.base import (EventBase, ExecutorInitializerConfig, RetryPolicy,
+                         _RetryMixin)
+from volnux.constants import EMPTY, MAX_BACKOFF, MAX_BACKOFF_FACTOR
+from volnux.exceptions import MaxRetryError, StopProcessingError, SwitchTask
+from volnux.result import EventResult, ResultSet
+from volnux.typing import ConfigState
 
 
 class TestRetryPolicy(TestCase):
@@ -51,80 +46,9 @@ class TestExecutorInitializerConfig(TestCase):
 
     def test_executor_config_defaults(self):
         config = ExecutorInitializerConfig()
-        self.assertIs(config.max_workers, EMPTY)
-        self.assertIs(config.max_tasks_per_child, EMPTY)
-        self.assertIs(config.thread_name_prefix, EMPTY)
-
-
-class TestEventExecutionEvaluationState(TestCase):
-    def setUp(self):
-        self.success_result = EventResult(
-            error=False, task_id="1", event_name="test", content={}
-        )
-        self.error_result = EventResult(
-            error=True, task_id="2", event_name="test", content={}
-        )
-
-    def test_success_on_all_events_success(self):
-        state = EventExecutionEvaluationState.SUCCESS_ON_ALL_EVENTS_SUCCESS
-        results = ResultSet([self.success_result])
-        self.assertTrue(state._evaluate(results, []))
-
-        # Should fail if any errors
-        self.assertFalse(state._evaluate(results, [Exception()]))
-
-    def test_failure_for_partial_error(self):
-        state = EventExecutionEvaluationState.FAILURE_FOR_PARTIAL_ERROR
-        results = ResultSet([self.success_result])
-
-        # Should succeed with no errors
-        self.assertFalse(state._evaluate(results, []))
-
-        # Should fail with any error
-        self.assertTrue(state._evaluate(results, [Exception()]))
-
-    def test_success_for_partial_success(self):
-        state = EventExecutionEvaluationState.SUCCESS_FOR_PARTIAL_SUCCESS
-        results = ResultSet([self.success_result])
-
-        # Should succeed with at least one success
-        self.assertTrue(state._evaluate(results, [Exception()]))
-
-        # Should fail with no successes
-        self.assertFalse(state._evaluate(ResultSet([]), [Exception()]))
-
-    def test_failure_for_all_events_failure(self):
-        state = EventExecutionEvaluationState.FAILURE_FOR_ALL_EVENTS_FAILURE
-
-        # Should succeed with any success
-        self.assertFalse(
-            state._evaluate(ResultSet([self.success_result]), [Exception()])
-        )
-
-        # Should fail only if all fail
-        self.assertTrue(state._evaluate(ResultSet([]), [Exception()]))
-
-    def test_context_evaluation(self):
-        state = EventExecutionEvaluationState.SUCCESS_ON_ALL_EVENTS_SUCCESS
-        results = ResultSet([self.success_result])
-
-        # Test success context
-        self.assertTrue(
-            state.context_evaluation(results, [], context=EvaluationContext.SUCCESS)
-        )
-
-        # Test failure context
-        self.assertTrue(
-            state.context_evaluation(
-                results, [Exception()], context=EvaluationContext.FAILURE
-            )
-        )
-
-        self.assertFalse(
-            state.context_evaluation(
-                results, [Exception()], context=EvaluationContext.SUCCESS
-            )
-        )
+        self.assertIs(config.max_workers, ConfigState.UNSET)
+        self.assertIs(config.max_tasks_per_child, ConfigState.UNSET)
+        self.assertIs(config.thread_name_prefix, ConfigState.UNSET)
 
 
 class TestRetryMixin(TestCase):
@@ -257,7 +181,7 @@ class TestGotoMethod(TestCase):
         with self.assertRaises(SwitchTask) as context:
             self.event.goto(
                 descriptor=1,
-                result_status=True,
+                result_success=True,
                 result={"key": "value"},
                 reason="manual",
                 execute_on_event_method=True,
@@ -287,7 +211,7 @@ class TestGotoMethod(TestCase):
         with self.assertRaises(SwitchTask) as context:
             self.event.goto(
                 descriptor=2,
-                result_status=False,
+                result_success=False,
                 result={"error": "failure"},
                 reason="manual",
                 execute_on_event_method=True,
@@ -306,7 +230,7 @@ class TestGotoMethod(TestCase):
         with self.assertRaises(SwitchTask) as context:
             self.event.goto(
                 descriptor=3,
-                result_status=True,
+                result_success=True,
                 result={"key": "value"},
                 reason="manual",
                 execute_on_event_method=False,
@@ -331,7 +255,7 @@ class TestGotoMethod(TestCase):
         with self.assertRaises(ValueError):
             self.event.goto(
                 descriptor="invalid",
-                result_status=True,
+                result_success=True,
                 result={"key": "value"},
                 reason="manual",
                 execute_on_event_method=True,

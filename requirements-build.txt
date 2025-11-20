@@ -4,3 +4,4 @@ Sphinx==8.2.1
 grpcio>=1.60.0
 grpcio-tools<=1.70.0   # >=1.60.0
 cloudpickle>=3.0.0
+pre-commit

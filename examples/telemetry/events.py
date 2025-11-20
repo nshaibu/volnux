@@ -1,6 +1,6 @@
-from nexus import EventBase, RetryPolicy
-from nexus.executors.remote_executor import RemoteExecutor
-from nexus.telemetry import monitor_events, get_metrics, get_slow_events
+from volnux import EventBase, RetryPolicy
+from volnux.executors.remote_executor import RemoteExecutor
+from volnux.telemetry import monitor_events, get_metrics, get_slow_events
 
 
 class DataProcessingEvent(EventBase):

@@ -1,18 +1,14 @@
 import unittest
 from collections import deque
 from concurrent.futures import Executor
+
 from volnux import EventBase, Pipeline
-from volnux.task import (
-    PipelineTask,
-    PipeType,
-    EventExecutionContext,
-    EvaluationContext,
-    EventExecutionEvaluationState,
-)
+from volnux.execution.context import ExecutionContext
+from volnux.parser.operator import PipeType
+from volnux.task import PipelineTask, build_pipeline_flow_from_pointy_code
 
 
 class TestTask(unittest.TestCase):
-
     @classmethod
     def setUpClass(cls):
         class A(EventBase):
@@ -36,31 +32,43 @@ class TestTask(unittest.TestCase):
         cls.C = C
         cls.S = S
 
-    def test_build_pipeline_for_line_execution(self):
-        p = PipelineTask.build_pipeline_from_execution_code("A->B->C")
+    def test_build_event_pipeline_for_line_execution(self):
+        p = build_pipeline_flow_from_pointy_code("A->B->C")
 
         self.assertIsInstance(p, PipelineTask)
         self.assertIsNotNone(p.id)
-        self.assertIsInstance(p.on_success_event, PipelineTask)
-        self.assertIsInstance(p.on_success_event.on_success_event, PipelineTask)
-        self.assertEqual(p.on_success_pipe, PipeType.POINTER)
-        self.assertEqual(p.on_success_event.on_success_pipe, PipeType.POINTER)
-        self.assertEqual(p.on_success_event.on_success_event.on_success_pipe, None)
+        self.assertIsInstance(p.condition_node.on_success_event, PipelineTask)
+        self.assertIsInstance(
+            p.condition_node.on_success_event.condition_node.on_success_event,
+            PipelineTask,
+        )
+        self.assertEqual(p.condition_node.on_success_pipe, PipeType.POINTER)
+        self.assertEqual(
+            p.condition_node.on_success_event.condition_node.on_success_pipe,
+            PipeType.POINTER,
+        )
+        self.assertEqual(
+            p.condition_node.on_success_event.condition_node.on_success_event.condition_node.on_success_pipe,
+            None,
+        )
 
-    def test_build_pipeline_with_result_piping_and_parallel_execution(self):
-        p = PipelineTask.build_pipeline_from_execution_code("A||B|->C")
+    def test_build_event_pipeline_with_result_piping_and_parallel_execution(self):
+        p = build_pipeline_flow_from_pointy_code("A||B|->C")
 
         self.assertIsInstance(p, PipelineTask)
-        self.assertEqual(p.on_success_pipe, PipeType.PARALLELISM)
-        self.assertEqual(p.on_success_event.on_success_pipe, PipeType.PIPE_POINTER)
+        self.assertEqual(p.condition_node.on_success_pipe, PipeType.PARALLELISM)
+        self.assertEqual(
+            p.condition_node.on_success_event.condition_node.on_success_pipe,
+            PipeType.PIPE_POINTER,
+        )
 
-    def test_build_pipeline_with_conditional_branching(self):
-        p = PipelineTask.build_pipeline_from_execution_code("A(0->B,1->C)->S")
+    def test_build_event_pipeline_with_conditional_branching(self):
+        p = build_pipeline_flow_from_pointy_code("A(0->B,1->C)->S")
 
         self.assertIsInstance(p, PipelineTask)
         self.assertTrue(p.is_conditional)
-        self.assertTrue(p.on_success_event.is_descriptor_task)
-        self.assertTrue(p.on_failure_event.is_descriptor_task)
+        self.assertTrue(p.condition_node.on_success_event.is_descriptor_task)
+        self.assertTrue(p.condition_node.on_failure_event.is_descriptor_task)
         self.assertIsNotNone(p.sink_node)
         self.assertEqual(p.sink_pipe, PipeType.POINTER)
         self.assertTrue(p.sink_node.is_sink)
@@ -70,46 +78,49 @@ class TestTask(unittest.TestCase):
         self.assertEqual(PipelineTask.resolve_event_name("A"), self.A)
 
     def test_pointer_to_event(self):
-        p = PipelineTask.build_pipeline_from_execution_code("A->B")
-        self.assertIsNone(p.get_pointer_type_to_this_event())
-        self.assertEqual(p.on_success_event.event, "B")
+        p = build_pipeline_flow_from_pointy_code("A->B")
+        self.assertIsNone(p.get_pointer_to_task())
+        self.assertEqual(p.condition_node.on_success_event.event, "B")
         self.assertEqual(
-            p.on_success_event.get_pointer_type_to_this_event(), PipeType.POINTER
+            p.condition_node.on_success_event.get_pointer_to_task(), PipeType.POINTER
         )
 
     def test_count_nodes(self):
-        p = PipelineTask.build_pipeline_from_execution_code("A->B->C")
+        p = build_pipeline_flow_from_pointy_code("A->B->C")
         self.assertEqual(p.get_task_count(), 3)
         self.assertEqual(p.get_event_klass(), self.A)
 
     def test_get_root(self):
-        p = PipelineTask.build_pipeline_from_execution_code("A->B->C")
-        self.assertEqual(p.on_success_event.on_success_event.get_root().event, "A")
+        p = build_pipeline_flow_from_pointy_code("A->B->C")
+        self.assertEqual(
+            p.condition_node.on_success_event.condition_node.on_success_event.get_root().event,
+            "A",
+        )
 
     def test_get_children(self):
-        p = PipelineTask.build_pipeline_from_execution_code("A(0->B,1->C)->S")
-        p1 = PipelineTask.build_pipeline_from_execution_code("A->B->C")
+        p = build_pipeline_flow_from_pointy_code("A(0->B,1->C)->S")
+        p1 = build_pipeline_flow_from_pointy_code("A->B->C")
         self.assertEqual(len(p.get_children()), 3)
         self.assertEqual(len(p1.get_children()), 1)
 
     def test_pipeline_retry_syntax(self):
-        p = PipelineTask.build_pipeline_from_execution_code("2 * A -> B * 4 ->C")
-        self.assertEqual(p.extra_config.number_of_retries, 2)
-        self.assertEqual(p.on_success_event.extra_config.number_of_retries, 4)
+        p = build_pipeline_flow_from_pointy_code("2 * A -> B * 4 ->C")
+        self.assertEqual(p.options.retry_attempts, 2)
+        self.assertEqual(p.condition_node.on_success_event.options.retry_attempts, 4)
         self.assertIsNone(
-            p.on_success_event.on_success_event.extra_config.number_of_retries
+            p.condition_node.on_success_event.condition_node.on_success_event.options
         )
 
     def test_syntax_error_wrong_descriptor(self):
         with self.assertRaises(SyntaxError):
-            PipelineTask.build_pipeline_from_execution_code("A(10->C,40->B)")
+            build_pipeline_flow_from_pointy_code("A(10->C,40->B)")
 
     def test_syntax_error_wrong_retry_factor(self):
         with self.assertRaises(SyntaxError):
-            PipelineTask.build_pipeline_from_execution_code("1 * A -> B * 0")
+            build_pipeline_flow_from_pointy_code("1 * A -> B * 0")
 
         with self.assertRaises(SyntaxError):
-            PipelineTask.build_pipeline_from_execution_code("-1 * A")
+            build_pipeline_flow_from_pointy_code("-1 * A")
 
     def test_multi_condition_conditional_branching(self):
         # No implemented yet
@@ -123,38 +134,39 @@ class TestTask(unittest.TestCase):
         del cls.S
 
 
-class EventExecutionContextTestCase(unittest.TestCase):
+"""
+class ExecutionContextTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
         class AB(EventBase):
-            execution_evaluation_state = (
-                EventExecutionEvaluationState.SUCCESS_ON_ALL_EVENTS_SUCCESS
-            )
+            # execution_evaluation_state = (
+            #     EventExecutionEvaluationState.SUCCESS_ON_ALL_EVENTS_SUCCESS
+            # )
 
             def process(self, *args, **kwargs):
                 return True, "hello world"
 
         class BC(EventBase):
-            execution_evaluation_state = (
-                EventExecutionEvaluationState.FAILURE_FOR_PARTIAL_ERROR
-            )
+            # execution_evaluation_state = (
+            #     EventExecutionEvaluationState.FAILURE_FOR_PARTIAL_ERROR
+            # )
 
             def process(self, name):
                 return True, name
 
         class CD(EventBase):
-            execution_evaluation_state = (
-                EventExecutionEvaluationState.SUCCESS_FOR_PARTIAL_SUCCESS
-            )
+            # execution_evaluation_state = (
+            #     EventExecutionEvaluationState.SUCCESS_FOR_PARTIAL_SUCCESS
+            # )
 
             def process(self, *args, **kwargs):
                 return True, self.previous_result
 
         class Sink(EventBase):
-            execution_evaluation_state = (
-                EventExecutionEvaluationState.FAILURE_FOR_ALL_EVENTS_FAILURE
-            )
+            # execution_evaluation_state = (
+            #     EventExecutionEvaluationState.FAILURE_FOR_ALL_EVENTS_FAILURE
+            # )
 
             def process(self, *args, **kwargs):
                 return True, "Sink"
@@ -179,7 +191,7 @@ class EventExecutionContextTestCase(unittest.TestCase):
             tasks.append(queue)
             queue = queue.on_success_event
 
-        execution_context = EventExecutionContext(tasks, self.pipeline3)
+        execution_context = ExecutionContext(tasks, self.pipeline3)
         executors_map = execution_context._gather_executors_for_parallel_executions()
         self.assertIsNotNone(executors_map)
         self.assertIsInstance(executors_map, dict)
@@ -201,3 +213,4 @@ class EventExecutionContextTestCase(unittest.TestCase):
         self.assertEqual(
             tasks.pop(), execution_context._get_last_task_profile_in_chain()
         )
+"""

@@ -1,16 +1,20 @@
+import multiprocessing
 import shutil
 import unittest
+
 import pytest
 from treelib import Tree
-from volnux import EventBase
-from volnux import Pipeline
-from volnux.exceptions import EventDone, EventDoesNotExist
-from volnux.fields import InputDataField, FileInputDataField
-from volnux.constants import PIPELINE_STATE, PIPELINE_FIELDS
+
+from volnux import EventBase, Pipeline
+from volnux.constants import PIPELINE_FIELDS, PIPELINE_STATE
+from volnux.exceptions import EventDoesNotExist, EventDone
+from volnux.fields import FileInputDataField, InputDataField
+
+# fix deadlock in python3.11 for state management
+multiprocessing.set_start_method("spawn", force=True)
 
 
 class PipelineTest(unittest.TestCase):
-
     @classmethod
     def setUpClass(cls):
         class M(EventBase):
@@ -35,7 +39,7 @@ class PipelineTest(unittest.TestCase):
 
     def test_get_task_by_id(self):
         pipe = self.pipeline_klass(name="text")
-        state_b = pipe._state.start.on_success_event
+        state_b = pipe._state.start.condition_node.on_success_event
 
         self.assertIsNotNone(state_b)
 
@@ -183,7 +187,7 @@ class PipelineTest(unittest.TestCase):
         current_task = pipe._state.start
         while current_task:
             task_order.append(current_task.id)
-            current_task = current_task.on_success_event
+            current_task = current_task.condition_node.on_success_event
         self.assertTrue(len(task_order) > 0)
         self.assertEqual(len(task_order), len(set(task_order)))  # No duplicate tasks
 

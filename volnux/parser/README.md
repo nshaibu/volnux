@@ -224,7 +224,7 @@ As you become more familiar with Pointy Language, you'll find it increasingly na
 ### Descriptors
 - `0` : Failure path
 - `1` : Success path
-- `3-9` : User-defined conditions
+- `2-9` : User-defined conditions
 
 ### Common Patterns
 - `A -> B` : Basic sequence

@@ -7,7 +7,7 @@ import re
 import threading
 import time
 import typing
-from collections import ChainMap, OrderedDict, deque
+from collections import ChainMap, OrderedDict
 from concurrent.futures import CancelledError, Future, ProcessPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
@@ -22,13 +22,7 @@ except ImportError:
     graphviz = None
 
 from .conf import ConfigLoader
-from .constants import (
-    BATCH_PROCESSOR_TYPE,
-    EMPTY,
-    PIPELINE_FIELDS,
-    PIPELINE_STATE,
-    UNKNOWN,
-)
+from .constants import EMPTY, PIPELINE_FIELDS, PIPELINE_STATE, UNKNOWN
 from .exceptions import (
     BadPipelineError,
     EventDoesNotExist,
@@ -36,9 +30,12 @@ from .exceptions import (
     ImproperlyConfigured,
     PipelineConfigurationError,
 )
+from .execution.state_manager import ExecutionStatus
 from .fields import InputDataField
 from .import_utils import import_string
 from .mixins import ObjectIdentityMixin, ScheduleMixin
+from .parser.operator import PipeType
+from .parser.protocols import TaskType
 from .pipeline_wrapper import PipelineWrapper
 from .signal.signals import (
     SoftSignal,
@@ -52,8 +49,12 @@ from .signal.signals import (
     pipeline_shutdown,
     pipeline_stop,
 )
-from .task import EventExecutionContext, ExecutionState, PipelineTask, PipeType
-from .utils import AcquireReleaseLock, validate_batch_processor
+from .task import build_pipeline_flow_from_pointy_code
+from .typing import BatchProcessType
+from .utils import validate_batch_processor
+
+if typing.TYPE_CHECKING:
+    from .execution.context import ExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ conf = ConfigLoader.get_lazily_loaded_config()
 
 
 class TreeExtraData:
-    def __init__(self, pipe_type: PipeType):
+    def __init__(self, pipe_type: typing.Optional[PipeType]):
         self.pipe_type = pipe_type
 
 
@@ -92,10 +93,15 @@ class CacheFieldDescriptor(object):
 class PipelineState(object):
     pipeline_cache = CacheFieldDescriptor()
 
-    def __init__(self, pipeline: PipelineTask):
-        self.start: PipelineTask = pipeline
+    def __init__(self, pipeline: TaskType):
+        self.start = pipeline
 
     def clear(self, instance: typing.Union["Pipeline", str]):
+        """
+        Clear cache for specific pipeline instance
+        Args:
+            instance (typing.Union["Pipeline", str]): Pipeline instance or its cache key
+        """
         instance_key = self.get_cache_key(instance)
         cache_fields = self.check_cache_exists(instance)
         if cache_fields:
@@ -106,10 +112,26 @@ class PipelineState(object):
                     pass
 
     @staticmethod
-    def get_cache_key(instance: typing.Union["Pipeline", str]):
+    def get_cache_key(instance: typing.Union["Pipeline", str]) -> str:
+        """
+        Get cache key for pipeline instance
+        Args:
+            instance (typing.Union["Pipeline", str]): Pipeline instance or its cache key
+        Returns:
+            str: Cache key for the pipeline instance
+        """
         return instance.get_cache_key() if not isinstance(instance, str) else instance
 
-    def check_cache_exists(self, instance: typing.Union["Pipeline", str]):
+    def check_cache_exists(
+        self, instance: typing.Union["Pipeline", str]
+    ) -> typing.Set[str]:
+        """
+        Check which cache fields have cache for specific pipeline instance
+        Args:
+            instance (typing.Union["Pipeline", str]): Pipeline instance or its cache key
+        Returns:
+            typing.Set[str]: Set of cache field names that have cache for the instance
+        """
         keys = set()
         instance_key = self.get_cache_key(instance)
         for field, value in self.__dict__.items():
@@ -117,12 +139,34 @@ class PipelineState(object):
                 keys.add(field)
         return keys
 
-    def cache(self, instance: typing.Union["Pipeline", str]):
+    def cache(self, instance: typing.Union["Pipeline", str]) -> ChainMap:
+        """
+        Get cache for specific pipeline instance
+        Args:
+            instance (typing.Union["Pipeline", str]): Pipeline instance or its cache key
+        Returns:
+            ChainMap: Cache for the pipeline instance
+        """
         cache_fields = self.check_cache_exists(instance)
         instance_key = self.get_cache_key(instance)
         return ChainMap(*(self.__dict__[field][instance_key] for field in cache_fields))
 
-    def set_cache(self, instance, instance_cache_field, *, field_name=None, value=None):
+    def set_cache(
+        self,
+        instance: "Pipeline",
+        instance_cache_field: str,
+        *,
+        field_name: typing.Optional[str] = None,
+        value: typing.Any = None,
+    ) -> None:
+        """
+        Set cache for specific pipeline instance
+        Args:
+            instance (typing.Union["Pipeline", str]): Pipeline instance or its cache key
+            instance_cache_field (str): Cache field name
+            field_name (str, optional): Field name to set in cache
+            value (any, optional): Value to set in cache
+        """
         if value is None:
             return
         instance_key = self.get_cache_key(instance)
@@ -138,7 +182,16 @@ class PipelineState(object):
 
         self.__dict__[instance_cache_field][instance_key][field_name] = value
 
-    def set_cache_for_pipeline_field(self, instance, field_name, value):
+    def set_cache_for_pipeline_field(
+        self, instance: "Pipeline", field_name: str, value: typing.Any
+    ) -> None:
+        """
+        Set cache for specific pipeline field
+        Args:
+            instance (typing.Union["Pipeline", str]): Pipeline instance or its cache key
+            field_name (str): Field name to set in cache
+            value (any): Value to set in cache
+        """
         self.set_cache(
             instance=instance,
             instance_cache_field="pipeline_cache",
@@ -187,7 +240,7 @@ class PipelineMeta(type):
                 pointy_str = f.read()
 
         try:
-            pipeline = PipelineTask.build_pipeline_from_execution_code(pointy_str)
+            workflow = build_pipeline_flow_from_pointy_code(pointy_str)
         except Exception as e:
             if isinstance(e, SyntaxError):
                 raise
@@ -196,18 +249,32 @@ class PipelineMeta(type):
                 exception=e,
             )
 
+        if workflow is None:
+            raise BadPipelineError("Failed to build pipeline workflow.")
+
         setattr(new_class, PIPELINE_FIELDS, input_data_fields)
-        setattr(new_class, PIPELINE_STATE, PipelineState(pipeline))
+        setattr(new_class, PIPELINE_STATE, PipelineState(workflow))
 
         return new_class
 
     @classmethod
     @lru_cache
-    def find_pointy_file(cls, pipeline_path: str, class_name: str) -> str:
+    def find_pointy_file(
+        cls, pipeline_path: str, class_name: str
+    ) -> typing.Union[str, None]:
+        """
+        Find pointy file in given path or directory walk
+        Args:
+            pipeline_path (str): Path to pointy file or directory
+            class_name (str): Class name to look for
+        Returns:
+            typing.Union[str, None]: Path to pointy file if found, else None
+        """
         if os.path.isfile(pipeline_path):
             return pipeline_path
         elif os.path.isdir(pipeline_path):
             return cls.directory_walk(pipeline_path, f"{class_name}.pty")
+        return None
 
     @classmethod
     def directory_walk(cls, dir_path: str, file_name: str):
@@ -217,6 +284,7 @@ class PipelineMeta(type):
                     return os.path.join(root, name)
             for vdir in dirs:
                 cls.directory_walk(os.path.join(root, vdir), file_name)
+        return None
 
 
 class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
@@ -237,11 +305,12 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
 
         self.construct_call_signature()
 
-        bounded_args = self.__signature__.bind(*args, **kwargs)
-        for name, value in bounded_args.arguments.items():
-            setattr(self, name, value)
+        if self.__signature__:
+            bounded_args = self.__signature__.bind(*args, **kwargs)
+            for name, value in bounded_args.arguments.items():
+                setattr(self, name, value)
 
-        self.execution_context: typing.Optional[EventExecutionContext] = None
+        self.execution_context: typing.Optional[ExecutionContext] = None
 
         super().__init__()
 
@@ -301,7 +370,16 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
     def __hash__(self):
         return hash(self.id)
 
-    def start(self, force_rerun: bool = False) -> EventExecutionContext:
+    @classmethod
+    def get_pipeline_state(cls) -> PipelineState:
+        """
+        Get the pipeline state instance
+        Returns:
+            PipelineState: The pipeline state instance
+        """
+        return getattr(cls, PIPELINE_STATE)
+
+    def start(self, force_rerun: bool = False) -> typing.Optional["ExecutionContext"]:
         """
         Initiates the execution of the pipeline.
 
@@ -310,10 +388,10 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
                 again even if it has already completed. Defaults to False.
 
         Return:
-            EventExecutionContext: The execution context of the pipeline. It is a linked list with ability to
+            ExecutionContext: The execution context of the pipeline. It is a linked list with the ability to
             traverse the various execution contexts for each of the events within the pipeline.
-            The context can be filter base on the event name using the method `filter_by_event`.
-            It is also iterable and thus your can loop over it
+            The context can be filtered based on the event name using the method `filter_by_event`.
+            It is also iterable, and thus you can loop over it
             `for context in pipeline.start(): pass`
 
         Raises:
@@ -321,32 +399,32 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
                 force_rerun is not set to True, this exception is raised
                 to indicate that the execution is complete.
         """
+        from .engine import run_workflow
+
         pipeline_execution_start.emit(sender=self.__class__, pipeline=self)
 
         if self.execution_context and not force_rerun:
             raise EventDone("Done executing pipeline")
 
-        self.execution_context: typing.Optional[EventExecutionContext] = None
+        self.execution_context: typing.Optional["ExecutionContext"] = None
 
-        sink_queue = deque()
-        PipelineTask.execute_task(
-            self._state.start,
-            previous_context=self.execution_context,
+        run_workflow(
+            self.get_pipeline_state().start,
             pipeline=self,
-            sink_queue=sink_queue,
         )
 
         if self.execution_context:
-            latest_context = self.execution_context.get_latest_execution_context()
+            latest_context = self.execution_context.get_latest_context()
+            execution_state = latest_context.state
 
-            if latest_context.state == ExecutionState.CANCELLED:
+            if execution_state.status == ExecutionStatus.CANCELLED:
                 pipeline_stop.emit(
                     sender=self.__class__,
                     pipeline=self,
                     execution_context=latest_context,
                 )
                 return self.execution_context
-            elif latest_context.state == ExecutionState.ABORTED:
+            elif execution_state.status == ExecutionStatus.ABORTED:
                 pipeline_shutdown.emit(
                     sender=self.__class__,
                     pipeline=self,
@@ -361,27 +439,25 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
 
     def shutdown(self):
         if self.execution_context:
-            latest_context = self.execution_context.get_latest_execution_context()
-            with AcquireReleaseLock(lock=latest_context.conditional_variable):
-                latest_context.abort()
-                pipeline_shutdown.emit(
-                    sender=self.__class__,
-                    pipeline=self,
-                    execution_context=self.execution_context,
-                )
+            latest_context = self.execution_context.get_latest_context()
+            latest_context.abort()
+            pipeline_shutdown.emit(
+                sender=self.__class__,
+                pipeline=self,
+                execution_context=self.execution_context,
+            )
 
     def stop(self):
         if self.execution_context:
-            latest_context = self.execution_context.get_latest_execution_context()
-            with AcquireReleaseLock(lock=latest_context.conditional_variable):
-                latest_context.cancel()
-                pipeline_stop.emit(
-                    sender=self.__class__,
-                    pipeline=self,
-                    execution_context=self.execution_context,
-                )
+            latest_context = self.execution_context.get_latest_context()
+            latest_context.cancel()
+            pipeline_stop.emit(
+                sender=self.__class__,
+                pipeline=self,
+                execution_context=self.execution_context,
+            )
 
-    def get_cache_key(self):
+    def get_cache_key(self) -> str:
         return f"pipeline_{self.__class__.__name__}_{self.id}"
 
     @classmethod
@@ -411,7 +487,7 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
             if not field.has_batch_operation:
                 yield name, field
 
-    def get_pipeline_tree(self) -> Tree:
+    def get_pipeline_tree(self) -> typing.Optional[Tree]:
         """
         Constructs and returns the pipeline's execution tree.
 
@@ -428,7 +504,7 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
             and will perform a breadth-first traversal starting from
             the initial task state.
         """
-        state: PipelineTask = self._state.start
+        state = self.get_pipeline_state().start
         if state:
             tree = Tree()
             for node in state.bf_traversal(state):
@@ -437,16 +513,16 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
                     tag = " (?)"
 
                 if node.is_descriptor_task:
-                    tag = " (No)" if node._descriptor == 0 else " (Yes)"
+                    tag = " (No)" if node.descriptor == 0 else " (Yes)"
 
                 if node.is_sink:
                     tag = " (Sink)"
 
                 tree.create_node(
-                    tag=f"{node.event}{tag}",
-                    identifier=node.id,
-                    parent=node.parent_node.id if node.parent_node else None,
-                    data=TreeExtraData(pipe_type=node.get_pointer_type_to_this_event()),
+                    tag=f"{node.get_event_name()}{tag}",
+                    identifier=node.get_id(),
+                    parent=node.parent_node.get_id() if node.parent_node else None,
+                    data=TreeExtraData(pipe_type=node.get_pointer_to_task()),
                 )
             return tree
 
@@ -490,7 +566,7 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
             logger.warning("Graphviz library is not available")
             return
 
-        data = generate_dot_from_task_state(self._state.start)
+        data = generate_dot_from_task_state(self.get_pipeline_state().start)
         if data:
             src = graphviz.Source(data, directory=directory)
             src.render(format="png", outfile=f"{self.__class__.__name__}.png")
@@ -516,10 +592,10 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
             existing cache entries before attempting to load the instance
             from other sources.
         """
-        cache_keys = cls._state.check_cache_exists(pk)
+        cache_keys = cls.get_pipeline_state().check_cache_exists(pk)
         if not cache_keys:
             return cls()
-        cache = cls._state.cache(pk)
+        cache = cls.get_pipeline_state().cache(pk)
 
         # restore fields
         kwargs = {}
@@ -551,10 +627,10 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
         Raises:
             EventDoesNotExist: If no task with the given primary key exists in the pipeline.
         """
-        state: PipelineTask = self._state.start
+        state: TaskType = self.get_pipeline_state().start
         if state:
             for task in state.bf_traversal(state):
-                if task.id == pk:
+                if task.get_id() == pk:
                     return task
         raise EventDoesNotExist(f"Task '{pk}' does not exists", code=pk)
 
@@ -1068,7 +1144,7 @@ class BatchPipeline(ObjectIdentityMixin, ScheduleMixin):
         return self._signals_queue
 
     @staticmethod
-    def _validate_batch_processor(batch_processor: BATCH_PROCESSOR_TYPE):
+    def _validate_batch_processor(batch_processor: BatchProcessType):
         is_iterable = validate_batch_processor(batch_processor)
         if not is_iterable:
             raise ImproperlyConfigured(
@@ -1102,7 +1178,7 @@ class BatchPipeline(ObjectIdentityMixin, ScheduleMixin):
         logger.info("❕batch size has been adjusted")
 
     def _gather_field_batch_methods(
-        self, field: InputDataField, batch_processor: BATCH_PROCESSOR_TYPE
+        self, field: InputDataField, batch_processor: BatchProcessType
     ):
         """
         Gathers and applies all batch processing operations for the specified field.

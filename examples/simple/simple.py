@@ -1,11 +1,11 @@
-from nexus.pipeline import Pipeline, BatchPipeline
-from nexus.fields import InputDataField
-from nexus.signal.signals import pipeline_execution_start
-from nexus.decorators import listener
+from volnux.decorators import listener
+from volnux.fields import InputDataField
+from volnux.pipeline import BatchPipeline, Pipeline
+from volnux.signal.signals import pipeline_execution_start
 
 
 class Simple(Pipeline):
-    name = InputDataField(data_type=list, batch_size=5)
+    name = InputDataField(data_type=str, batch_size=5)
 
 
 class SimpleBatch(BatchPipeline):

@@ -1,38 +1,41 @@
-import typing
 import logging
-import time
-import uuid
-import sys
 import socket
-import pickle
-import zlib
 import ssl
+import sys
+import time
+import typing
+import uuid
+import warnings
 from io import BytesIO
 
 try:
     import resource
 except ImportError:
     # No windows support for this lib
-    resource = None
+    resource = None  # type:ignore
 
-from inspect import signature, Parameter, isgeneratorfunction, isgenerator
+from inspect import Parameter, isgenerator, isgeneratorfunction, signature
 
 try:
     from StringIO import StringIO
 except ImportError:
     from io import StringIO
 
+from .constants import EMPTY
 from .exceptions import ImproperlyConfigured
-from .constants import EMPTY, BATCH_PROCESSOR_TYPE
+from .typing import BatchProcessType
 
 if typing.TYPE_CHECKING:
     from .base import EventBase
+    from .executors import BaseExecutor
     from .pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
 
 
-def _extend_recursion_depth(limit: int = 1048576):
+def _extend_recursion_depth(
+    limit: int = 1048576,
+) -> typing.Optional[typing.Union[int, Exception]]:
     """
     Extends the maximum recursion depth of the Python interpreter.
 
@@ -46,7 +49,7 @@ def _extend_recursion_depth(limit: int = 1048576):
         return
     rec_limit = sys.getrecursionlimit()
     if rec_limit == limit:
-        return
+        return None
     try:
         resource.setrlimit(resource.RLIMIT_STACK, (limit, resource.RLIM_INFINITY))
         sys.setrecursionlimit(limit)
@@ -56,7 +59,7 @@ def _extend_recursion_depth(limit: int = 1048576):
     return limit
 
 
-def generate_unique_id(obj: object):
+def generate_unique_id(obj: object) -> str:
     """
     Generate unique identify for objects
     :param obj: The object to generate the id for
@@ -67,6 +70,52 @@ def generate_unique_id(obj: object):
         pk = f"{obj.__class__.__name__}-{time.time()}-{str(uuid.uuid4())}"
         setattr(obj, "_id", pk)
     return pk
+
+
+def validate_event_process_method(
+    func: typing.Callable[[...], typing.Tuple[bool, typing.Any]],
+) -> None:
+    """
+    Validate event process method and functions
+
+    Args:
+        func: Function to validate
+
+    Raises:
+        TypeError: if wrong arguments specify
+    """
+    sig = signature(func)
+    type_hints = (
+        typing.get_type_hints(func) if hasattr(typing, "get_type_hints") else {}
+    )
+
+    # Check that first parameter is 'self'
+    params = list(sig.parameters.values())
+    if not params or params[0].name != "self":
+        raise TypeError(
+            f"Event function '{func.__name__}' must have 'self' as first parameter. "
+            f"Found: {[p.name for p in params]}"
+        )
+
+    # Validate return type if specified
+    return_annotation = type_hints.get("return")
+    if return_annotation is not None:
+        # Check if it's a Tuple[bool, Any] or similar
+        origin = typing.get_origin(return_annotation)
+        if origin is tuple:
+            args = typing.get_args(return_annotation)
+            if len(args) >= 2 and args[0] is not bool:
+                raise TypeError(
+                    f"Event function '{func.__name__}' must return Tuple[bool, Any]. "
+                    f"Found return type: {return_annotation}"
+                )
+        elif return_annotation != typing.Tuple[bool, typing.Any]:
+            warnings.warn(
+                f"Event function '{func.__name__}' should return Tuple[bool, Any]. "
+                f"Found: {return_annotation}",
+                UserWarning,
+                stacklevel=3,
+            )
 
 
 def build_event_arguments_from_pipeline(
@@ -93,7 +142,8 @@ def build_event_arguments_from_pipeline(
 
 
 def get_function_call_args(
-    func, params: typing.Union[typing.Dict[str, typing.Any], "Pipeline", object]
+    func: typing.Callable[..., typing.Any],
+    params: typing.Union[typing.Dict[str, typing.Any], "Pipeline", object],
 ) -> typing.Dict[str, typing.Any]:
     """
     Extracts the arguments for a function call from the provided parameters.
@@ -130,20 +180,7 @@ def get_function_call_args(
     return params_dict
 
 
-class AcquireReleaseLock(object):
-    """A context manager for acquiring and releasing locks."""
-
-    def __init__(self, lock):
-        self.lock = lock
-
-    def __enter__(self):
-        self.lock.acquire()
-
-    def __exit__(self, *args):
-        self.lock.release()
-
-
-def validate_batch_processor(batch_processor: BATCH_PROCESSOR_TYPE) -> bool:
+def validate_batch_processor(batch_processor: BatchProcessType) -> bool:
     if not callable(batch_processor):
         raise ValueError(f"Batch processor '{batch_processor}' must be callable")
 
@@ -167,7 +204,7 @@ def validate_batch_processor(batch_processor: BATCH_PROCESSOR_TYPE) -> bool:
                     )
         if field_name not in required_field_names:
             raise ImproperlyConfigured(
-                f"Batch processor '{batch_processor.__name__}' arguments must fields named {required_field_names}. "
+                f"Batch processor '{batch_processor.__name__}' arguments must contain fields named {required_field_names}. "
                 f"{field_name} cannot be use"
             )
 
@@ -183,7 +220,7 @@ def validate_batch_processor(batch_processor: BATCH_PROCESSOR_TYPE) -> bool:
 
 
 def get_expected_args(
-    func: typing.Callable, include_type: bool = False
+    func: typing.Callable[..., typing.Any], include_type: bool = False
 ) -> typing.Dict[str, typing.Any]:
     """
     Get the expected arguments of a function as a dictionary where the keys are argument names
@@ -213,9 +250,9 @@ def get_expected_args(
 
 def get_obj_state(obj: typing.Any) -> typing.Dict[str, typing.Any]:
     try:
-        return obj.get_state()
+        return obj.get_state()  # type: ignore
     except (AttributeError, NotImplementedError):
-        return obj.__getstate__()
+        return obj.__getstate__()  # type: ignore
 
 
 def get_obj_klass_import_str(obj: typing.Any) -> str:
@@ -351,3 +388,14 @@ def create_client_ssl_context(
         context.load_cert_chain(certfile=client_cert_path, keyfile=client_key_path)
 
     return context
+
+
+def is_multiprocessing_executor(executor_class: typing.Type["BaseExecutor"]) -> bool:
+    """Check if an executor is multiprocessing executor."""
+    from event_pipeline.executors import BaseExecutor, ProcessPoolExecutor
+
+    if not issubclass(executor_class, BaseExecutor):
+        return False
+    return executor_class == ProcessPoolExecutor or getattr(
+        executor_class, "support_parallel_execution", False
+    )

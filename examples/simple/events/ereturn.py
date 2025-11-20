@@ -1,6 +1,6 @@
 import typing
 
-from nexus import EventBase
+from volnux import EventBase
 
 
 class Return(EventBase):

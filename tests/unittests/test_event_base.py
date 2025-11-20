@@ -1,16 +1,17 @@
-import pytest
 import unittest
-from unittest.mock import patch
 from concurrent.futures import ProcessPoolExecutor
+from unittest.mock import patch
+
+import pytest
+
 from volnux import EventBase
-from volnux.base import EventExecutionEvaluationState, EvaluationContext
-from volnux.task import PipelineTask
 from volnux.decorators import event
+from volnux.parser.options import StopCondition
 from volnux.result import EventResult
+from volnux.task import PipelineTask
 
 
 class TestEventBase(unittest.TestCase):
-
     @classmethod
     def setUpClass(cls):
         class WithoutParamEvent(EventBase):
@@ -35,11 +36,11 @@ class TestEventBase(unittest.TestCase):
                 return False, "False"
 
         @event()
-        def func_with_no_args():
+        def func_with_no_args(self):
             return True, "function_with_no_args"
 
         @event()
-        def func_with_args(name):
+        def func_with_args(self, name):
             return True, name
 
         cls.WithoutParamEvent = WithoutParamEvent
@@ -51,7 +52,7 @@ class TestEventBase(unittest.TestCase):
         cls.ProcessReturnFalseEvent = ProcessReturnFalseEvent
 
     def test_get_klasses(self):
-        klasses = list(EventBase.get_event_klasses())
+        klasses = list(EventBase.get_all_event_classes())
 
         self.assertTrue(len(klasses) > 0)
 
@@ -119,10 +120,9 @@ class TestEventBase(unittest.TestCase):
                 "task_id": "1",
                 "args": (),
                 "previous_result": "box",
-                "stop_on_exception": False,
-                "stop_on_success": False,
-                "stop_on_error": False,
                 "run_bypass_event_checks": False,
+                "stop_condition": StopCondition.NEVER,
+                "options": None,
                 "kwargs": {},
             },
         )
@@ -133,213 +133,3 @@ class TestEventBase(unittest.TestCase):
         with patch("volnux.EventBase.on_failure") as f:
             event1()
             f.assert_called()
-
-
-class TestEventExecutionEvaluationState(unittest.TestCase):
-
-    def setUp(self):
-        self.success_context_without_errors = {
-            "context": EvaluationContext.SUCCESS,
-            "result": [
-                EventResult(
-                    error=False, content="Success", event_name="test", task_id="test1"
-                )
-            ],
-            "errors": [],
-        }
-
-        self.success_context_with_errors = {
-            "context": EvaluationContext.SUCCESS,
-            "result": [],
-            "errors": [Exception("error")],
-        }
-
-        self.success_context_with_both_errors_and_results = {
-            "context": EvaluationContext.SUCCESS,
-            "result": [
-                EventResult(
-                    error=False, content="Success", event_name="test", task_id="test2"
-                )
-            ],
-            "errors": [Exception("error")],
-        }
-
-        self.error_context_without_errors = {
-            "context": EvaluationContext.FAILURE,
-            "result": [
-                EventResult(
-                    error=False, content="Success", event_name="test", task_id="test3"
-                )
-            ],
-            "errors": [],
-        }
-
-        self.error_context_with_errors = {
-            "context": EvaluationContext.FAILURE,
-            "result": [],
-            "errors": [Exception("error")],
-        }
-
-        self.error_context_with_both_errors_and_results = {
-            "context": EvaluationContext.FAILURE,
-            "result": [
-                EventResult(
-                    error=False, content="Success", event_name="test", task_id="test4"
-                )
-            ],
-            "errors": [Exception("error")],
-        }
-
-    def test_success_context_SUCCESS_ON_ALL_EVENTS_SUCCESS(self):
-        self.assertTrue(
-            EventExecutionEvaluationState.SUCCESS_ON_ALL_EVENTS_SUCCESS.context_evaluation(
-                **self.success_context_without_errors
-            )
-        )
-
-        self.assertFalse(
-            EventExecutionEvaluationState.SUCCESS_ON_ALL_EVENTS_SUCCESS.context_evaluation(
-                **self.success_context_with_errors
-            )
-        )
-
-        self.assertFalse(
-            EventExecutionEvaluationState.SUCCESS_ON_ALL_EVENTS_SUCCESS.context_evaluation(
-                **self.success_context_with_both_errors_and_results
-            )
-        )
-
-    def test_success_context_FAILURE_FOR_PARTIAL_ERROR(self):
-        self.assertFalse(
-            EventExecutionEvaluationState.FAILURE_FOR_PARTIAL_ERROR.context_evaluation(
-                **self.success_context_with_errors
-            )
-        )
-
-        self.assertTrue(
-            EventExecutionEvaluationState.FAILURE_FOR_PARTIAL_ERROR.context_evaluation(
-                **self.success_context_without_errors
-            )
-        )
-
-        self.assertFalse(
-            EventExecutionEvaluationState.FAILURE_FOR_PARTIAL_ERROR.context_evaluation(
-                **self.success_context_with_both_errors_and_results
-            )
-        )
-
-    def test_success_context_FAILURE_FOR_ALL_EVENTS_FAILURE(self):
-        self.assertFalse(
-            EventExecutionEvaluationState.FAILURE_FOR_ALL_EVENTS_FAILURE.context_evaluation(
-                **self.success_context_with_errors
-            )
-        )
-
-        self.assertTrue(
-            EventExecutionEvaluationState.FAILURE_FOR_ALL_EVENTS_FAILURE.context_evaluation(
-                **self.success_context_without_errors
-            )
-        )
-
-        self.assertTrue(
-            EventExecutionEvaluationState.FAILURE_FOR_ALL_EVENTS_FAILURE.context_evaluation(
-                **self.success_context_with_both_errors_and_results
-            )
-        )
-
-    def test_success_context_SUCCESS_FOR_PARTIAL_SUCCESS(self):
-        self.assertFalse(
-            EventExecutionEvaluationState.SUCCESS_FOR_PARTIAL_SUCCESS.context_evaluation(
-                **self.success_context_with_errors
-            )
-        )
-
-        self.assertTrue(
-            EventExecutionEvaluationState.SUCCESS_FOR_PARTIAL_SUCCESS.context_evaluation(
-                **self.success_context_without_errors
-            )
-        )
-
-        self.assertTrue(
-            EventExecutionEvaluationState.SUCCESS_FOR_PARTIAL_SUCCESS.context_evaluation(
-                **self.success_context_with_both_errors_and_results
-            )
-        )
-
-    # errors
-
-    def test_error_context_SUCCESS_ON_ALL_EVENTS_SUCCESS(self):
-        self.assertFalse(
-            EventExecutionEvaluationState.SUCCESS_ON_ALL_EVENTS_SUCCESS.context_evaluation(
-                **self.error_context_without_errors
-            )
-        )
-
-        self.assertTrue(
-            EventExecutionEvaluationState.SUCCESS_ON_ALL_EVENTS_SUCCESS.context_evaluation(
-                **self.error_context_with_errors
-            )
-        )
-
-        self.assertTrue(
-            EventExecutionEvaluationState.SUCCESS_ON_ALL_EVENTS_SUCCESS.context_evaluation(
-                **self.error_context_with_both_errors_and_results
-            )
-        )
-
-    def test_error_context_FAILURE_FOR_PARTIAL_ERROR(self):
-        self.assertTrue(
-            EventExecutionEvaluationState.FAILURE_FOR_PARTIAL_ERROR.context_evaluation(
-                **self.error_context_with_errors
-            )
-        )
-
-        self.assertFalse(
-            EventExecutionEvaluationState.FAILURE_FOR_PARTIAL_ERROR.context_evaluation(
-                **self.error_context_without_errors
-            )
-        )
-
-        self.assertTrue(
-            EventExecutionEvaluationState.FAILURE_FOR_PARTIAL_ERROR.context_evaluation(
-                **self.error_context_with_both_errors_and_results
-            )
-        )
-
-    def test_error_context_FAILURE_FOR_ALL_EVENTS_FAILURE(self):
-        self.assertTrue(
-            EventExecutionEvaluationState.FAILURE_FOR_ALL_EVENTS_FAILURE.context_evaluation(
-                **self.error_context_with_errors
-            )
-        )
-
-        self.assertFalse(
-            EventExecutionEvaluationState.FAILURE_FOR_ALL_EVENTS_FAILURE.context_evaluation(
-                **self.error_context_without_errors
-            )
-        )
-
-        self.assertFalse(
-            EventExecutionEvaluationState.FAILURE_FOR_ALL_EVENTS_FAILURE.context_evaluation(
-                **self.error_context_with_both_errors_and_results
-            )
-        )
-
-    def test_error_context_SUCCESS_FOR_PARTIAL_SUCCESS(self):
-        self.assertTrue(
-            EventExecutionEvaluationState.SUCCESS_FOR_PARTIAL_SUCCESS.context_evaluation(
-                **self.error_context_with_errors
-            )
-        )
-
-        self.assertFalse(
-            EventExecutionEvaluationState.SUCCESS_FOR_PARTIAL_SUCCESS.context_evaluation(
-                **self.error_context_without_errors
-            )
-        )
-
-        self.assertFalse(
-            EventExecutionEvaluationState.SUCCESS_FOR_PARTIAL_SUCCESS.context_evaluation(
-                **self.error_context_with_both_errors_and_results
-            )
-        )

@@ -36,7 +36,7 @@ pipeline-graphs/
 *.manifest
 *.spec
 
-# PyCharm 
+# PyCharm
 
 # Installer logs
 pip-log.txt
@@ -177,4 +177,8 @@ cython_debug/
 .pypirc
 
 pointy_test.py
+executor_test.py
+manager_test.py
+
+refactor-plan.md
 executor.md

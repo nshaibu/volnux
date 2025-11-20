@@ -4,7 +4,7 @@ treelib==1.7.0
 typing-extensions==4.12.2
 more-itertools>=8.10.0
 apscheduler<=3.11.0
-pydantic_mini==1.0.4
+pydantic_mini==1.1.5
 # graph
 graphviz==0.20.3
 # [optional]

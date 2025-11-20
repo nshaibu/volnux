@@ -1,5 +1,5 @@
-from nexus import EventBase
-from nexus.base import RetryPolicy
+from volnux import EventBase
+from volnux.base import RetryPolicy
 import logging
 import httpx
 from .custom_exception import (

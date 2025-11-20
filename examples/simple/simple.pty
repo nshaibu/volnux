@@ -1,5 +1,7 @@
-10 * Fetch||Process||Execute->SaveToDB->Return
+@recursive-depth: 3000
+@mode: CFG
 
+10 * Fetch || Process || Execute -> SaveToDB -> Return
 #A -> B (
 #    0->C (
 #        0 |-> T,

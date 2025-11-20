@@ -1,7 +1,9 @@
-import pytest
 from datetime import datetime
-from volnux.result import EventResult, ResultSet, EntityContentType
+
+import pytest
+
 from volnux.exceptions import MultiValueError
+from volnux.result import EntityContentType, EventResult, ResultSet
 
 
 def test_event_result_initialization():
@@ -125,6 +127,9 @@ def test_result_set_add():
 def test_result_set_discard():
     class MockResult:
         id = "1"
+
+        def __hash__(self):
+            return 1
 
         def __object_import_str__(self):
             return f"{self.__class__.__module__}.{self.__class__.__qualname__}"

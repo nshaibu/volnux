@@ -1,7 +1,7 @@
-from nexus.pipeline import Pipeline
-from nexus.fields import InputDataField
-from nexus.signal.signals import pipeline_execution_start
-from nexus.decorators import listener
+from volnux.pipeline import Pipeline
+from volnux.fields import InputDataField
+from volnux.signal.signals import pipeline_execution_start
+from volnux.decorators import listener
 from .events import LoadData, ProcessData, GraphData
 
 

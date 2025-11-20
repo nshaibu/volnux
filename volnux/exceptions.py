@@ -1,6 +1,5 @@
 import typing
 
-
 if typing.TYPE_CHECKING:
     from volnux.result import EventResult
 
@@ -10,14 +9,15 @@ class ImproperlyConfigured(Exception):
 
 
 class PipelineError(Exception):
-
-    def __init__(self, message, code=None, params=None):
+    def __init__(
+        self, message: str, code: typing.Any = None, params: typing.Any = None
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
         self.params = params
 
-    def to_dict(self):
+    def to_dict(self) -> typing.Dict[str, typing.Any]:
         return {
             "error_class": self.__class__.__name__,
             "message": self.message,
@@ -47,9 +47,13 @@ class EventNotConfigured(ImproperlyConfigured):
 
 
 class BadPipelineError(ImproperlyConfigured, PipelineError):
-
-    def __init__(self, *args, exception=None, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        *args: typing.Any,
+        exception: typing.Optional[Exception] = None,
+        **kwargs: typing.Dict[str, typing.Any],
+    ) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore
         self.exception = exception
 
 
@@ -58,10 +62,16 @@ class MultiValueError(PipelineError, KeyError):
 
 
 class StopProcessingError(PipelineError, RuntimeError):
-
-    def __init__(self, *args, exception=None, **kwargs):
+    def __init__(
+        self,
+        *args: typing.Any,
+        exception: typing.Optional[Exception] = None,
+        stop_condition: typing.Optional[typing.Any] = None,
+        **kwargs: typing.Dict[str, typing.Any],
+    ) -> None:
         self.exception = exception
-        super().__init__(*args, **kwargs)
+        self.stop_condition = stop_condition
+        super().__init__(*args, **kwargs)  # type: ignore
 
 
 class MaxRetryError(Exception):
@@ -69,7 +79,9 @@ class MaxRetryError(Exception):
     Raised when the maximum number of retries is exceeded.
     """
 
-    def __init__(self, attempt, exception, reason=None):
+    def __init__(
+        self, attempt: int, exception: Exception, reason: typing.Optional[str] = None
+    ) -> None:
         self.reason = reason
         self.attempt = attempt
         self.exception = exception
@@ -81,12 +93,17 @@ class MaxRetryError(Exception):
 
 
 class ValidationError(PipelineError, ValueError):
+    """ValidationError raised when validation fails."""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
+    ) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore
 
 
 class ObjectExistError(ValueError):
+    """ObjectExistError raised when an object already exists."""
+
     pass
 
 
@@ -95,14 +112,15 @@ class ObjectDoesNotExist(ValueError):
 
 
 class SwitchTask(Exception):
+    """SwitchTask raised to indicate a task switch is required."""
 
     def __init__(
         self,
         current_task_id: str,
         next_task_descriptor: int,
         result: "EventResult",
-        reason="Manual",
-    ):
+        reason: str = "Manual",
+    ) -> None:
         self.current_task_id = current_task_id
         self.next_task_descriptor = next_task_descriptor
         self.result = result
@@ -129,3 +147,7 @@ class PipelineExecutionError(PipelineError):
 
 class PipelineConfigurationError(PipelineError):
     """Exception raised for configuration errors."""
+
+
+class ExecutorNotFound(IndexError):
+    """Exception raised when an executor does not exist."""

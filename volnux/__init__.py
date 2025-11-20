@@ -26,13 +26,12 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-from .base import (
-    EventBase,
-    EventExecutionEvaluationState,
-    RetryPolicy,
-    ExecutorInitializerConfig,
-)
+from .base import EventBase, ExecutorInitializerConfig, RetryPolicy
+
+Event = EventBase
+
 from .pipeline import Pipeline
+from .result_evaluators import ResultEvaluationStrategies
 
 __all__ = [
     "EventBase",

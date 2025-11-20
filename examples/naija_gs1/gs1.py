@@ -1,5 +1,5 @@
-from nexus import Pipeline
-from nexus.fields import InputDataField
+from volnux import Pipeline
+from volnux.fields import InputDataField
 
 
 class GS1(Pipeline):

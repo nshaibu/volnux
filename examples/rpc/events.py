@@ -1,5 +1,5 @@
-from nexus import EventBase
-from nexus.executors.rpc_executor import XMLRPCExecutor
+from volnux import EventBase
+from volnux.executors.rpc_executor import XMLRPCExecutor
 
 
 class ComputeTask(EventBase):

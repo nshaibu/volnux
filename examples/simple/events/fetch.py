@@ -1,6 +1,6 @@
 import typing
 from concurrent.futures import ThreadPoolExecutor
-from nexus import EventBase
+from volnux import EventBase
 
 
 class Fetch(EventBase):

@@ -1,12 +1,19 @@
 import os
 import typing
+from types import TracebackType
+
 from pydantic_mini.typing import is_type
+
 from . import default_batch_processors as batch_defaults
+from .constants import EMPTY, UNKNOWN
 from .exceptions import ImproperlyConfigured
+from .typing import BatchProcessType
 from .utils import validate_batch_processor
-from .constants import EMPTY, UNKNOWN, BATCH_PROCESSOR_TYPE
 
 T = typing.TypeVar("T")
+
+if typing.TYPE_CHECKING:
+    from volnux.pipeline import Pipeline
 
 
 class FileProxy:
@@ -19,15 +26,15 @@ class FileProxy:
 
     def __init__(
         self,
-        file_path: typing.Union[str, os.PathLike],
+        file_path: typing.Union[str, os.PathLike[str]],
         mode: str = "r",
         buffering: int = -1,
         encoding: typing.Optional[str] = None,
         errors: typing.Optional[str] = None,
         newline: typing.Optional[str] = None,
         closefd: bool = True,
-        opener: typing.Optional[typing.Callable] = None,
-    ):
+        opener: typing.Optional[typing.Callable[[typing.Any], typing.Any]] = None,
+    ) -> None:
         """
         Initialize the FileProxy with the path and parameters for opening the file.
 
@@ -51,7 +58,7 @@ class FileProxy:
         self.opener = opener
 
         # File handle is None until first use
-        self._file: typing.Optional[typing.IO] = None
+        self._file: typing.Optional[typing.Any] = None
         self._closed = False
 
     def __repr__(self) -> str:
@@ -59,7 +66,7 @@ class FileProxy:
         status = "closed" if self.closed else "open" if self._file else "unopened"
         return f"<FileProxy {self.file_path} ({status})>"
 
-    def _ensure_open(self) -> typing.IO:
+    def _ensure_open(self) -> typing.Any:
         """
         Ensure the file is open, opening it if necessary.
 
@@ -73,16 +80,20 @@ class FileProxy:
             raise ValueError("I/O operation on closed file")
 
         if self._file is None:
-            self._file = open(
-                self.file_path,
-                mode=self.mode,
-                buffering=self.buffering,
-                encoding=self.encoding,
-                errors=self.errors,
-                newline=self.newline,
-                closefd=self.closefd,
-                opener=self.opener,
-            )
+            kwargs = {
+                "mode": self.mode,
+                "buffering": self.buffering,
+                "closefd": self.closefd,
+                "opener": self.opener,
+            }
+
+            if "b" not in self.mode:
+                # Only add the text-specific arguments if they are supported by the mode
+                kwargs["encoding"] = self.encoding
+                kwargs["errors"] = self.errors
+                kwargs["newline"] = self.newline
+
+            self._file = open(self.file_path, **kwargs)  # type: ignore
 
         return self._file
 
@@ -100,7 +111,12 @@ class FileProxy:
         """Context manager entry."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: typing.Optional[BaseException] = None,
+        exc_val: typing.Optional[typing.Any] = None,
+        exc_tb: typing.Optional[TracebackType] = None,
+    ) -> None:
         """Context manager exit - ensures file is closed."""
         self.close()
 
@@ -109,7 +125,7 @@ class FileProxy:
         self.close()
 
     # File object methods
-    def read(self, size: typing.Optional[int] = None) -> typing.AnyStr:
+    def read(self, size: typing.Optional[int] = None) -> typing.Union[str, bytes]:
         """
         Read at most size bytes from the file.
 
@@ -119,20 +135,18 @@ class FileProxy:
         Returns:
             The read content
         """
-        return (
+        if size is not None and isinstance(size, int) and size > 0:
             self._ensure_open().read(size)
-            if size is not None
-            else self._ensure_open().read()
-        )
+        return self._ensure_open().read()  # type: ignore
 
-    def readline(self, size: int = -1) -> typing.AnyStr:
-        return self._ensure_open().readline(size)
+    def readline(self, size: int = -1) -> typing.Union[str, bytes]:
+        return self._ensure_open().readline(size)  # type: ignore
 
-    def readlines(self, hint: int = -1) -> typing.List[typing.AnyStr]:
-        return self._ensure_open().readlines(hint)
+    def readlines(self, hint: int = -1) -> typing.List[typing.Union[str, bytes]]:
+        return self._ensure_open().readlines(hint)  # type: ignore
 
     def write(self, s: typing.AnyStr) -> int:
-        return self._ensure_open().write(s)
+        return self._ensure_open().write(s)  # type: ignore
 
     def writelines(self, lines: typing.List[typing.AnyStr]) -> None:
         self._ensure_open().writelines(lines)
@@ -152,19 +166,19 @@ class FileProxy:
         Returns:
             The new position
         """
-        return self._ensure_open().seek(offset, whence)
+        return self._ensure_open().seek(offset, whence)  # type: ignore
 
     def tell(self) -> int:
-        return self._ensure_open().tell()
+        return self._ensure_open().tell()  # type: ignore
 
     def truncate(self, size: typing.Optional[int] = None) -> int:
-        return self._ensure_open().truncate(size)
+        return self._ensure_open().truncate(size)  # type: ignore
 
     def fileno(self) -> int:
-        return self._ensure_open().fileno()
+        return self._ensure_open().fileno()  # type: ignore
 
     def isatty(self) -> bool:
-        return self._ensure_open().isatty()
+        return self._ensure_open().isatty()  # type: ignore
 
     @property
     def name(self) -> str:
@@ -186,24 +200,24 @@ class FileProxy:
 
     def seekable(self) -> bool:
         if self._file is not None:
-            return self._file.seekable()
+            return self._file.seekable()  # type: ignore
         # Most files are seekable, but we can't know for sure until opened
         return True
 
     # Iterator protocol
     def __iter__(self) -> typing.Iterator[typing.AnyStr]:
         """Return self as an iterator."""
-        return self
+        return typing.cast(typing.Iterator[typing.AnyStr], self)
 
-    def __next__(self) -> typing.AnyStr:
+    def __next__(self) -> typing.AnyStr:  # type: ignore
         """Return the next line or raise StopIteration."""
         line = self.readline()
         if not line:
             raise StopIteration
-        return line
+        return line  # type: ignore
 
     # Context manager for specific operations
-    def open_for_operation(self, func: typing.Callable[[typing.IO], T]) -> T:
+    def open_for_operation(self, func: typing.Callable[[typing.IO], T]) -> T:  # type: ignore
         """
         Open the file, perform an operation, and ensure it's closed afterward.
 
@@ -222,29 +236,30 @@ class FileProxy:
 
 
 class CacheInstanceFieldMixin(object):
-    def get_cache_key(self):
+    def get_cache_key(self) -> str:
         raise NotImplementedError
 
-    def set_field_cache_value(self, instance, value):
-        instance._state.set_cache_for_pipeline_field(
+    def set_field_cache_value(self, instance: "Pipeline", value: typing.Any) -> None:
+        instance.get_pipeline_state().set_cache_for_pipeline_field(
             instance, self.get_cache_key(), value
         )
 
 
 class InputDataField(CacheInstanceFieldMixin):
-
     __slots__ = ("name", "data_type", "default", "required")
 
     def __init__(
         self,
-        name: str = None,
+        name: typing.Optional[str] = None,
         required: bool = False,
-        data_type: typing.Union[typing.Type, typing.Tuple[typing.Type]] = UNKNOWN,
+        help_text: str = None,
+        data_type: typing.Union[
+            typing.Type[typing.Any], typing.Tuple[typing.Type[typing.Any]], object
+        ] = UNKNOWN,
         default: typing.Any = EMPTY,
         default_factory: typing.Callable[[], typing.Any] = None,
-        batch_processor: BATCH_PROCESSOR_TYPE = None,
+        batch_processor: typing.Optional[BatchProcessType] = None,
         batch_size: int = batch_defaults.DEFAULT_BATCH_SIZE,
-        help_text: str = None,
     ):
         self.name = name
         self.data_type = (
@@ -252,7 +267,7 @@ class InputDataField(CacheInstanceFieldMixin):
         )
 
         for _type in self.data_type:
-            if _type is not UNKNOWN and not is_type(_type):
+            if _type is not UNKNOWN and not is_type(_type):  # type: ignore
                 raise TypeError(f"Data type '{_type}' is not valid type")
 
         self.default = default
@@ -275,17 +290,18 @@ class InputDataField(CacheInstanceFieldMixin):
         if batch_processor:
             self._set_batch_processor(batch_processor)
 
-    def _set_batch_processor(self, processor: BATCH_PROCESSOR_TYPE):
-        if processor:
-            valid = validate_batch_processor(processor)
-            if valid is False:
-                raise ImproperlyConfigured(
-                    "Batch processor error. Batch processor must be iterable and generators"
-                )
+    def _set_batch_processor(self, processor: BatchProcessType) -> None:
+        valid = validate_batch_processor(processor)
+        if not valid:
+            raise ImproperlyConfigured(
+                "Batch processor error. Batch processor must be a callable that "
+                "accepts a collection and an optional batch size, and returns "
+                "an iterator or generator."
+            )
 
-            self.batch_processor = processor
+        self.batch_processor = processor
 
-    def __set_name__(self, owner, name):
+    def __set_name__(self, owner: object, name: str) -> None:  # noqa
         """
         Set the name of this field when it's assigned to a class.
 
@@ -296,7 +312,9 @@ class InputDataField(CacheInstanceFieldMixin):
         if self.name is None:
             self.name = name
 
-    def __get__(self, instance, owner=None):
+    def __get__(
+        self, instance: object, owner: typing.Optional[object] = None
+    ) -> typing.Any:
         """
         Get the value of this field from an instance.
 
@@ -319,7 +337,7 @@ class InputDataField(CacheInstanceFieldMixin):
 
         return value
 
-    def __set__(self, instance, value):
+    def __set__(self, instance: object, value: typing.Any) -> None:
         """
         Set the value of this field on an instance.
 
@@ -332,11 +350,12 @@ class InputDataField(CacheInstanceFieldMixin):
             ValueError: If the field is required but no value is provided
         """
         if UNKNOWN not in self.data_type and value is not None:
-            if not isinstance(value, self.data_type):
+            if not isinstance(value, self.data_type):  # type: ignore
                 raise TypeError(
                     f"Value for '{self.name}' has incorrect type. Expected {self.data_type}, "
                     f"got {type(value).__name__}."
                 )
+
         if callable(value):
             raise TypeError(
                 f"Value for '{self.name}' cannot be a callable. Did you mean to call the function?"
@@ -350,42 +369,39 @@ class InputDataField(CacheInstanceFieldMixin):
             elif self.default_factory is not None:
                 value = self.default_factory()
 
-        self.set_field_cache_value(instance, value)
-        instance.__dict__[self.name] = value
+        self.set_field_cache_value(instance, value)  # type: ignore
+        instance.__dict__[self.name] = value  # type: ignore
 
-    def get_cache_key(self):
-        return self.name
+    def get_cache_key(self) -> str:
+        return typing.cast(str, self.name)
 
     @property
-    def has_batch_operation(self):
+    def has_batch_operation(self) -> bool:
         return self.batch_processor is not None
 
 
 class FileInputDataField(InputDataField):
-
     def __init__(
         self,
-        path: typing.Union[str, os.PathLike] = None,
+        path: typing.Union[str, os.PathLike[str], None] = None,
         required: bool = False,
         chunk_size: int = batch_defaults.DEFAULT_CHUNK_SIZE,
         mode: str = "r",
         encoding: typing.Optional[str] = None,
-        help_text: str = None,
     ):
         self.mode = mode
         self.encoding = encoding
 
         super().__init__(
-            name=path,
+            name=typing.cast(str, path),
             required=required,
             data_type=(str, os.PathLike),
             default=EMPTY,
             batch_size=chunk_size,
             batch_processor=batch_defaults.file_stream_batch_processor,
-            help_text=help_text,
         )
 
-    def __set__(self, instance, value):
+    def __set__(self, instance: object, value: typing.Any) -> None:
         """
         Set the file path, validating that it exists and is a file.
 
@@ -401,7 +417,9 @@ class FileInputDataField(InputDataField):
 
         super().__set__(instance, value)
 
-    def __get__(self, instance, owner=None) -> typing.Optional[FileProxy]:
+    def __get__(
+        self, instance: object, owner: typing.Optional[object] = None
+    ) -> typing.Optional[FileProxy]:
         """
         Get an open file handle for the file path.
 
@@ -416,12 +434,12 @@ class FileInputDataField(InputDataField):
             The caller is responsible for closing the file when done
         """
         if instance is None:
-            return self
+            return self  # type: ignore
 
-        value: typing.Union[str, os.PathLike] = super().__get__(instance, owner)
+        value: typing.Union[str, os.PathLike[str]] = super().__get__(instance, owner)
 
         if value:
-            kwargs = {}
+            kwargs: typing.Dict[str, typing.Any] = {}
             if "b" not in self.mode and self.encoding is not None:
                 kwargs["encoding"] = self.encoding
 

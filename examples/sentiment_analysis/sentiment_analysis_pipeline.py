@@ -1,7 +1,7 @@
 import os
 
-from nexus.pipeline import Pipeline
-from nexus.fields import FileInputDataField, InputDataField
+from volnux.pipeline import Pipeline
+from volnux.fields import FileInputDataField, InputDataField
 
 
 class SentimentAnalysisPipeline(Pipeline):
