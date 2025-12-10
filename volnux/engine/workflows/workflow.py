@@ -20,20 +20,54 @@ import typing
 import inspect
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 from .registry import (
     WorkflowSource,
     get_workflow_registry,
 )
 from volnux.pipeline import Pipeline, BatchPipeline
+from volnux.conf import ConfigLoader
 from volnux.import_utils import load_module_from_path, load_multiple_submodules
 
+if typing.TYPE_CHECKING:
+    from .trigger.triggers import TriggerBase
+
 logger = logging.getLogger(__name__)
+
+system_conf = ConfigLoader.get_lazily_loaded_config()
 
 
 class WorkflowExecutionError(Exception):
     """Exception raised when pipeline execution fails."""
+
+
+class TriggerRegistry:
+    """Central registry for managing all triggers."""
+
+    def __init__(self):
+        self._triggers: typing.Dict[str, "TriggerBase"] = {}
+
+    def register(self, trigger: "TriggerBase") -> None:
+        """Register a trigger."""
+        if trigger.trigger_id in self._triggers:
+            raise ValueError(f"Trigger {trigger.trigger_id} already registered")
+
+        self._triggers[trigger.trigger_id] = trigger
+
+        logger.info(f"Registered trigger {trigger.trigger_id} for workflow {trigger.workflow_name}")
+
+    def unregister(self, trigger_id: str):
+        """Unregister a trigger."""
+        if trigger_id not in self._triggers:
+            raise ValueError(f"Trigger {trigger_id} not found")
+
+        del self._triggers[trigger_id]
+        logger.info(f"Unregistered trigger {trigger_id}")
+
+    def get_trigger(self, trigger_id: str) -> Optional["TriggerBase"]:
+        """Get a trigger by ID."""
+        return self._triggers.get(trigger_id)
 
 
 class WorkflowConfig(ABC):
@@ -87,9 +121,11 @@ class WorkflowConfig(ABC):
 
         # Registry storage
         self._registry = None
-        self._settings: Dict[str, Any] = {}
+        self._settings: ConfigLoader = system_conf
 
         self._loaded_modules: typing.Dict[str, types.ModuleType] = {}
+
+        self.triggers: TriggerRegistry = TriggerRegistry()
 
         # Call ready hook for infrastructure setup
         self.ready()
@@ -116,9 +152,13 @@ class WorkflowConfig(ABC):
         """Register a registry source (infrastructure resource)."""
         self.get_registry().add_workflow_source(source)
 
+    def register_trigger(self, trigger: "TriggerBase") -> None:
+        """Register a trigger."""
+
+
     def set_setting(self, key: str, value: Any):
         """Set a configuration setting."""
-        self._settings[key] = value
+        self._settings.add(key, value)
 
     def get_setting(self, key: str, default: Any = None) -> Any:
         """Get a configuration setting."""

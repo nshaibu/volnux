@@ -34,7 +34,7 @@ def extract_element_type(dtype: typing.Type) -> typing.Optional[typing.Type]:
     """
     args = typing.get_args(dtype)
     if args:
-        return args[0] if len(args) == 1 else args[0]
+        return args[0]
     return None
 
 
@@ -146,7 +146,8 @@ class InputDataField(CacheInstanceFieldMixin):
             Batch processor if applicable, None otherwise
         """
         for dtype in self.data_type:
-            if is_collection(dtype):
+            status, _ = is_collection(dtype)
+            if status:
                 return batch_defaults.list_batch_processor
         return None
 
@@ -215,18 +216,13 @@ class InputDataField(CacheInstanceFieldMixin):
         Returns:
             Field value, default value, or descriptor itself (if accessed on class)
         """
-        # Return descriptor when accessed on class
         if instance is None:
             return self
 
-        # Get value from instance dict
         value = instance.__dict__.get(self.name)
-
-        # Return value if set
         if value is not None:
             return value
 
-        # Return default or factory result
         if self.default is not EMPTY:
             return self.default
         elif self.default_factory is not None:
@@ -234,7 +230,7 @@ class InputDataField(CacheInstanceFieldMixin):
 
         return None
 
-    def __set__(self, instance: object, value: typing.Any) -> None:
+    def __set__(self, instance: "Pipeline", value: typing.Any) -> None:
         """
         Set field value on instance with validation.
 
@@ -354,21 +350,21 @@ class InputDataField(CacheInstanceFieldMixin):
 
     def get_cache_key(self) -> str:
         """
-        Get cache key for this field.
+        Get a cache key for this field.
 
         Returns:
-            Field name as cache key
+            Field name as a cache key
         """
         return typing.cast(str, self.name)
 
     @property
     def has_batch_operation(self) -> bool:
-        """Check if field has batch processing configured."""
+        """Check if the field has batch processing configured."""
         return self.batch_processor is not None
 
     @property
     def is_batch_mode(self) -> bool:
-        """Check if field is in batch processing mode."""
+        """Check if the field is in batch processing mode."""
         return self._batch_mode or self.batch_processor is not None
 
     def __repr__(self) -> str:
