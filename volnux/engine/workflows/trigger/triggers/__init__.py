@@ -3,6 +3,7 @@ from .chain import WorkflowChainTrigger
 from .event import EventTrigger
 from .condition import ConditionTrigger
 from .manual import ManualTrigger
+
 # from .schedule import ScheduleTrigger
 from .webhook import WebhookTrigger
 

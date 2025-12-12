@@ -12,6 +12,7 @@ from volnux.registry import Registry
 from volnux.setup import initialise_workflows
 from volnux.import_utils import load_module_from_path
 from volnux.engine.workflows import WorkflowRegistry
+from volnux.engine.workflows.trigger.engine import TriggerEngine, WorkflowExecutionError
 
 from .style import Style
 
@@ -215,9 +216,9 @@ class BaseCommand(metaclass=CommandMeta):
         except (ValueError, IndexError) as e:
             raise Exception(f"Error rendering template {template_name}: {e}") from e
 
-    def _initialise_workflows(
+    async def _initialise_workflows(
         self, project_dir: Path, workflow_name: typing.Optional[str] = None
-    ) -> WorkflowRegistry:
+    ) -> TriggerEngine:
         """
         Initialise workflow registry.
         :param project_dir: Project directory
@@ -230,18 +231,23 @@ class BaseCommand(metaclass=CommandMeta):
             )
             if not workflows_initialiser:
                 raise CommandError(
-                    f"Failed to load workflow initialiser module from path: {project_dir / 'init.py'}"
+                    f"Failed to load workflow initializer module from path: {project_dir / 'init.py'}"
                 )
 
-            workflows_registry = typing.cast(
-                WorkflowRegistry, workflows_initialiser.workflows
-            )
+            engine = typing.cast(TriggerEngine, workflows_initialiser.engine)
         else:
-            workflows_registry = initialise_workflows(project_dir, workflow_name)
+            engine = await initialise_workflows(project_dir, workflow_name)
+
+        try:
+            workflows_registry = engine.get_workflows_registry()
+        except WorkflowExecutionError:
+            raise CommandError(
+                "Workflow executor was not provided. The framework has not been initialized yet."
+            )
 
         if not workflows_registry.is_ready():
             raise CommandError("Workflow registry is not ready yet, try again later.")
-        return workflows_registry
+        return engine
 
     def load_project_config(self) -> Optional[types.ModuleType]:
         """

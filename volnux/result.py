@@ -281,7 +281,7 @@ class ResultSet(typing.MutableSet[Result]):
         new._context_types = self._context_types.copy()
         return new
 
-    def get(self, **filters: typing.Dict[str, typing.Any]) -> Result:
+    def get(self, **filters: typing.Any) -> Result:
         """
         Get a single result matching the filters.
         Raises MultiValueError if more than one result is found.
@@ -295,7 +295,7 @@ class ResultSet(typing.MutableSet[Result]):
             )
         return qs[0]
 
-    def filter(self, **filter_params: typing.Dict[str, typing.Any]) -> "ResultSet":
+    def filter(self, **filter_params: typing.Any) -> "ResultSet":
         """
         Filter results by attribute values with support for nested fields.
 

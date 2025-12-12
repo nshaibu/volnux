@@ -17,6 +17,8 @@ class ConditionTrigger(TriggerBase):
     No event bus needed!
     """
 
+    trigger_type = TriggerType.CONDITION
+
     def __init__(
         self,
         workflow_name: str,
@@ -96,6 +98,3 @@ class ConditionTrigger(TriggerBase):
         except Exception as e:
             logger.error(f"Condition evaluation failed: {e}")
             return False
-
-    def get_activation_source(self) -> TriggerType:
-        return TriggerType.CONDITION

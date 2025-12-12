@@ -22,6 +22,8 @@ class ScheduleTrigger(TriggerBase):
     No event bus required!
     """
 
+    trigger_type = TriggerType.SCHEDULE
+
     def __init__(
         self,
         workflow_name: str,
@@ -118,6 +120,3 @@ class ScheduleTrigger(TriggerBase):
             raise ValueError(f"Invalid interval unit: {unit}")
 
         return value * multipliers[unit]
-
-    def get_activation_source(self) -> TriggerType:
-        return TriggerType.SCHEDULE

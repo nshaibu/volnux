@@ -18,6 +18,8 @@ class WebhookTrigger(TriggerBase):
     Note: Requires integration with a web framework (FastAPI, Flask, etc.)
     """
 
+    trigger_type = TriggerType.WEBHOOK
+
     def __init__(
         self,
         workflow_name: str,
@@ -77,6 +79,3 @@ class WebhookTrigger(TriggerBase):
         await self.activate(
             webhook_data=request_data, received_at=datetime.now().isoformat()
         )
-
-    def get_activation_source(self) -> TriggerType:
-        return "webhook"

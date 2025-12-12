@@ -15,6 +15,8 @@ class WorkflowChainTrigger(TriggerBase):
     Uses event bus BUT could also use direct callback registration.
     """
 
+    trigger_type = TriggerType.WORKFLOW_CHAIN
+
     def __init__(
         self,
         workflow_name: str,
@@ -72,6 +74,3 @@ class WorkflowChainTrigger(TriggerBase):
             parent_result=event.data.get("result"),
             parent_execution_id=event.data.get("execution_id"),
         )
-
-    def get_activation_source(self) -> TriggerType:
-        return TriggerType.WORKFLOW_CHAIN

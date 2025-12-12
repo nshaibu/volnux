@@ -20,6 +20,7 @@ class TriggerType(Enum):
     CONDITION = "condition"
     WORKFLOW_CHAIN = "workflow_chain"
     MANUAL = "manual"
+    WEBHOOK = "webhook"
 
 
 @dataclass
@@ -94,6 +95,8 @@ class TriggerBase(ObjectIdentityMixin, ABC):
     """
     Base trigger class
     """
+
+    trigger_type: TriggerType
 
     def __init__(
         self,
@@ -194,10 +197,9 @@ class TriggerBase(ObjectIdentityMixin, ABC):
 
         raise NotImplementedError("No activation callback implemented.")
 
-    @abstractmethod
     def get_activation_source(self) -> TriggerType:
         """Return the source type of activation."""
-        pass
+        return self.trigger_type
 
     def pause(self):
         """Pause the trigger (temporarily disable)."""

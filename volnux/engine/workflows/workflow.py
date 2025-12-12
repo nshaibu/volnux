@@ -20,18 +20,20 @@ import typing
 import inspect
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Callable, Awaitable
 
 from .registry import (
     WorkflowSource,
     get_workflow_registry,
 )
+from volnux.result import ResultSet as TriggerSet
 from volnux.pipeline import Pipeline, BatchPipeline
 from volnux.conf import ConfigLoader
 from volnux.import_utils import load_module_from_path, load_multiple_submodules
 
 if typing.TYPE_CHECKING:
-    from .trigger.triggers import TriggerBase
+    from .trigger.triggers import TriggerBase, TriggerActivation
+    from .trigger.triggers.base import TriggerType
 
 logger = logging.getLogger(__name__)
 
@@ -42,32 +44,69 @@ class WorkflowExecutionError(Exception):
     """Exception raised when pipeline execution fails."""
 
 
+class WorkflowNotfound(Exception):
+    """Workflow was not found"""
+
+
 class TriggerRegistry:
     """Central registry for managing all triggers."""
 
     def __init__(self):
-        self._triggers: typing.Dict[str, "TriggerBase"] = {}
+        self._triggers: TriggerSet["TriggerBase"] = TriggerSet()
 
-    def register(self, trigger: "TriggerBase") -> None:
-        """Register a trigger."""
-        if trigger.trigger_id in self._triggers:
-            raise ValueError(f"Trigger {trigger.trigger_id} already registered")
+    def register(
+        self,
+        trigger: "TriggerBase",
+        trigger_activation_callback: Callable[["TriggerActivation"], Awaitable[None]],
+    ) -> None:
+        """
+        Register a trigger.
+        Args:
+            trigger: Instance of a trigger
+            trigger_activation_callback: callback to handle trigger when activated
+        Raises:
+            ValueError: If the trigger already exists
+        """
+        from .trigger.triggers import TriggerLifecycle
 
-        self._triggers[trigger.trigger_id] = trigger
+        trigger_qs = self._triggers.filter(trigger_type=trigger.trigger_type)
+        if trigger_qs.first():
+            raise ValueError(f"Trigger type {trigger.trigger_type.value} already added")
 
-        logger.info(f"Registered trigger {trigger.trigger_id} for workflow {trigger.workflow_name}")
+        trigger.set_activation_callback(trigger_activation_callback)
+        trigger.lifecycle = TriggerLifecycle.INITIALIZED
+        self._triggers.add(trigger)
+        logger.info(
+            f"Registered trigger {trigger.trigger_id} for workflow {trigger.workflow_name}"
+        )
 
     def unregister(self, trigger_id: str):
-        """Unregister a trigger."""
-        if trigger_id not in self._triggers:
+        """
+        Unregister a trigger.
+        Args:
+            trigger_id: trigger id
+        Raises:
+            ValueError: if the trigger does not exists
+        """
+        trigger = self.get_trigger(trigger_id)
+        if trigger is None:
             raise ValueError(f"Trigger {trigger_id} not found")
 
-        del self._triggers[trigger_id]
+        self._triggers.discard(trigger)
         logger.info(f"Unregistered trigger {trigger_id}")
 
     def get_trigger(self, trigger_id: str) -> Optional["TriggerBase"]:
-        """Get a trigger by ID."""
-        return self._triggers.get(trigger_id)
+        """
+        Get a trigger by ID.
+        Args:
+            trigger_id: trigger's id
+        Returns:
+            trigger instance if it exist
+        """
+        try:
+            return typing.cast("TriggerBase", self._triggers.get(id=trigger_id))
+        except KeyError:
+            return None
 
 
 class WorkflowConfig(ABC):
@@ -154,7 +193,10 @@ class WorkflowConfig(ABC):
 
     def register_trigger(self, trigger: "TriggerBase") -> None:
         """Register a trigger."""
+        from volnux.engine.workflows.trigger import get_trigger_engine
 
+        engine = get_trigger_engine()
+        engine.register(trigger)
 
     def set_setting(self, key: str, value: Any):
         """Set a configuration setting."""

@@ -19,6 +19,8 @@ class EventTrigger(TriggerBase):
     Activation mechanism: Subscribe to event bus topics.
     """
 
+    trigger_type = TriggerType.EVENT
+
     def __init__(
         self,
         workflow_name: str,
@@ -75,6 +77,3 @@ class EventTrigger(TriggerBase):
             event_data=event.data,
             event_source=event.source,
         )
-
-    def get_activation_source(self) -> TriggerType:
-        return TriggerType.EVENT

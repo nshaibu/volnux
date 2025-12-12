@@ -1,5 +1,4 @@
-import typing
-from pathlib import Path
+from asgiref import sync
 from typing import Optional
 
 from ..base import BaseCommand, CommandCategory, CommandError
@@ -21,7 +20,9 @@ class ListWorkflowsCommand(BaseCommand):
 
         project_dir, _ = self.get_project_root_and_config_module()
 
-        workflows_registry = self._initialise_workflows(project_dir)
+        engine = sync.async_to_sync(self._initialise_workflows)(project_dir, None)
+
+        workflows_registry = engine.get_workflows_registry()
 
         num_of_workflows = 0
         for workflow in workflows_registry.get_workflow_configs():

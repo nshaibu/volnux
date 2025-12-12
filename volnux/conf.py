@@ -41,7 +41,10 @@ class ConfigLoader:
                 continue
 
         if last_exception:
-            logger.error(f"Failed to load config files: {last_exception}", exc_info=last_exception)
+            logger.error(
+                f"Failed to load config files: {last_exception}",
+                exc_info=last_exception,
+            )
 
     def _get_config_files(
         self, config_file: typing.Optional[str] = None

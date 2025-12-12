@@ -12,7 +12,7 @@ from typing import (
     Optional,
 )
 
-from volnux.engine.workflows.workflow import WorkflowExecutionError
+from volnux.engine.workflows.workflow import WorkflowExecutionError, WorkflowNotfound
 from .triggers import TriggerBase, TriggerLifecycle, TriggerActivation
 
 if TYPE_CHECKING:
@@ -25,6 +25,9 @@ class BaseWorkflowConfigExecutor(abc.ABC):
 
     def __init__(self, workflow_registry: "WorkflowRegistry"):
         self._workflow_registry = workflow_registry
+
+    def get_workflow_registry(self) -> "WorkflowRegistry":
+        return self._workflow_registry
 
     @abc.abstractmethod
     async def execute(self, workflow_name: str, params: Dict[str, Any]) -> Any:
@@ -76,9 +79,7 @@ class TriggerEngine:
 
     def __init__(
         self,
-        workflow_executor: Optional[
-            BaseWorkflowConfigExecutor
-        ] = None,
+        workflow_executor: Optional[BaseWorkflowConfigExecutor] = None,
         consumer_concurrency: int = 5,
     ):
         self.workflow_executor = workflow_executor
@@ -108,19 +109,41 @@ class TriggerEngine:
         """
         self.workflow_executor = workflow_executor
 
-    def register(self, trigger: TriggerBase) -> None:
-        """Register a trigger and set its activation callback."""
+    def get_workflows_registry(self) -> "WorkflowRegistry":
+        """
+        Get the system workflows registry
+        Returns:
+            workflow registry
+        Raises:
+            WorkflowExecutionError: trigger execution was not provided.
+        """
         if not self.has_workflow_executor():
-            raise WorkflowExecutionError("Workflow executor is not ready.")
+            raise WorkflowExecutionError(
+                "Workflow triggers executor was not provided. The framework has not been initialized yet."
+            )
+        return self.workflow_executor.get_workflow_registry()
 
-        if trigger.trigger_id in self.triggers:
-            raise ValueError(f"Trigger {trigger.trigger_id} already registered")
+    def register(self, trigger: TriggerBase) -> None:
+        """
+        Register a trigger and set its activation callback.
+        Args:
+            trigger: instance of the trigger
+        Raises:
+            WorkflowExecutionError: if no trigger executor was provided
+            WorkflowNotfound: Exception when workflow is not found
+            ValueError: Trigger already registered
+        """
 
-        # Set the activation callback to the engine's enqueue method
-        trigger.set_activation_callback(self._handle_activation)
+        workflow = self.get_workflows_registry().get_workflow_config(
+            trigger.workflow_name
+        )
+        if workflow is None:
+            raise WorkflowNotfound(
+                f"Workflow with name '{trigger.workflow_name}' was not found"
+            )
 
-        self.triggers[trigger.trigger_id] = trigger
-        trigger.lifecycle = TriggerLifecycle.INITIALIZED
+        workflow.triggers.register(trigger, self._handle_activation)
+
         logger.info(f"Registered trigger: {trigger.trigger_id}")
 
     def fire_trigger(
@@ -206,6 +229,10 @@ class TriggerEngine:
         """
         Individual worker that pulls tasks from the queue and executes them.
         """
+        if self.workflow_executor is None:
+            logger.error("Workflow executor is not set for consumer worker.")
+            return
+
         logger.debug(f"Consumer Worker {worker_id} started.")
         workflow_name = f"<unknown:{worker_id}>"
         while True:

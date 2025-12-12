@@ -14,6 +14,8 @@ class ManualTrigger(TriggerBase):
     No event bus or scheduling needed!
     """
 
+    trigger_type = TriggerType.MANUAL
+
     def __init__(
         self, workflow_name: str, require_confirmation: bool = False, **kwargs
     ):
@@ -50,6 +52,3 @@ class ManualTrigger(TriggerBase):
             invocation_source=invocation_params.get("source", "manual"),
             **invocation_params,
         )
-
-    def get_activation_source(self) -> TriggerType:
-        return TriggerType.MANUAL
