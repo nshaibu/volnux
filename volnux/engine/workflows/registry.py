@@ -233,6 +233,9 @@ class WorkflowRegistry:
             if workflows_dir.is_dir():
                 dirname = workflows_dir.name
 
+                if workflow_name is not None and workflow_name != dirname:
+                    continue
+
                 local = WorkflowSource(
                     name=dirname,
                     location=workflows_dir,  # type: ignore
@@ -240,9 +243,6 @@ class WorkflowRegistry:
                     version=version,
                 )
                 self._workflow_local_sources[dirname] = local
-
-                if workflow_name is not None and workflow_name == dirname:
-                    break
 
     async def load_workflow_configs(self) -> None:
         """

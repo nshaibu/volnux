@@ -23,6 +23,14 @@ class ExecutableASTGenerator(ASTVisitorInterface):
         self._generated_task_chain: typing.Optional[TaskProtocol] = None
         self._current_task: typing.Optional[TaskProtocol] = None
 
+    def apply_directive(self, name: str, value: typing.Union[str, int]):
+        """Apply configuration directive"""
+        if name == "recursive-depth":
+            from volnux.utils import _extend_recursion_depth
+            result = _extend_recursion_depth(value)
+            if isinstance(result, Exception):
+                logger.warning(f"Failed to set recursive-depth: {result}")
+
     def _visit_node(self, node: ast.ASTNode):
         """Generic node visitor dispatcher"""
         if isinstance(node, ast.ProgramNode):
@@ -47,6 +55,9 @@ class ExecutableASTGenerator(ASTVisitorInterface):
             raise PointyParseError(f"Unknown node type: {type(node)}")
 
     def visit_program(self, node: ast.ProgramNode):
+        for directive_name, directive_value in node.directives.items():
+            self.apply_directive(directive_name, self._visit_node(directive_value))
+
         chain = node.chain
         if chain is None:
             return
@@ -156,9 +167,8 @@ class ExecutableASTGenerator(ASTVisitorInterface):
         self, node: ast.BlockNode
     ) -> typing.Dict[str, typing.Any]:
         assign = {}
-        for statement in node.statements:
-            if typing.TYPE_CHECKING:
-                statement = typing.cast(ast.AssignmentNode, statement)
+        statements = typing.cast(typing.List[ast.AssignmentNode], node.statements)
+        for statement in statements:
             assign.update(self.visit_assignment(statement))
         return assign
 
@@ -177,6 +187,13 @@ class ExecutableASTGenerator(ASTVisitorInterface):
                 self.visit_assignment_block(node.options)
             )
         return instance
+
+    def visit_directive(self, node: ast.DirectiveNode):
+        """Visit individual directive node"""
+        return self._visit_node(node.value)
+
+    def visit_variable_access(self, node: ast.VariableAccessNode):
+        return self._visit_node(node.value)
 
     def visit_conditional(self, node: ast.ConditionalNode):
         parent = self.visit_task(node.task)

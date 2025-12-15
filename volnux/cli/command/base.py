@@ -3,6 +3,7 @@ import logging
 import sys
 import types
 import typing
+import asyncio
 from abc import ABCMeta, abstractmethod
 from enum import Enum
 from typing import Optional, Any, Dict
@@ -234,7 +235,7 @@ class BaseCommand(metaclass=CommandMeta):
                     f"Failed to load workflow initializer module from path: {project_dir / 'init.py'}"
                 )
 
-            engine = typing.cast(TriggerEngine, workflows_initialiser.engine)
+            engine = typing.cast(TriggerEngine, await workflows_initialiser.engine)
         else:
             engine = await initialise_workflows(project_dir, workflow_name)
 
@@ -242,12 +243,21 @@ class BaseCommand(metaclass=CommandMeta):
             workflows_registry = engine.get_workflows_registry()
         except WorkflowExecutionError:
             raise CommandError(
-                "Workflow executor was not provided. The framework has not been initialized yet."
+                "Workflow executor was not provided. The framework was not initialized."
             )
 
         if not workflows_registry.is_ready():
             raise CommandError("Workflow registry is not ready yet, try again later.")
         return engine
+
+    def initialise_workflows(
+        self, project_dir: Path, workflow_name: typing.Optional[str] = None
+    ) -> TriggerEngine:
+        """Initialise workflows engine. Handles async execution for CLI context."""
+        try:
+            return asyncio.run(self._initialise_workflows(project_dir, workflow_name))
+        except Exception as e:
+            raise CommandError(f"Failed to initialize workflows: {e}")
 
     def load_project_config(self) -> Optional[types.ModuleType]:
         """

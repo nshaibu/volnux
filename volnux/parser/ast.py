@@ -2,9 +2,11 @@ import importlib
 import importlib.util
 import typing
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
+from .__version__ import __version__ as version
+from .task_namespace import VALID_NAMESPACES
 from .protocols import GroupingStrategy
 
 if typing.TYPE_CHECKING:
@@ -29,6 +31,7 @@ class LiteralType(Enum):
     STRING = "string"
     IMPORT_STRING = "import_string"
     BOOLEAN = "boolean"
+    ASSIGNMENT_REFERENCE = "assignment_reference"
 
     @classmethod
     def determine_literal_type(cls, value) -> "LiteralType":
@@ -40,6 +43,8 @@ class LiteralType(Enum):
             if cls._is_import_string(value):
                 return cls.IMPORT_STRING
             return cls.STRING
+        elif isinstance(value, VariableAccessNode):
+            return cls.ASSIGNMENT_REFERENCE
         else:
             raise ValueError(f"Unsupported literal type: {type(value).__name__}")
 
@@ -85,8 +90,10 @@ class ASTNode(ABC):
 
 @dataclass
 class ProgramNode(ASTNode):
-    __slots__ = ("chain",)
     chain: ASTNode
+    _version: str = field(repr=False, default=version)
+    global_variables: typing.Dict[str, ASTNode] = field(default_factory=dict)
+    directives: typing.Dict[str, ASTNode] = field(default_factory=dict)
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_program(self)
@@ -124,6 +131,35 @@ class BinOpNode(ASTNode):
 
 
 @dataclass
+class DirectiveNode(ASTNode):
+    name: str
+    value: "LiteralNode"
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_directive(self)
+
+
+@dataclass
+class VariableAccessNode(ASTNode):
+    __slots__ = ("name", "value")
+    name: str
+    value: "LiteralNode"
+
+    def accept(self, visitor: "ASTVisitor"):
+        raise visitor.visit_variable_access(self)
+
+
+@dataclass
+class VariableDeclNode(ASTNode):
+    __slots__ = ("name", "type")
+    name: str
+    value: typing.Union["LiteralNode", VariableAccessNode]
+
+    def accept(self, visitor: "ASTVisitor"):
+        raise NotImplementedError()
+
+
+@dataclass
 class ConditionalNode(ASTNode):
     __slots__ = ("task", "branches")
     task: "TaskNode"
@@ -138,6 +174,27 @@ class TaskNode(ASTNode):
     # __slots__ = ("task", "options")
     task: str
     options: typing.Optional[BlockNode] = None
+    namespace: str = field(default="local")
+
+    def __post_init__(self):
+        """Validate namespace if provided"""
+        if self.namespace and self.namespace not in VALID_NAMESPACES:
+            raise ValueError(
+                f"Invalid task namespace '{self.namespace}'. "
+                f"Valid namespaces: {', '.join(VALID_NAMESPACES)}"
+            )
+
+    @property
+    def fully_qualified_name(self) -> str:
+        """Get fully qualified task name"""
+        if self.namespace:
+            return f"{self.namespace}::{self.task}"
+        return self.task
+
+    @property
+    def is_external(self) -> bool:
+        """Check if task is from external source"""
+        return self.namespace is not None and self.namespace != "local"
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_task(self)

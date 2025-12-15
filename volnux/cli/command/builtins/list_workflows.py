@@ -1,4 +1,3 @@
-from asgiref import sync
 from typing import Optional
 
 from ..base import BaseCommand, CommandCategory, CommandError
@@ -20,7 +19,7 @@ class ListWorkflowsCommand(BaseCommand):
 
         project_dir, _ = self.get_project_root_and_config_module()
 
-        engine = sync.async_to_sync(self._initialise_workflows)(project_dir, None)
+        engine = self.initialise_workflows(project_dir)
 
         workflows_registry = engine.get_workflows_registry()
 

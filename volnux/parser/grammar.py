@@ -1,5 +1,6 @@
 __all__ = ["pointy_parser"]
-
+import logging
+import typing
 from ply.yacc import YaccError, yacc
 
 from . import lexer
@@ -15,10 +16,18 @@ from .ast import (
     LiteralType,
     ProgramNode,
     TaskNode,
+    VariableDeclNode,
+    VariableAccessNode,
+    DirectiveNode,
 )
+from .dag_visitor import CycleDetectionVisitor, DAGValidationError, format_cycle_error
+
+logger = logging.getLogger("volnux.parser")
 
 pointy_lexer = lexer.PointyLexer()
 tokens = pointy_lexer.tokens
+
+variables = {}
 
 precedence = (("left", "RETRY", "POINTER", "PPOINTER", "PARALLEL"),)
 
@@ -37,10 +46,62 @@ precedence = (("left", "RETRY", "POINTER", "PPOINTER", "PARALLEL"),)
 
 
 def p_program(p):
+    """program : statement_list"""
+    variable_declarations = {}
+    directives = {}
+    chain_expression = None
+
+    for statement in p[1]:
+        if isinstance(statement, VariableDeclNode):
+            variable_declarations[statement.name] = statement.value
+        elif isinstance(statement, DirectiveNode):
+            # Check for duplicate directives
+            if statement.name in directives:
+                logger.warning(
+                    f"Duplicate directive '@{statement.name}', "
+                    f"using last value: {statement.value}"
+                )
+            directives[statement.name] = statement.value
+        else:
+            # Only one chain expression allowed
+            if chain_expression is not None:
+                raise YaccError("Multiple workflow expressions not allowed")
+            chain_expression = statement
+
+    # Validate DAG mode if specified
+    mode = directives.get("mode", "CFG")
+    if mode == "DAG" and chain_expression is not None:
+        cycle_detector = CycleDetectionVisitor()
+        cycle_path = cycle_detector.has_cycle(chain_expression)
+
+        if cycle_path:
+            raise DAGValidationError(format_cycle_error(cycle_path))
+
+    p[0] = ProgramNode(
+        global_variables=variable_declarations,
+        directives=directives,
+        chain=chain_expression,
+    )
+
+
+def p_statement_list(p):
     """
-    program : expression
+    statement_list : statement
+                        | statement_list statement
     """
-    p[0] = ProgramNode(p[1])
+    if len(p) == 2:
+        p[0] = [p[1]]
+    else:
+        p[0] = p[1] + [p[2]]
+
+
+def p_statement(p):
+    """
+    statement : variable_declaration
+                 | expression
+                 | directive
+    """
+    p[0] = p[1]
 
 
 def p_expression(p):
@@ -54,8 +115,12 @@ def p_expression(p):
                 | task RETRY factor
                 | expression_groupings RETRY factor
                 | factor RETRY expression_groupings
+                | variable_declaration
     """
-    p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
+    if len(p) == 2:
+        p[0] = p[1]
+    else:
+        p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
 
 
 def p_expression_term(p):
@@ -71,6 +136,57 @@ def p_task(p):
         | expression_groupings
     """
     p[0] = p[1]
+
+
+def p_directive(p):
+    """directive : VAR_DECL COLON scalar_value"""
+    if p[1] == "mode":
+        # validate cfg and dag text
+        pass
+
+    p[0] = DirectiveNode(name=p[1], value=p[3])
+
+
+def p_variable_declaration(p):
+    """
+    variable_declaration : VAR_DECL ASSIGN value
+    """
+    var_name = p[1]
+    var_value = p[3]
+
+    variables[var_name] = var_value
+
+    p[0] = VariableDeclNode(var_name, var_value)
+
+
+def p_value(p):
+    """
+    value : scalar_value
+            | variable_reference
+    """
+    p[0] = p[1]
+
+
+def p_scalar_value(p):
+    """
+    scalar_value : INT
+                | FLOAT
+                | BOOLEAN
+                | STRING_LITERAL
+    """
+    p[0] = LiteralNode(p[1], type=LiteralType.determine_literal_type(p[1]))
+
+
+def p_variable_reference(p):
+    """variable_reference : VAR_ACCESS"""
+    var_name = p[1]
+
+    try:
+        value = variables[var_name]
+    except KeyError:
+        raise YaccError(f"Undefined variable '${var_name}'")
+
+    p[0] = VariableAccessNode(name=var_name, value=value)
 
 
 def p_descriptor(p):
@@ -104,15 +220,27 @@ def p_factor(p):
     p[0] = LiteralNode(p[1], type=LiteralType.determine_literal_type(p[1]))
 
 
-def p_task_taskname(p):
+def p_scoped_task(p):
     """
-    task : IDENTIFIER
+    task : task_name
+        | IDENTIFIER DOUBLE_COLON task_name
+    """
+    if len(p) == 2:
+        p[0] = p[1]
+    else:
+        task_instance = typing.cast(TaskNode, p[3])
+        p[0] = TaskNode(task=task_instance.task, options=task_instance.options, namespace=p[1])
+
+
+def p_task_name(p):
+    """
+    task_name : IDENTIFIER
         | IDENTIFIER LBRACKET assigment_expression_group RBRACKET
     """
     if len(p) == 2:
-        p[0] = TaskNode(p[1])
+        p[0] = TaskNode(task=p[1])
     else:
-        p[0] = TaskNode(p[1], p[3])
+        p[0] = TaskNode(task=p[1], options=p[3])
 
 
 def p_conditional_group(p):
@@ -141,6 +269,7 @@ def p_assignment_expression(p):
                             | IDENTIFIER ASSIGN INT
                             | IDENTIFIER ASSIGN FLOAT
                             | IDENTIFIER ASSIGN BOOLEAN
+                            | IDENTIFIER ASSIGN variable_reference
     """
     p[0] = AssignmentNode(
         p[1], LiteralNode(p[3], type=LiteralType.determine_literal_type(p[3]))

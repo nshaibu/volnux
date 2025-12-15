@@ -12,6 +12,8 @@ if typing.TYPE_CHECKING:
         LiteralNode,
         ProgramNode,
         TaskNode,
+        DirectiveNode,
+        VariableAccessNode
     )
 
 
@@ -50,4 +52,12 @@ class ASTVisitorInterface(ABC):
 
     @abstractmethod
     def visit_expression_grouping(self, node: "ExpressionGroupingNode"):
+        pass
+
+    @abstractmethod
+    def visit_directive(self, node: "DirectiveNode"):
+        pass
+
+    @abstractmethod
+    def visit_variable_access(self, node: "VariableAccessNode"):
         pass
