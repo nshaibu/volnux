@@ -16,7 +16,7 @@ class FileInputDataField(InputDataField):
 
     def __init__(
         self,
-        path: typing.Union[str, os.PathLike[str], None] = None,
+        path: typing.Union[str, os.PathLike, None] = None,
         required: bool = False,
         chunk_size: int = batch_defaults.DEFAULT_CHUNK_SIZE,
         mode: str = "r",
@@ -34,7 +34,7 @@ class FileInputDataField(InputDataField):
             batch_processor=batch_defaults.file_stream_batch_processor,
         )
 
-    def __set__(self, instance: object, value: typing.Any) -> None:
+    def __set__(self, instance: "Pipeline", value: typing.Any) -> None:
         """
         Set the file path, validating that it exists and is a file.
 
@@ -51,7 +51,7 @@ class FileInputDataField(InputDataField):
         super().__set__(instance, value)
 
     def __get__(
-        self, instance: object, owner: typing.Optional[object] = None
+        self, instance: "Pipeline", owner: typing.Optional[object] = None
     ) -> typing.Optional[FileProxy]:
         """
         Get an open file handle for the file path.
@@ -69,7 +69,7 @@ class FileInputDataField(InputDataField):
         if instance is None:
             return self  # type: ignore
 
-        value: typing.Union[str, os.PathLike[str]] = super().__get__(instance, owner)
+        value: typing.Union[str, os.PathLike] = super().__get__(instance, owner)
 
         if value:
             kwargs: typing.Dict[str, typing.Any] = {}

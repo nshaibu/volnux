@@ -7,6 +7,7 @@ import threading
 import typing
 
 from volnux import settings as default_settings
+from volnux.concurrency.async_utils import to_thread
 
 __all__ = ["ConfigLoader"]
 
@@ -40,8 +41,10 @@ class ConfigLoader:
                 continue
 
         if last_exception:
-            logger.error(f"Failed to load config files: {last_exception}")
-            raise last_exception
+            logger.error(
+                f"Failed to load config files: {last_exception}",
+                exc_info=last_exception,
+            )
 
     def _get_config_files(
         self, config_file: typing.Optional[str] = None
@@ -138,6 +141,11 @@ class ConfigLoader:
             logger.error(f"Config file {config_file} could not be loaded.")
             raise
 
+    async def aload_from_file(
+        self, config_file: typing.Union[str, os.PathLike]
+    ) -> None:
+        await to_thread(self.load_from_file, config_file)
+
     def get(self, key: str, default: typing.Optional[typing.Any] = None) -> typing.Any:
         """Get the configuration value, with an optional default."""
         value = self._config.get(key, default)
@@ -147,6 +155,18 @@ class ConfigLoader:
             raise AttributeError(f"Missing configuration key '{key}'")
         return value
 
+    def add(self, key, value: typing.Any) -> None:
+        with _config_lock:
+            self._config[key] = value
+
+    async def aget(
+        self, key: str, default: typing.Optional[typing.Any] = None
+    ) -> typing.Any:
+        return await to_thread(self.get, key, default)
+
+    async def aadd(self, key: str, value: typing.Any) -> None:
+        await to_thread(self.add, key, value)
+
     def __getattr__(self, item: str) -> typing.Any:
         """Handle attribute access for configuration keys."""
         if item.startswith("_"):
@@ -155,7 +175,7 @@ class ConfigLoader:
                 f"'{self.__class__.__name__}' object has no attribute '{item}'"
             )
 
-        # Look up using uppercase key
+        # Look up using an uppercase key
         return self.get(item.upper())
 
     def __repr__(self) -> str:

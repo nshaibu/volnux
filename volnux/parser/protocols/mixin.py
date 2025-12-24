@@ -15,6 +15,8 @@ class TaskProtocolMixin(typing.Protocol):
     # options specified in pointy scripts for tasks are kept here
     options: typing.Optional["Options"]
 
+    sequence_number: typing.Optional[int]
+
     parent_node: typing.Optional["TaskType"]
 
     # sink event this is where the conditional events collapse

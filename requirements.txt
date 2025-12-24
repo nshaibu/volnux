@@ -1,6 +1,7 @@
 ply==3.11
 six==1.17.0
 treelib==1.7.0
+asgiref>=3.11.0
 typing-extensions==4.12.2
 more-itertools>=8.10.0
 apscheduler<=3.11.0

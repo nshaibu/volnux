@@ -3,7 +3,10 @@ import sys
 import threading
 import typing
 import warnings
+from dataclasses import dataclass, field
 from collections import defaultdict
+
+from volnux.result import ResultSet
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +15,21 @@ class RegistryNotReady(Exception):
     """The registry isn't fully populated yet."""
 
     pass
+
+
+@dataclass
+class RegistryEntry:
+    """The registry entry."""
+
+    name: str  # custom name
+    module_path: str
+    handler: typing.Any
+    handler_name: str
+    namespace: str
+    extra: typing.Dict[str, typing.Any] = field(default_factory=dict)
+
+    def __hash__(self) -> int:
+        return hash((self.module_path, self.name, self.namespace, self.handler_name))
 
 
 class Registry:
@@ -23,13 +41,7 @@ class Registry:
     """
 
     def __init__(self) -> None:
-        # {'myapp.events': {'UserLoginEvent': UserLoginEvent}}
-        self.all_classes: typing.Dict[
-            str, typing.Dict[str, typing.Type[typing.Any]]
-        ] = defaultdict(dict)
-
-        # Direct name-to-class mapping {'UserLoginEvent': UserLoginEvent}
-        self._name_registry: typing.Dict[str, typing.Type[typing.Any]] = {}
+        self._handler_registry: ResultSet[RegistryEntry] = ResultSet()
 
         # Thread lock for thread-safe operations
         self._lock = threading.RLock()
@@ -41,7 +53,11 @@ class Registry:
         self._process_id = sys.modules[__name__]
 
     def register(
-        self, klass: typing.Type[typing.Any], name: typing.Optional[str] = None
+        self,
+        klass: typing.Type[typing.Any],
+        name: typing.Optional[str] = None,
+        namespace: typing.Optional[str] = "local",
+        **extra: typing.Any,
     ) -> None:
         """
         Register for classes.
@@ -49,7 +65,8 @@ class Registry:
         Args:
             klass: The event class to register
             name: Optional name for the class
-
+            namespace: Optional namespace for the class
+            extra: Optional extra arguments
         Raises:
             RuntimeWarning: If event already registered (same module/name)
             RuntimeError: If conflicting event found (different module, same name)
@@ -57,16 +74,16 @@ class Registry:
         with self._lock:
             module_label = klass.__module__
             klass_name = klass.__name__
-            module_classes = self.all_classes[module_label]
+            name = name or klass_name
 
-            # Check for duplicate registration
-            if klass_name in module_classes:
-                existing = module_classes[klass_name]
+            entry_qs = self._handler_registry.filter(name=name, namespace=namespace)
 
+            existing_entry = typing.cast(RegistryEntry, entry_qs.first())
+            if existing_entry:
                 # Same class re-registered - warn but allow
                 if (
-                    klass.__name__ == existing.__name__
-                    and klass.__module__ == existing.__module__
+                    klass.__name__ == existing_entry.handler.__name__
+                    and klass.__module__ == existing_entry.module_path
                 ):
                     warnings.warn(
                         f"Class '{module_label}.{klass_name}' was already registered. "
@@ -77,15 +94,19 @@ class Registry:
                 else:
                     raise RuntimeError(
                         f"Conflicting '{klass_name}' class in module '{module_label}': "
-                        f"{existing} and {klass}."
+                        f"{existing_entry.handler} and {klass}."
                     )
 
-            module_classes[klass_name] = klass
+            entry = RegistryEntry(
+                name=name,
+                module_path=module_label,
+                handler=klass,
+                handler_name=klass_name,
+                namespace=namespace,
+                extra=extra,
+            )
 
-            if name is None:
-                self._name_registry[klass_name] = klass
-            else:
-                self._name_registry[name] = klass
+            self._handler_registry.add(entry)
 
             if not self.ready:
                 self.set_ready()
@@ -106,28 +127,41 @@ class Registry:
         Raises:
             LookupError: If event not found
         """
-        try:
-            return self.all_classes[module_label][klass_name]
-        except KeyError:
-            raise LookupError(f"Event '{module_label}.{klass_name}' not registered.")
+        entry_qs = self._handler_registry.filter(
+            module_label=module_label, handler_name=klass_name
+        )
+        if entry_qs.is_empty():
+            raise LookupError(f"Class '{module_label}.{klass_name}' not registered.")
+        entry = typing.cast(RegistryEntry, entry_qs.first())
+        return entry.handler
 
-    def get_by_name(self, klass_name: str) -> typing.Optional[typing.Type[typing.Any]]:
+    def get_by_name(
+        self, klass_name: str, namespace: str = "local"
+    ) -> typing.Optional[typing.Type[typing.Any]]:
         """
         Fast lookup by event name only (without module).
 
         Args:
-            klass_name: The event class name
+            klass_name: The class name
+            namespace: The namespace
 
         Returns:
             The event class or None if not found
+        Raises:
+            MultiValueError: If multiple class have the same name
         """
-        return self._name_registry.get(klass_name)
+        try:
+            entry_qs = self._handler_registry.get(name=klass_name, namespace=namespace)
+            entry = typing.cast(RegistryEntry, entry_qs)
+            return entry.handler
+        except KeyError:
+            return None
 
     def get_classes_for_module(
         self, module_label: str
     ) -> typing.Dict[str, typing.Type[typing.Any]]:
         """
-        Get all events registered under a specific module.
+        Get all classes registered under a specific module.
 
         Args:
             module_label: The module path
@@ -135,23 +169,49 @@ class Registry:
         Returns:
             Dictionary of event_name => event_class
         """
-        return dict(self.all_classes.get(module_label, {}))
+        class_dict = {}
+        for entry in self._handler_registry.filter(module_path=module_label):
+            entry = typing.cast(RegistryEntry, entry)
+            class_dict[entry.handler_name] = entry.handler
+
+        return class_dict
 
     def list_classes_names(self) -> typing.List[str]:
         """List all registered class names."""
-        return sorted(self._name_registry.keys())
+        return sorted(
+            [
+                entry.handler_name
+                for entry in typing.cast(
+                    typing.Set[RegistryEntry], self._handler_registry
+                )
+            ]
+        )
 
     def list_all_classes(self) -> typing.FrozenSet[typing.Type[typing.Any]]:
         """List all classes with the registry"""
-        return frozenset(list(self._name_registry.values()))
+        return frozenset(
+            [
+                entry.handler
+                for entry in typing.cast(
+                    typing.Set[RegistryEntry], self._handler_registry
+                )
+            ]
+        )
 
     def list_modules(self) -> typing.List[str]:
         """List all modules that have registered classes."""
-        return sorted(self.all_classes.keys())
+        return sorted(
+            [
+                entry.module_path
+                for entry in typing.cast(
+                    typing.Set[RegistryEntry], self._handler_registry
+                )
+            ]
+        )
 
     def is_registered(self, klass_name: str) -> bool:
-        """Check if an event is registered."""
-        return klass_name in self._name_registry
+        """Check if a class is registered."""
+        return not self._handler_registry.filter(handler_name=klass_name).is_empty()
 
     def check_events_ready(self) -> None:
         """
@@ -169,6 +229,5 @@ class Registry:
         Completely clear the registry.
         """
         with self._lock:
-            self.all_classes.clear()
-            self._name_registry.clear()
+            self._handler_registry.clear()
             self.ready = False

@@ -1,6 +1,7 @@
 import logging
 import typing
 import os
+import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -217,7 +218,7 @@ class WorkflowRegistry:
     def make_ready(self) -> None:
         self._ready = True
 
-    def populate_local_workflow_configs(
+    async def populate_local_workflow_configs(
         self, project_dir: Path, workflow_name: typing.Optional[str] = None
     ) -> None:
         """
@@ -232,6 +233,9 @@ class WorkflowRegistry:
             if workflows_dir.is_dir():
                 dirname = workflows_dir.name
 
+                if workflow_name is not None and workflow_name != dirname:
+                    continue
+
                 local = WorkflowSource(
                     name=dirname,
                     location=workflows_dir,  # type: ignore
@@ -240,10 +244,7 @@ class WorkflowRegistry:
                 )
                 self._workflow_local_sources[dirname] = local
 
-                if workflow_name is not None and workflow_name == dirname:
-                    break
-
-    def load_workflow_configs(self) -> None:
+    async def load_workflow_configs(self) -> None:
         """
         Load workflows from source.
         Return:
@@ -252,6 +253,8 @@ class WorkflowRegistry:
             ImproperlyConfigured: If a workflow source is not configured.
         """
         self._loading = True
+
+        loop = asyncio.get_event_loop()
 
         try:
             sources = list(self.combined_workflow_sources.values())
@@ -264,22 +267,22 @@ class WorkflowRegistry:
             }
 
             with ThreadPoolExecutor(max_workers=min(4, len(sources))) as executor:
-                futures = {
-                    executor.submit(
-                        self.process_workflow_source, source, self, params
-                    ): source
+                futures = [
+                    loop.run_in_executor(
+                        executor, self.process_workflow_source, source, self, params
+                    )
                     for source in sources
-                }
+                ]
 
-                for future in as_completed(futures):
-                    source = futures[future]
-                    try:
-                        future.result()
-                        logger.debug(f"Successfully loaded config from {source}")
-                    except Exception as e:
+                results = await asyncio.gather(*futures, return_exceptions=True)
+                for source, result in zip(sources, results):
+                    if isinstance(result, BaseException):
                         logger.error(
-                            f"Failed to load config from {source}: {e}", exc_info=True
+                            f"Failed to load config from {source}: {result}",
+                            exc_info=True,
                         )
+                    else:
+                        logger.debug(f"Successfully loaded config from {source}")
 
             if self._workflows:
                 self.make_ready()

@@ -31,6 +31,7 @@ class ExecutionState:
     status: ExecutionStatus = field(default=ExecutionStatus.PENDING)
     errors: typing.List[PipelineError] = field(default_factory=list)
     results: ResultSet[EventResult] = field(default_factory=lambda: ResultSet())
+    aggregated_result: typing.Optional[EventResult] = None
 
     def to_dict(self) -> typing.Dict[str, typing.Any]:
         """Serialize state for IPC"""
@@ -38,6 +39,7 @@ class ExecutionState:
             "status": self.status.value,
             "errors": self.errors,
             "results": self.results,
+            "aggregated_result": self.aggregated_result,
         }
 
     @classmethod
@@ -47,6 +49,7 @@ class ExecutionState:
             status=ExecutionStatus(data["status"]),
             errors=data["errors"],
             results=data["results"],
+            aggregated_result=data.get("aggregated_result"),
         )
 
     def get_stop_processing_request(self) -> typing.Optional[Exception]:
@@ -178,6 +181,14 @@ class StateManager:
             state_dict["status"] = new_status.value
             self._states[state_id] = state_dict
 
+    async def update_aggregated_result_async(
+        self, state_id: str, result: "EventResult"
+    ) -> None:
+        async with self.acquire_async(state_id):
+            state_dict = self._states[state_id]
+            state_dict["aggregated_result"] = result
+            self._states[state_id] = state_dict
+
     def append_error(self, state_id: str, error: typing.Any) -> None:
         """
         Optimized error append - modifies shared memory directly.
@@ -251,7 +262,7 @@ class StateManager:
     def release_state(self, state_id: str, force: bool = False) -> None:
         """
         Decrement reference count and optionally remove state.
-        State is only removed when reference count reaches 0 or force=True.
+        State is only removed when the reference count reaches 0 or force=True.
         """
         if state_id not in self._states:
             return
@@ -270,7 +281,7 @@ class StateManager:
     async def release_state_async(self, state_id: str, force: bool = False) -> None:
         """
         Decrement reference count and optionally remove state asynchronously.
-        State is only removed when reference count reaches 0 or force=True.
+        State is only removed when the reference count reaches 0 or force=True.
         """
         await to_thread(self.release_state, state_id, force)
 
@@ -306,7 +317,7 @@ class StateManager:
         return list(self._states.keys())
 
     async def get_active_states_async(self) -> typing.List[str]:
-        """Get list of all state_ids in shared memory asynchronously."""
+        """Get the list of all state_ids in shared memory asynchronously."""
         states = await to_thread(self.get_active_states)
         return typing.cast(typing.List[str], states)
 

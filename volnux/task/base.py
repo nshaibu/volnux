@@ -17,6 +17,10 @@ class TaskBase(ObjectIdentityMixin):
         # options specified in pointy scripts for tasks are kept here
         self.options: typing.Optional[Options] = None
 
+        # Use for identify the order of a task.
+        # This will be pass to events during initialisation
+        self.sequence_number: typing.Optional[int] = None
+
         # attributes for when a task is created from a descriptor
         self._descriptor: typing.Optional[int] = None
         self._descriptor_pipe: typing.Optional[PipeType] = None
@@ -219,7 +223,7 @@ class TaskBase(ObjectIdentityMixin):
             ):
                 return self.parent_node.get_first_task_in_parallel_execution_mode()
             else:
-                return self
+                return typing.cast(TaskType, self)
         return None
 
     def get_last_task_in_parallel_execution_mode(

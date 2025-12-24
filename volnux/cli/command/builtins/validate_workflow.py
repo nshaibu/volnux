@@ -20,11 +20,12 @@ class ValidateWorkflowCommand(BaseCommand):
 
         project_dir, _ = self.get_project_root_and_config_module()
 
-        workflows = self._initialise_workflows(project_dir, workflow_name)
+        engine = self.initialise_workflows(project_dir, workflow_name)
+        workflows_registry = engine.get_workflows_registry()
 
         if workflow_name:
             self.success(f"Validating workflow: {workflow_name}\n")
-            workflow = workflows.get_workflow_config(workflow_name)
+            workflow = workflows_registry.get_workflow_config(workflow_name)
             if not workflow:
                 raise CommandError(
                     f"Workflow {workflow_name} not found in project {project_dir}"
@@ -33,7 +34,7 @@ class ValidateWorkflowCommand(BaseCommand):
                 self.warning(f"Workflow {workflow_name}/{index}: {issue}\n")
         else:
             self.success("\nValidating all workflows...")
-            for workflow in workflows.get_workflow_configs():
+            for workflow in workflows_registry.get_workflow_configs():
                 self.success(f"\nValidating workflow {workflow.name}...\n")
                 for index, issue in enumerate(workflow.check()):
                     self.warning(f"Workflow {workflow.name}/{index}: {issue}\n")

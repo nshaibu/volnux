@@ -1,11 +1,11 @@
 import typing
+from enum import Enum
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import Enum
 
-from volnux.execution.context import ExecutionContext
-from volnux.parser.protocols import TaskType
 from volnux.pipeline import Pipeline
+from volnux.parser.protocols import TaskType
+from volnux.execution.context import ExecutionContext
 
 
 class EngineExecutionResult(Enum):

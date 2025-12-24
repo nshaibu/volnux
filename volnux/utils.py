@@ -399,3 +399,34 @@ def is_multiprocessing_executor(executor_class: typing.Type["BaseExecutor"]) -> 
     return executor_class == ProcessPoolExecutor or getattr(
         executor_class, "support_parallel_execution", False
     )
+
+
+def resolve_event_str_to_class(
+    event_str: typing.Union[str, typing.Type["EventBase"]],
+) -> typing.Type["EventBase"]:
+    """
+    Resolve an event string to an event class.
+    :param event_str: event string to resolve.
+    :return: EventBase subclass of event_str.
+    """
+
+    from volnux.base import get_event_registry, EventBase
+
+    if not isinstance(event_str, str):
+        event_str = str(event_str).strip()
+        namespace = "local"
+        event_name = event_str
+
+        if "::" in event_str:
+            namespace, event_name = event_str.split("::")
+
+        registry = get_event_registry()
+
+        event_class = registry.get_by_name(event_name, namespace)
+        if event_class is None:
+            raise ValueError("Unknown event type '%s'" % event_str)
+
+        return event_class
+    elif issubclass(event_str, EventBase):
+        return event_str
+    raise ValueError(f"Event '{event_str}' is not valid")
