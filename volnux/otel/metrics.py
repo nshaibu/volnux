@@ -30,11 +30,6 @@ from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# Metric Types and Configuration
-# ============================================================================
-
-
 class MetricType(str, Enum):
     """Types of metrics collected"""
 
@@ -53,11 +48,6 @@ class MetricDefinition:
     unit: str
     metric_type: MetricType
     attributes: Optional[Dict[str, str]] = None
-
-
-# ============================================================================
-# Volnux Metrics Registry
-# ============================================================================
 
 
 class VolnuxMetricsRegistry:
@@ -230,11 +220,6 @@ class VolnuxMetricsRegistry:
         unit="MB",
         metric_type=MetricType.HISTOGRAM,
     )
-
-
-# ============================================================================
-# Metrics Collector
-# ============================================================================
 
 
 class VolnuxMetricsCollector:
@@ -416,10 +401,6 @@ class VolnuxMetricsCollector:
         except Exception as e:
             logger.error(f"Failed to record metric {metric_def.name}: {e}")
 
-    # ========================================================================
-    # Convenience Methods for Common Metrics
-    # ========================================================================
-
     def record_workflow_duration(
         self,
         duration_ms: float,
@@ -515,11 +496,6 @@ class VolnuxMetricsCollector:
             data_volume_mb,
             attributes={"pipeline.name": pipeline_name},
         )
-
-
-# ============================================================================
-# Convenience Functions
-# ============================================================================
 
 
 def get_metrics_collector() -> Optional[VolnuxMetricsCollector]:

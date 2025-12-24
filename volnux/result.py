@@ -489,6 +489,10 @@ class ResultSet(typing.MutableSet[Result]):
         except IndexError:
             return None
 
+    def is_empty(self) -> bool:
+        """Return True if the result is empty."""
+        return self.first() is None
+
     def __str__(self) -> str:
         return str(list(self._content.values()))
 

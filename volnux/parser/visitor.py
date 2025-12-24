@@ -13,7 +13,9 @@ if typing.TYPE_CHECKING:
         ProgramNode,
         TaskNode,
         DirectiveNode,
-        VariableAccessNode
+        VariableAccessNode,
+        MetaEventNode,
+        EnvironmentVariableAccessNode,
     )
 
 
@@ -60,4 +62,12 @@ class ASTVisitorInterface(ABC):
 
     @abstractmethod
     def visit_variable_access(self, node: "VariableAccessNode"):
+        pass
+
+    @abstractmethod
+    def visit_access_environment_variable(self, node: "EnvironmentVariableAccessNode"):
+        pass
+
+    @abstractmethod
+    def visit_meta_event(self, node: "MetaEventNode"):
         pass

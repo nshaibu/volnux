@@ -293,6 +293,11 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             state.results.extend(results)
         await self.get_state_manager().update_state_async(self.state_id, state)
 
+    async def update_aggregated_result(self, result: "EventResult") -> None:
+        state = await self.state_async
+        state.aggregated_result = result
+        self.get_state_manager().update_state(self.state_id, state)
+
     def __iter__(self) -> typing.Generator["ExecutionContext", typing.Any, None]:
         current: typing.Optional["ExecutionContext"] = self
         while current is not None:

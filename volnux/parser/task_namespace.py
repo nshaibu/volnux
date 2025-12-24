@@ -4,6 +4,7 @@ from typing import Optional
 
 class TaskNamespace(Enum):
     """Valid task namespaces for external task sources"""
+
     LOCAL = "local"  # Default, no namespace prefix
     PYPI = "pypi"  # Python Package Index
     GITHUB = "github"  # GitHub repositories
@@ -11,7 +12,7 @@ class TaskNamespace(Enum):
     DOCKER = "docker"  # Docker Hub
 
     @classmethod
-    def from_string(cls, namespace: str) -> Optional['TaskNamespace']:
+    def from_string(cls, namespace: str) -> Optional["TaskNamespace"]:
         """Convert string to TaskNamespace enum"""
         try:
             return cls[namespace.upper()]
@@ -24,6 +25,4 @@ class TaskNamespace(Enum):
         return namespace.upper() in cls.__members__
 
 
-VALID_NAMESPACES = {
-    "pypi", "github", "eventhub", "docker", "local"
-}
+VALID_NAMESPACES = {"pypi", "github", "eventhub", "docker", "local"}

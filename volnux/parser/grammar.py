@@ -18,7 +18,9 @@ from .ast import (
     TaskNode,
     VariableDeclNode,
     VariableAccessNode,
+    EnvironmentVariableAccessNode,
     DirectiveNode,
+    MetaEventNode,
 )
 from .dag_visitor import CycleDetectionVisitor, DAGValidationError, format_cycle_error
 
@@ -30,19 +32,6 @@ tokens = pointy_lexer.tokens
 variables = {}
 
 precedence = (("left", "RETRY", "POINTER", "PPOINTER", "PARALLEL"),)
-
-
-"""
-| expression_groupings POINTER expression
-                | expression POINTER expression_groupings
-                | descriptor POINTER expression_groupings
-                | expression_groupings PPOINTER expression
-                | expression PPOINTER expression_groupings
-                | descriptor PPOINTER expression_groupings
-                | expression_groupings PARALLEL expression_groupings
-                | expression_groupings PARALLEL expression
-                | expression PARALLEL expression_groupings
-"""
 
 
 def p_program(p):
@@ -138,6 +127,50 @@ def p_task(p):
     p[0] = p[1]
 
 
+def p_task_meta_event(p):
+    """
+    task : meta_event
+         | meta_event LBRACKET assigment_expression_group RBRACKET
+    """
+    if len(p) == 2:
+        p[0] = p[1]
+    else:
+        meta_event = p[1]
+        meta_event.options = p[3]
+        p[0] = meta_event
+
+
+def p_meta_event(p):
+    """
+    meta_event : meta_mode LANGLE IDENTIFIER RANGLE
+                | meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+    """
+    mode = p[1]
+
+    if len(p) == 5:
+        template_event = p[3]
+
+        p[0] = MetaEventNode(mode=mode, template_event=template_event)
+    else:
+        namespace = p[3]
+        template_event = p[5]
+        p[0] = MetaEventNode(
+            mode=mode, template_event=template_event, template_event_namespace=namespace
+        )
+
+
+def p_meta_mode(p):
+    """
+    meta_mode : MAP
+              | FILTER
+              | REDUCE
+              | FOREACH
+              | FLATMAP
+              | FANOUT
+    """
+    p[0] = p[1]
+
+
 def p_directive(p):
     """directive : VAR_DECL COLON scalar_value"""
     if p[1] == "mode":
@@ -163,6 +196,7 @@ def p_value(p):
     """
     value : scalar_value
             | variable_reference
+            | null_value
     """
     p[0] = p[1]
 
@@ -177,16 +211,32 @@ def p_scalar_value(p):
     p[0] = LiteralNode(p[1], type=LiteralType.determine_literal_type(p[1]))
 
 
+def p_null_value(p):
+    """
+    null_value : NULL
+    """
+    p[0] = LiteralNode(p[1], type=LiteralType.determine_literal_type(p[1]))
+
+
 def p_variable_reference(p):
-    """variable_reference : VAR_ACCESS"""
-    var_name = p[1]
+    """
+    variable_reference : VAR_ACCESS
+                        | VAR_ACCESS DOT IDENTIFIER
+    """
+    if len(p) == 4:
+        accessor = p[1]
+        if accessor != pointy_lexer.reserved["env"]:
+            raise YaccError(f"Unknown variable accessor '{accessor}'")
+        p[0] = EnvironmentVariableAccessNode(name=p[3])
+    else:
+        var_name = p[1]
 
-    try:
-        value = variables[var_name]
-    except KeyError:
-        raise YaccError(f"Undefined variable '${var_name}'")
+        try:
+            value = variables[var_name]
+        except KeyError:
+            raise YaccError(f"Undefined variable '${var_name}'")
 
-    p[0] = VariableAccessNode(name=var_name, value=value)
+        p[0] = VariableAccessNode(name=var_name, value=value)
 
 
 def p_descriptor(p):
@@ -208,7 +258,15 @@ def p_factor(p):
     """
     factor : INT
             | FLOAT
+            | variable_reference
     """
+    factor = p[1]
+
+    if isinstance(factor, VariableAccessNode):
+        factor = factor.resolve()
+        if not isinstance(factor, (int, float)):
+            raise YaccError("Factor cannot be nonnumerical type")
+
     if p[1] < 2:
         line = p.lineno(1) if hasattr(p, "lineno") else "unknown line"
         column = p.lexpos(1) if hasattr(p, "lexpos") else "unknown column"
@@ -217,7 +275,7 @@ def p_factor(p):
             f"Line: {line}, Column: {column}, Offending Token: {p[1]}"
         )
 
-    p[0] = LiteralNode(p[1], type=LiteralType.determine_literal_type(p[1]))
+    p[0] = LiteralNode(factor, type=LiteralType.determine_literal_type(factor))
 
 
 def p_scoped_task(p):
@@ -229,7 +287,9 @@ def p_scoped_task(p):
         p[0] = p[1]
     else:
         task_instance = typing.cast(TaskNode, p[3])
-        p[0] = TaskNode(task=task_instance.task, options=task_instance.options, namespace=p[1])
+        p[0] = TaskNode(
+            task=task_instance.task, options=task_instance.options, namespace=p[1]
+        )
 
 
 def p_task_name(p):
@@ -353,10 +413,8 @@ def get_error_context(input_data, error_pos, context_size=50):
     if not input_data or error_pos is None:
         return None
 
-    # Ensure error_pos is within bounds
     error_pos = max(0, min(error_pos, len(input_data) - 1))
 
-    # Calculate context boundaries
     start = max(0, error_pos - context_size)
     end = min(len(input_data), error_pos + context_size)
 

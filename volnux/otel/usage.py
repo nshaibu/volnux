@@ -21,11 +21,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# Application Initialization with OpenTelemetry
-# ============================================================================
-
-
 def initialize_application(
     service_name: str = "workflow-orchestration-service",
     environment: str = "production",
@@ -94,10 +89,6 @@ def initialize_application(
         logger.warning("Continuing without observability...")
         return None
 
-
-# ============================================================================
-# Example Pipeline with Custom Instrumentation
-# ============================================================================
 
 from volnux.pipeline import Pipeline
 from volnux.fields import InputDataField

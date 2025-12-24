@@ -1,6 +1,7 @@
 import importlib
 import importlib.util
 import typing
+from os import environ
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -32,6 +33,7 @@ class LiteralType(Enum):
     IMPORT_STRING = "import_string"
     BOOLEAN = "boolean"
     ASSIGNMENT_REFERENCE = "assignment_reference"
+    NULL = "null"
 
     @classmethod
     def determine_literal_type(cls, value) -> "LiteralType":
@@ -40,7 +42,9 @@ class LiteralType(Enum):
         elif isinstance(value, (int, float)):
             return cls.NUMBER
         elif isinstance(value, str):
-            if cls._is_import_string(value):
+            if value == "null":
+                return cls.NULL
+            elif cls._is_import_string(value):
                 return cls.IMPORT_STRING
             return cls.STRING
         elif isinstance(value, VariableAccessNode):
@@ -146,7 +150,36 @@ class VariableAccessNode(ASTNode):
     value: "LiteralNode"
 
     def accept(self, visitor: "ASTVisitor"):
-        raise visitor.visit_variable_access(self)
+        return visitor.visit_variable_access(self)
+
+    def resolve(self) -> typing.Any:
+        value = self.value
+
+        while (
+            isinstance(value, LiteralNode)
+            and value.type == LiteralType.ASSIGNMENT_REFERENCE
+        ):
+            value = value.value
+        return value.value
+
+
+@dataclass
+class EnvironmentVariableAccessNode(ASTNode):
+    __slots__ = ("name",)
+    name: str
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_access_environment_variable(self)
+
+    def resolve(self) -> typing.Any:
+        """
+        Resolve environment variables.
+        Returns:
+            Value
+        Raises:
+            KeyError if environment variable is not defined.
+        """
+        return environ[self.name]
 
 
 @dataclass
@@ -243,3 +276,20 @@ class ExpressionGroupingNode(ASTNode):
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_expression_grouping(self)
+
+
+@dataclass
+class MetaEventNode(ASTNode):
+    """
+    AST node for Meta Events
+    Represents control flow patterns like MAP, FILTER, REDUCE, etc.
+    """
+
+    mode: typing.Literal["MAP", "FILTER", "REDUCE", "FOREACH", "FLATMAP", "FANOUT"]
+    template_event: str  # Name of the Template Event (identifier)
+    template_event_namespace: str = "local"
+    options: typing.Optional[BlockNode] = None
+
+    def accept(self, visitor):
+        """Visitor pattern support"""
+        return visitor.visit_meta_event(self)

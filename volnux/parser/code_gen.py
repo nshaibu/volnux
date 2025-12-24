@@ -27,6 +27,7 @@ class ExecutableASTGenerator(ASTVisitorInterface):
         """Apply configuration directive"""
         if name == "recursive-depth":
             from volnux.utils import _extend_recursion_depth
+
             result = _extend_recursion_depth(value)
             if isinstance(result, Exception):
                 logger.warning(f"Failed to set recursive-depth: {result}")

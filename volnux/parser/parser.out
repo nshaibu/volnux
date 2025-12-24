@@ -3,6 +3,14 @@ Created by PLY version 3.11 (http://www.dabeaz.com/ply)
 Unused terminals:
 
     COMMENT
+    EQ
+    GE
+    GT
+    LE
+    LT
+    NE
+    NULLCOALESCE
+    QUESTION
 
 Grammar
 
@@ -26,82 +34,117 @@ Rule 16    expression -> variable_declaration
 Rule 17    expression -> term
 Rule 18    term -> task
 Rule 19    term -> expression_groupings
-Rule 20    directive -> VAR_DECL COLON scalar_value
-Rule 21    variable_declaration -> VAR_DECL ASSIGN value
-Rule 22    value -> scalar_value
-Rule 23    value -> variable_reference
-Rule 24    scalar_value -> INT
-Rule 25    scalar_value -> FLOAT
-Rule 26    scalar_value -> BOOLEAN
-Rule 27    scalar_value -> STRING_LITERAL
-Rule 28    variable_reference -> VAR_ACCESS
-Rule 29    descriptor -> INT
-Rule 30    factor -> INT
-Rule 31    factor -> FLOAT
-Rule 32    task -> task_name
-Rule 33    task -> IDENTIFIER DOUBLE_COLON task_name
-Rule 34    task_name -> IDENTIFIER
-Rule 35    task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET
-Rule 36    conditional_group -> expression SEPARATOR expression
-Rule 37    conditional_group -> conditional_group SEPARATOR expression
-Rule 38    task -> task LPAREN conditional_group RPAREN
-Rule 39    assignment_expression -> IDENTIFIER ASSIGN STRING_LITERAL
-Rule 40    assignment_expression -> IDENTIFIER ASSIGN INT
-Rule 41    assignment_expression -> IDENTIFIER ASSIGN FLOAT
-Rule 42    assignment_expression -> IDENTIFIER ASSIGN BOOLEAN
-Rule 43    assignment_expression -> IDENTIFIER ASSIGN variable_reference
-Rule 44    assigment_expression_group -> assignment_expression
-Rule 45    assigment_expression_group -> assignment_expression SEPARATOR assignment_expression
-Rule 46    assigment_expression_group -> assigment_expression_group SEPARATOR assignment_expression
-Rule 47    expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET
-Rule 48    expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+Rule 20    task -> meta_event
+Rule 21    task -> meta_event LBRACKET assigment_expression_group RBRACKET
+Rule 22    meta_event -> meta_mode LANGLE IDENTIFIER RANGLE
+Rule 23    meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+Rule 24    meta_mode -> MAP
+Rule 25    meta_mode -> FILTER
+Rule 26    meta_mode -> REDUCE
+Rule 27    meta_mode -> FOREACH
+Rule 28    meta_mode -> FLATMAP
+Rule 29    meta_mode -> FANOUT
+Rule 30    directive -> VAR_DECL COLON scalar_value
+Rule 31    variable_declaration -> VAR_DECL ASSIGN value
+Rule 32    value -> scalar_value
+Rule 33    value -> variable_reference
+Rule 34    value -> null_value
+Rule 35    scalar_value -> INT
+Rule 36    scalar_value -> FLOAT
+Rule 37    scalar_value -> BOOLEAN
+Rule 38    scalar_value -> STRING_LITERAL
+Rule 39    null_value -> NULL
+Rule 40    variable_reference -> VAR_ACCESS
+Rule 41    variable_reference -> VAR_ACCESS DOT IDENTIFIER
+Rule 42    descriptor -> INT
+Rule 43    factor -> INT
+Rule 44    factor -> FLOAT
+Rule 45    factor -> variable_reference
+Rule 46    task -> task_name
+Rule 47    task -> IDENTIFIER DOUBLE_COLON task_name
+Rule 48    task_name -> IDENTIFIER
+Rule 49    task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+Rule 50    conditional_group -> expression SEPARATOR expression
+Rule 51    conditional_group -> conditional_group SEPARATOR expression
+Rule 52    task -> task LPAREN conditional_group RPAREN
+Rule 53    assignment_expression -> IDENTIFIER ASSIGN STRING_LITERAL
+Rule 54    assignment_expression -> IDENTIFIER ASSIGN INT
+Rule 55    assignment_expression -> IDENTIFIER ASSIGN FLOAT
+Rule 56    assignment_expression -> IDENTIFIER ASSIGN BOOLEAN
+Rule 57    assignment_expression -> IDENTIFIER ASSIGN variable_reference
+Rule 58    assigment_expression_group -> assignment_expression
+Rule 59    assigment_expression_group -> assignment_expression SEPARATOR assignment_expression
+Rule 60    assigment_expression_group -> assigment_expression_group SEPARATOR assignment_expression
+Rule 61    expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET
+Rule 62    expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
 
 Terminals, with rules where they appear
 
-ASSIGN               : 21 39 40 41 42 43
-BOOLEAN              : 26 42
-COLON                : 20
+ASSIGN               : 31 53 54 55 56 57
+BOOLEAN              : 37 56
+COLON                : 30
 COMMENT              : 
-DOUBLE_COLON         : 33
-FLOAT                : 25 31 41
-IDENTIFIER           : 33 34 35 39 40 41 42 43
-INT                  : 24 29 30 40
-LBRACKET             : 35 48
-LCURLY_BRACKET       : 47 48
-LPAREN               : 38
+DOT                  : 41
+DOUBLE_COLON         : 23 47
+EQ                   : 
+FANOUT               : 29
+FILTER               : 25
+FLATMAP              : 28
+FLOAT                : 36 44 55
+FOREACH              : 27
+GE                   : 
+GT                   : 
+IDENTIFIER           : 22 23 23 41 47 48 49 53 54 55 56 57
+INT                  : 35 42 43 54
+LANGLE               : 22 23
+LBRACKET             : 21 49 62
+LCURLY_BRACKET       : 61 62
+LE                   : 
+LPAREN               : 52
+LT                   : 
+MAP                  : 24
+NE                   : 
+NULL                 : 39
+NULLCOALESCE         : 
 PARALLEL             : 9
 POINTER              : 7 10
 PPOINTER             : 8 11
-RBRACKET             : 35 48
-RCURLY_BRACKET       : 47 48
+QUESTION             : 
+RANGLE               : 22 23
+RBRACKET             : 21 49 62
+RCURLY_BRACKET       : 61 62
+REDUCE               : 26
 RETRY                : 12 13 14 15
-RPAREN               : 38
-SEPARATOR            : 36 37 45 46
-STRING_LITERAL       : 27 39
-VAR_ACCESS           : 28
-VAR_DECL             : 20 21
+RPAREN               : 52
+SEPARATOR            : 50 51 59 60
+STRING_LITERAL       : 38 53
+VAR_ACCESS           : 40 41
+VAR_DECL             : 30 31
 error                : 
 
 Nonterminals, with rules where they appear
 
-assigment_expression_group : 35 46 48
-assignment_expression : 44 45 45 46
-conditional_group    : 37 38
+assigment_expression_group : 21 49 60 62
+assignment_expression : 58 59 59 60
+conditional_group    : 51 52
 descriptor           : 10 11
 directive            : 6
-expression           : 5 7 7 8 8 9 9 10 11 36 36 37 47 48
+expression           : 5 7 7 8 8 9 9 10 11 50 50 51 61 62
 expression_groupings : 14 15 19
 factor               : 12 13 14 15
+meta_event           : 20 21
+meta_mode            : 22 23
+null_value           : 34
 program              : 0
-scalar_value         : 20 22
+scalar_value         : 30 32
 statement            : 2 3
 statement_list       : 1 3
-task                 : 12 13 18 38
-task_name            : 32 33
+task                 : 12 13 18 52
+task_name            : 46 47
 term                 : 17
-value                : 21
+value                : 31
 variable_declaration : 4 16
-variable_reference   : 23 43
+variable_reference   : 33 45 57
 
 Parsing method: LALR
 
@@ -114,7 +157,7 @@ state 0
     (4) statement -> . variable_declaration
     (5) statement -> . expression
     (6) statement -> . directive
-    (21) variable_declaration -> . VAR_DECL ASSIGN value
+    (31) variable_declaration -> . VAR_DECL ASSIGN value
     (7) expression -> . expression POINTER expression
     (8) expression -> . expression PPOINTER expression
     (9) expression -> . expression PARALLEL expression
@@ -126,25 +169,45 @@ state 0
     (15) expression -> . factor RETRY expression_groupings
     (16) expression -> . variable_declaration
     (17) expression -> . term
-    (20) directive -> . VAR_DECL COLON scalar_value
-    (29) descriptor -> . INT
-    (30) factor -> . INT
-    (31) factor -> . FLOAT
-    (32) task -> . task_name
-    (33) task -> . IDENTIFIER DOUBLE_COLON task_name
-    (38) task -> . task LPAREN conditional_group RPAREN
-    (47) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
-    (48) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (30) directive -> . VAR_DECL COLON scalar_value
+    (42) descriptor -> . INT
+    (43) factor -> . INT
+    (44) factor -> . FLOAT
+    (45) factor -> . variable_reference
+    (20) task -> . meta_event
+    (21) task -> . meta_event LBRACKET assigment_expression_group RBRACKET
+    (46) task -> . task_name
+    (47) task -> . IDENTIFIER DOUBLE_COLON task_name
+    (52) task -> . task LPAREN conditional_group RPAREN
+    (61) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
+    (62) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
     (18) term -> . task
     (19) term -> . expression_groupings
-    (34) task_name -> . IDENTIFIER
-    (35) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
+    (22) meta_event -> . meta_mode LANGLE IDENTIFIER RANGLE
+    (23) meta_event -> . meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+    (48) task_name -> . IDENTIFIER
+    (49) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (24) meta_mode -> . MAP
+    (25) meta_mode -> . FILTER
+    (26) meta_mode -> . REDUCE
+    (27) meta_mode -> . FOREACH
+    (28) meta_mode -> . FLATMAP
+    (29) meta_mode -> . FANOUT
 
     VAR_DECL        shift and go to state 7
     INT             shift and go to state 13
     FLOAT           shift and go to state 14
-    IDENTIFIER      shift and go to state 16
-    LCURLY_BRACKET  shift and go to state 17
+    IDENTIFIER      shift and go to state 18
+    LCURLY_BRACKET  shift and go to state 19
+    VAR_ACCESS      shift and go to state 20
+    MAP             shift and go to state 22
+    FILTER          shift and go to state 23
+    REDUCE          shift and go to state 24
+    FOREACH         shift and go to state 25
+    FLATMAP         shift and go to state 26
+    FANOUT          shift and go to state 27
 
     program                        shift and go to state 1
     statement_list                 shift and go to state 2
@@ -157,7 +220,10 @@ state 0
     task                           shift and go to state 10
     expression_groupings           shift and go to state 11
     term                           shift and go to state 12
-    task_name                      shift and go to state 15
+    variable_reference             shift and go to state 15
+    meta_event                     shift and go to state 16
+    task_name                      shift and go to state 17
+    meta_mode                      shift and go to state 21
 
 state 1
 
@@ -172,7 +238,7 @@ state 2
     (4) statement -> . variable_declaration
     (5) statement -> . expression
     (6) statement -> . directive
-    (21) variable_declaration -> . VAR_DECL ASSIGN value
+    (31) variable_declaration -> . VAR_DECL ASSIGN value
     (7) expression -> . expression POINTER expression
     (8) expression -> . expression PPOINTER expression
     (9) expression -> . expression PARALLEL expression
@@ -184,28 +250,48 @@ state 2
     (15) expression -> . factor RETRY expression_groupings
     (16) expression -> . variable_declaration
     (17) expression -> . term
-    (20) directive -> . VAR_DECL COLON scalar_value
-    (29) descriptor -> . INT
-    (30) factor -> . INT
-    (31) factor -> . FLOAT
-    (32) task -> . task_name
-    (33) task -> . IDENTIFIER DOUBLE_COLON task_name
-    (38) task -> . task LPAREN conditional_group RPAREN
-    (47) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
-    (48) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (30) directive -> . VAR_DECL COLON scalar_value
+    (42) descriptor -> . INT
+    (43) factor -> . INT
+    (44) factor -> . FLOAT
+    (45) factor -> . variable_reference
+    (20) task -> . meta_event
+    (21) task -> . meta_event LBRACKET assigment_expression_group RBRACKET
+    (46) task -> . task_name
+    (47) task -> . IDENTIFIER DOUBLE_COLON task_name
+    (52) task -> . task LPAREN conditional_group RPAREN
+    (61) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
+    (62) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
     (18) term -> . task
     (19) term -> . expression_groupings
-    (34) task_name -> . IDENTIFIER
-    (35) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
+    (22) meta_event -> . meta_mode LANGLE IDENTIFIER RANGLE
+    (23) meta_event -> . meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+    (48) task_name -> . IDENTIFIER
+    (49) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (24) meta_mode -> . MAP
+    (25) meta_mode -> . FILTER
+    (26) meta_mode -> . REDUCE
+    (27) meta_mode -> . FOREACH
+    (28) meta_mode -> . FLATMAP
+    (29) meta_mode -> . FANOUT
 
     $end            reduce using rule 1 (program -> statement_list .)
     VAR_DECL        shift and go to state 7
     INT             shift and go to state 13
     FLOAT           shift and go to state 14
-    IDENTIFIER      shift and go to state 16
-    LCURLY_BRACKET  shift and go to state 17
+    IDENTIFIER      shift and go to state 18
+    LCURLY_BRACKET  shift and go to state 19
+    VAR_ACCESS      shift and go to state 20
+    MAP             shift and go to state 22
+    FILTER          shift and go to state 23
+    REDUCE          shift and go to state 24
+    FOREACH         shift and go to state 25
+    FLATMAP         shift and go to state 26
+    FANOUT          shift and go to state 27
 
-    statement                      shift and go to state 18
+    statement                      shift and go to state 28
     variable_declaration           shift and go to state 4
     expression                     shift and go to state 5
     directive                      shift and go to state 6
@@ -214,7 +300,10 @@ state 2
     task                           shift and go to state 10
     expression_groupings           shift and go to state 11
     term                           shift and go to state 12
-    task_name                      shift and go to state 15
+    variable_reference             shift and go to state 15
+    meta_event                     shift and go to state 16
+    task_name                      shift and go to state 17
+    meta_mode                      shift and go to state 21
 
 state 3
 
@@ -225,6 +314,13 @@ state 3
     FLOAT           reduce using rule 2 (statement_list -> statement .)
     IDENTIFIER      reduce using rule 2 (statement_list -> statement .)
     LCURLY_BRACKET  reduce using rule 2 (statement_list -> statement .)
+    VAR_ACCESS      reduce using rule 2 (statement_list -> statement .)
+    MAP             reduce using rule 2 (statement_list -> statement .)
+    FILTER          reduce using rule 2 (statement_list -> statement .)
+    REDUCE          reduce using rule 2 (statement_list -> statement .)
+    FOREACH         reduce using rule 2 (statement_list -> statement .)
+    FLATMAP         reduce using rule 2 (statement_list -> statement .)
+    FANOUT          reduce using rule 2 (statement_list -> statement .)
     $end            reduce using rule 2 (statement_list -> statement .)
 
 
@@ -238,12 +334,26 @@ state 4
   ! reduce/reduce conflict for FLOAT resolved using rule 4 (statement -> variable_declaration .)
   ! reduce/reduce conflict for IDENTIFIER resolved using rule 4 (statement -> variable_declaration .)
   ! reduce/reduce conflict for LCURLY_BRACKET resolved using rule 4 (statement -> variable_declaration .)
+  ! reduce/reduce conflict for VAR_ACCESS resolved using rule 4 (statement -> variable_declaration .)
+  ! reduce/reduce conflict for MAP resolved using rule 4 (statement -> variable_declaration .)
+  ! reduce/reduce conflict for FILTER resolved using rule 4 (statement -> variable_declaration .)
+  ! reduce/reduce conflict for REDUCE resolved using rule 4 (statement -> variable_declaration .)
+  ! reduce/reduce conflict for FOREACH resolved using rule 4 (statement -> variable_declaration .)
+  ! reduce/reduce conflict for FLATMAP resolved using rule 4 (statement -> variable_declaration .)
+  ! reduce/reduce conflict for FANOUT resolved using rule 4 (statement -> variable_declaration .)
   ! reduce/reduce conflict for $end resolved using rule 4 (statement -> variable_declaration .)
     VAR_DECL        reduce using rule 4 (statement -> variable_declaration .)
     INT             reduce using rule 4 (statement -> variable_declaration .)
     FLOAT           reduce using rule 4 (statement -> variable_declaration .)
     IDENTIFIER      reduce using rule 4 (statement -> variable_declaration .)
     LCURLY_BRACKET  reduce using rule 4 (statement -> variable_declaration .)
+    VAR_ACCESS      reduce using rule 4 (statement -> variable_declaration .)
+    MAP             reduce using rule 4 (statement -> variable_declaration .)
+    FILTER          reduce using rule 4 (statement -> variable_declaration .)
+    REDUCE          reduce using rule 4 (statement -> variable_declaration .)
+    FOREACH         reduce using rule 4 (statement -> variable_declaration .)
+    FLATMAP         reduce using rule 4 (statement -> variable_declaration .)
+    FANOUT          reduce using rule 4 (statement -> variable_declaration .)
     $end            reduce using rule 4 (statement -> variable_declaration .)
     POINTER         reduce using rule 16 (expression -> variable_declaration .)
     PPOINTER        reduce using rule 16 (expression -> variable_declaration .)
@@ -254,6 +364,13 @@ state 4
   ! FLOAT           [ reduce using rule 16 (expression -> variable_declaration .) ]
   ! IDENTIFIER      [ reduce using rule 16 (expression -> variable_declaration .) ]
   ! LCURLY_BRACKET  [ reduce using rule 16 (expression -> variable_declaration .) ]
+  ! VAR_ACCESS      [ reduce using rule 16 (expression -> variable_declaration .) ]
+  ! MAP             [ reduce using rule 16 (expression -> variable_declaration .) ]
+  ! FILTER          [ reduce using rule 16 (expression -> variable_declaration .) ]
+  ! REDUCE          [ reduce using rule 16 (expression -> variable_declaration .) ]
+  ! FOREACH         [ reduce using rule 16 (expression -> variable_declaration .) ]
+  ! FLATMAP         [ reduce using rule 16 (expression -> variable_declaration .) ]
+  ! FANOUT          [ reduce using rule 16 (expression -> variable_declaration .) ]
   ! $end            [ reduce using rule 16 (expression -> variable_declaration .) ]
 
 
@@ -269,10 +386,17 @@ state 5
     FLOAT           reduce using rule 5 (statement -> expression .)
     IDENTIFIER      reduce using rule 5 (statement -> expression .)
     LCURLY_BRACKET  reduce using rule 5 (statement -> expression .)
+    VAR_ACCESS      reduce using rule 5 (statement -> expression .)
+    MAP             reduce using rule 5 (statement -> expression .)
+    FILTER          reduce using rule 5 (statement -> expression .)
+    REDUCE          reduce using rule 5 (statement -> expression .)
+    FOREACH         reduce using rule 5 (statement -> expression .)
+    FLATMAP         reduce using rule 5 (statement -> expression .)
+    FANOUT          reduce using rule 5 (statement -> expression .)
     $end            reduce using rule 5 (statement -> expression .)
-    POINTER         shift and go to state 19
-    PPOINTER        shift and go to state 20
-    PARALLEL        shift and go to state 21
+    POINTER         shift and go to state 29
+    PPOINTER        shift and go to state 30
+    PARALLEL        shift and go to state 31
 
 
 state 6
@@ -284,16 +408,23 @@ state 6
     FLOAT           reduce using rule 6 (statement -> directive .)
     IDENTIFIER      reduce using rule 6 (statement -> directive .)
     LCURLY_BRACKET  reduce using rule 6 (statement -> directive .)
+    VAR_ACCESS      reduce using rule 6 (statement -> directive .)
+    MAP             reduce using rule 6 (statement -> directive .)
+    FILTER          reduce using rule 6 (statement -> directive .)
+    REDUCE          reduce using rule 6 (statement -> directive .)
+    FOREACH         reduce using rule 6 (statement -> directive .)
+    FLATMAP         reduce using rule 6 (statement -> directive .)
+    FANOUT          reduce using rule 6 (statement -> directive .)
     $end            reduce using rule 6 (statement -> directive .)
 
 
 state 7
 
-    (21) variable_declaration -> VAR_DECL . ASSIGN value
-    (20) directive -> VAR_DECL . COLON scalar_value
+    (31) variable_declaration -> VAR_DECL . ASSIGN value
+    (30) directive -> VAR_DECL . COLON scalar_value
 
-    ASSIGN          shift and go to state 22
-    COLON           shift and go to state 23
+    ASSIGN          shift and go to state 32
+    COLON           shift and go to state 33
 
 
 state 8
@@ -301,8 +432,8 @@ state 8
     (10) expression -> descriptor . POINTER expression
     (11) expression -> descriptor . PPOINTER expression
 
-    POINTER         shift and go to state 24
-    PPOINTER        shift and go to state 25
+    POINTER         shift and go to state 34
+    PPOINTER        shift and go to state 35
 
 
 state 9
@@ -310,17 +441,17 @@ state 9
     (12) expression -> factor . RETRY task
     (15) expression -> factor . RETRY expression_groupings
 
-    RETRY           shift and go to state 26
+    RETRY           shift and go to state 36
 
 
 state 10
 
     (13) expression -> task . RETRY factor
-    (38) task -> task . LPAREN conditional_group RPAREN
+    (52) task -> task . LPAREN conditional_group RPAREN
     (18) term -> task .
 
-    RETRY           shift and go to state 27
-    LPAREN          shift and go to state 28
+    RETRY           shift and go to state 37
+    LPAREN          shift and go to state 38
     POINTER         reduce using rule 18 (term -> task .)
     PPOINTER        reduce using rule 18 (term -> task .)
     PARALLEL        reduce using rule 18 (term -> task .)
@@ -329,6 +460,13 @@ state 10
     FLOAT           reduce using rule 18 (term -> task .)
     IDENTIFIER      reduce using rule 18 (term -> task .)
     LCURLY_BRACKET  reduce using rule 18 (term -> task .)
+    VAR_ACCESS      reduce using rule 18 (term -> task .)
+    MAP             reduce using rule 18 (term -> task .)
+    FILTER          reduce using rule 18 (term -> task .)
+    REDUCE          reduce using rule 18 (term -> task .)
+    FOREACH         reduce using rule 18 (term -> task .)
+    FLATMAP         reduce using rule 18 (term -> task .)
+    FANOUT          reduce using rule 18 (term -> task .)
     $end            reduce using rule 18 (term -> task .)
     RCURLY_BRACKET  reduce using rule 18 (term -> task .)
     SEPARATOR       reduce using rule 18 (term -> task .)
@@ -340,7 +478,7 @@ state 11
     (14) expression -> expression_groupings . RETRY factor
     (19) term -> expression_groupings .
 
-    RETRY           shift and go to state 29
+    RETRY           shift and go to state 39
     POINTER         reduce using rule 19 (term -> expression_groupings .)
     PPOINTER        reduce using rule 19 (term -> expression_groupings .)
     PARALLEL        reduce using rule 19 (term -> expression_groupings .)
@@ -349,6 +487,13 @@ state 11
     FLOAT           reduce using rule 19 (term -> expression_groupings .)
     IDENTIFIER      reduce using rule 19 (term -> expression_groupings .)
     LCURLY_BRACKET  reduce using rule 19 (term -> expression_groupings .)
+    VAR_ACCESS      reduce using rule 19 (term -> expression_groupings .)
+    MAP             reduce using rule 19 (term -> expression_groupings .)
+    FILTER          reduce using rule 19 (term -> expression_groupings .)
+    REDUCE          reduce using rule 19 (term -> expression_groupings .)
+    FOREACH         reduce using rule 19 (term -> expression_groupings .)
+    FLATMAP         reduce using rule 19 (term -> expression_groupings .)
+    FANOUT          reduce using rule 19 (term -> expression_groupings .)
     $end            reduce using rule 19 (term -> expression_groupings .)
     RCURLY_BRACKET  reduce using rule 19 (term -> expression_groupings .)
     SEPARATOR       reduce using rule 19 (term -> expression_groupings .)
@@ -367,6 +512,13 @@ state 12
     FLOAT           reduce using rule 17 (expression -> term .)
     IDENTIFIER      reduce using rule 17 (expression -> term .)
     LCURLY_BRACKET  reduce using rule 17 (expression -> term .)
+    VAR_ACCESS      reduce using rule 17 (expression -> term .)
+    MAP             reduce using rule 17 (expression -> term .)
+    FILTER          reduce using rule 17 (expression -> term .)
+    REDUCE          reduce using rule 17 (expression -> term .)
+    FOREACH         reduce using rule 17 (expression -> term .)
+    FLATMAP         reduce using rule 17 (expression -> term .)
+    FANOUT          reduce using rule 17 (expression -> term .)
     $end            reduce using rule 17 (expression -> term .)
     RCURLY_BRACKET  reduce using rule 17 (expression -> term .)
     SEPARATOR       reduce using rule 17 (expression -> term .)
@@ -375,81 +527,157 @@ state 12
 
 state 13
 
-    (29) descriptor -> INT .
-    (30) factor -> INT .
+    (42) descriptor -> INT .
+    (43) factor -> INT .
 
-    POINTER         reduce using rule 29 (descriptor -> INT .)
-    PPOINTER        reduce using rule 29 (descriptor -> INT .)
-    RETRY           reduce using rule 30 (factor -> INT .)
+    POINTER         reduce using rule 42 (descriptor -> INT .)
+    PPOINTER        reduce using rule 42 (descriptor -> INT .)
+    RETRY           reduce using rule 43 (factor -> INT .)
 
 
 state 14
 
-    (31) factor -> FLOAT .
+    (44) factor -> FLOAT .
 
-    RETRY           reduce using rule 31 (factor -> FLOAT .)
-    POINTER         reduce using rule 31 (factor -> FLOAT .)
-    PPOINTER        reduce using rule 31 (factor -> FLOAT .)
-    PARALLEL        reduce using rule 31 (factor -> FLOAT .)
-    VAR_DECL        reduce using rule 31 (factor -> FLOAT .)
-    INT             reduce using rule 31 (factor -> FLOAT .)
-    FLOAT           reduce using rule 31 (factor -> FLOAT .)
-    IDENTIFIER      reduce using rule 31 (factor -> FLOAT .)
-    LCURLY_BRACKET  reduce using rule 31 (factor -> FLOAT .)
-    $end            reduce using rule 31 (factor -> FLOAT .)
-    RCURLY_BRACKET  reduce using rule 31 (factor -> FLOAT .)
-    SEPARATOR       reduce using rule 31 (factor -> FLOAT .)
-    RPAREN          reduce using rule 31 (factor -> FLOAT .)
+    RETRY           reduce using rule 44 (factor -> FLOAT .)
+    POINTER         reduce using rule 44 (factor -> FLOAT .)
+    PPOINTER        reduce using rule 44 (factor -> FLOAT .)
+    PARALLEL        reduce using rule 44 (factor -> FLOAT .)
+    VAR_DECL        reduce using rule 44 (factor -> FLOAT .)
+    INT             reduce using rule 44 (factor -> FLOAT .)
+    FLOAT           reduce using rule 44 (factor -> FLOAT .)
+    IDENTIFIER      reduce using rule 44 (factor -> FLOAT .)
+    LCURLY_BRACKET  reduce using rule 44 (factor -> FLOAT .)
+    VAR_ACCESS      reduce using rule 44 (factor -> FLOAT .)
+    MAP             reduce using rule 44 (factor -> FLOAT .)
+    FILTER          reduce using rule 44 (factor -> FLOAT .)
+    REDUCE          reduce using rule 44 (factor -> FLOAT .)
+    FOREACH         reduce using rule 44 (factor -> FLOAT .)
+    FLATMAP         reduce using rule 44 (factor -> FLOAT .)
+    FANOUT          reduce using rule 44 (factor -> FLOAT .)
+    $end            reduce using rule 44 (factor -> FLOAT .)
+    RCURLY_BRACKET  reduce using rule 44 (factor -> FLOAT .)
+    SEPARATOR       reduce using rule 44 (factor -> FLOAT .)
+    RPAREN          reduce using rule 44 (factor -> FLOAT .)
 
 
 state 15
 
-    (32) task -> task_name .
+    (45) factor -> variable_reference .
 
-    RETRY           reduce using rule 32 (task -> task_name .)
-    LPAREN          reduce using rule 32 (task -> task_name .)
-    POINTER         reduce using rule 32 (task -> task_name .)
-    PPOINTER        reduce using rule 32 (task -> task_name .)
-    PARALLEL        reduce using rule 32 (task -> task_name .)
-    VAR_DECL        reduce using rule 32 (task -> task_name .)
-    INT             reduce using rule 32 (task -> task_name .)
-    FLOAT           reduce using rule 32 (task -> task_name .)
-    IDENTIFIER      reduce using rule 32 (task -> task_name .)
-    LCURLY_BRACKET  reduce using rule 32 (task -> task_name .)
-    $end            reduce using rule 32 (task -> task_name .)
-    RCURLY_BRACKET  reduce using rule 32 (task -> task_name .)
-    SEPARATOR       reduce using rule 32 (task -> task_name .)
-    RPAREN          reduce using rule 32 (task -> task_name .)
+    RETRY           reduce using rule 45 (factor -> variable_reference .)
+    POINTER         reduce using rule 45 (factor -> variable_reference .)
+    PPOINTER        reduce using rule 45 (factor -> variable_reference .)
+    PARALLEL        reduce using rule 45 (factor -> variable_reference .)
+    VAR_DECL        reduce using rule 45 (factor -> variable_reference .)
+    INT             reduce using rule 45 (factor -> variable_reference .)
+    FLOAT           reduce using rule 45 (factor -> variable_reference .)
+    IDENTIFIER      reduce using rule 45 (factor -> variable_reference .)
+    LCURLY_BRACKET  reduce using rule 45 (factor -> variable_reference .)
+    VAR_ACCESS      reduce using rule 45 (factor -> variable_reference .)
+    MAP             reduce using rule 45 (factor -> variable_reference .)
+    FILTER          reduce using rule 45 (factor -> variable_reference .)
+    REDUCE          reduce using rule 45 (factor -> variable_reference .)
+    FOREACH         reduce using rule 45 (factor -> variable_reference .)
+    FLATMAP         reduce using rule 45 (factor -> variable_reference .)
+    FANOUT          reduce using rule 45 (factor -> variable_reference .)
+    $end            reduce using rule 45 (factor -> variable_reference .)
+    RCURLY_BRACKET  reduce using rule 45 (factor -> variable_reference .)
+    SEPARATOR       reduce using rule 45 (factor -> variable_reference .)
+    RPAREN          reduce using rule 45 (factor -> variable_reference .)
 
 
 state 16
 
-    (33) task -> IDENTIFIER . DOUBLE_COLON task_name
-    (34) task_name -> IDENTIFIER .
-    (35) task_name -> IDENTIFIER . LBRACKET assigment_expression_group RBRACKET
+    (20) task -> meta_event .
+    (21) task -> meta_event . LBRACKET assigment_expression_group RBRACKET
 
-    DOUBLE_COLON    shift and go to state 30
-    RETRY           reduce using rule 34 (task_name -> IDENTIFIER .)
-    LPAREN          reduce using rule 34 (task_name -> IDENTIFIER .)
-    POINTER         reduce using rule 34 (task_name -> IDENTIFIER .)
-    PPOINTER        reduce using rule 34 (task_name -> IDENTIFIER .)
-    PARALLEL        reduce using rule 34 (task_name -> IDENTIFIER .)
-    VAR_DECL        reduce using rule 34 (task_name -> IDENTIFIER .)
-    INT             reduce using rule 34 (task_name -> IDENTIFIER .)
-    FLOAT           reduce using rule 34 (task_name -> IDENTIFIER .)
-    IDENTIFIER      reduce using rule 34 (task_name -> IDENTIFIER .)
-    LCURLY_BRACKET  reduce using rule 34 (task_name -> IDENTIFIER .)
-    $end            reduce using rule 34 (task_name -> IDENTIFIER .)
-    RCURLY_BRACKET  reduce using rule 34 (task_name -> IDENTIFIER .)
-    SEPARATOR       reduce using rule 34 (task_name -> IDENTIFIER .)
-    RPAREN          reduce using rule 34 (task_name -> IDENTIFIER .)
-    LBRACKET        shift and go to state 31
+    RETRY           reduce using rule 20 (task -> meta_event .)
+    LPAREN          reduce using rule 20 (task -> meta_event .)
+    POINTER         reduce using rule 20 (task -> meta_event .)
+    PPOINTER        reduce using rule 20 (task -> meta_event .)
+    PARALLEL        reduce using rule 20 (task -> meta_event .)
+    VAR_DECL        reduce using rule 20 (task -> meta_event .)
+    INT             reduce using rule 20 (task -> meta_event .)
+    FLOAT           reduce using rule 20 (task -> meta_event .)
+    IDENTIFIER      reduce using rule 20 (task -> meta_event .)
+    LCURLY_BRACKET  reduce using rule 20 (task -> meta_event .)
+    VAR_ACCESS      reduce using rule 20 (task -> meta_event .)
+    MAP             reduce using rule 20 (task -> meta_event .)
+    FILTER          reduce using rule 20 (task -> meta_event .)
+    REDUCE          reduce using rule 20 (task -> meta_event .)
+    FOREACH         reduce using rule 20 (task -> meta_event .)
+    FLATMAP         reduce using rule 20 (task -> meta_event .)
+    FANOUT          reduce using rule 20 (task -> meta_event .)
+    $end            reduce using rule 20 (task -> meta_event .)
+    RCURLY_BRACKET  reduce using rule 20 (task -> meta_event .)
+    SEPARATOR       reduce using rule 20 (task -> meta_event .)
+    RPAREN          reduce using rule 20 (task -> meta_event .)
+    LBRACKET        shift and go to state 40
 
 
 state 17
 
-    (47) expression_groupings -> LCURLY_BRACKET . expression RCURLY_BRACKET
-    (48) expression_groupings -> LCURLY_BRACKET . expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (46) task -> task_name .
+
+    RETRY           reduce using rule 46 (task -> task_name .)
+    LPAREN          reduce using rule 46 (task -> task_name .)
+    POINTER         reduce using rule 46 (task -> task_name .)
+    PPOINTER        reduce using rule 46 (task -> task_name .)
+    PARALLEL        reduce using rule 46 (task -> task_name .)
+    VAR_DECL        reduce using rule 46 (task -> task_name .)
+    INT             reduce using rule 46 (task -> task_name .)
+    FLOAT           reduce using rule 46 (task -> task_name .)
+    IDENTIFIER      reduce using rule 46 (task -> task_name .)
+    LCURLY_BRACKET  reduce using rule 46 (task -> task_name .)
+    VAR_ACCESS      reduce using rule 46 (task -> task_name .)
+    MAP             reduce using rule 46 (task -> task_name .)
+    FILTER          reduce using rule 46 (task -> task_name .)
+    REDUCE          reduce using rule 46 (task -> task_name .)
+    FOREACH         reduce using rule 46 (task -> task_name .)
+    FLATMAP         reduce using rule 46 (task -> task_name .)
+    FANOUT          reduce using rule 46 (task -> task_name .)
+    $end            reduce using rule 46 (task -> task_name .)
+    RCURLY_BRACKET  reduce using rule 46 (task -> task_name .)
+    SEPARATOR       reduce using rule 46 (task -> task_name .)
+    RPAREN          reduce using rule 46 (task -> task_name .)
+
+
+state 18
+
+    (47) task -> IDENTIFIER . DOUBLE_COLON task_name
+    (48) task_name -> IDENTIFIER .
+    (49) task_name -> IDENTIFIER . LBRACKET assigment_expression_group RBRACKET
+
+    DOUBLE_COLON    shift and go to state 41
+    RETRY           reduce using rule 48 (task_name -> IDENTIFIER .)
+    LPAREN          reduce using rule 48 (task_name -> IDENTIFIER .)
+    POINTER         reduce using rule 48 (task_name -> IDENTIFIER .)
+    PPOINTER        reduce using rule 48 (task_name -> IDENTIFIER .)
+    PARALLEL        reduce using rule 48 (task_name -> IDENTIFIER .)
+    VAR_DECL        reduce using rule 48 (task_name -> IDENTIFIER .)
+    INT             reduce using rule 48 (task_name -> IDENTIFIER .)
+    FLOAT           reduce using rule 48 (task_name -> IDENTIFIER .)
+    IDENTIFIER      reduce using rule 48 (task_name -> IDENTIFIER .)
+    LCURLY_BRACKET  reduce using rule 48 (task_name -> IDENTIFIER .)
+    VAR_ACCESS      reduce using rule 48 (task_name -> IDENTIFIER .)
+    MAP             reduce using rule 48 (task_name -> IDENTIFIER .)
+    FILTER          reduce using rule 48 (task_name -> IDENTIFIER .)
+    REDUCE          reduce using rule 48 (task_name -> IDENTIFIER .)
+    FOREACH         reduce using rule 48 (task_name -> IDENTIFIER .)
+    FLATMAP         reduce using rule 48 (task_name -> IDENTIFIER .)
+    FANOUT          reduce using rule 48 (task_name -> IDENTIFIER .)
+    $end            reduce using rule 48 (task_name -> IDENTIFIER .)
+    RCURLY_BRACKET  reduce using rule 48 (task_name -> IDENTIFIER .)
+    SEPARATOR       reduce using rule 48 (task_name -> IDENTIFIER .)
+    RPAREN          reduce using rule 48 (task_name -> IDENTIFIER .)
+    LBRACKET        shift and go to state 42
+
+
+state 19
+
+    (61) expression_groupings -> LCURLY_BRACKET . expression RCURLY_BRACKET
+    (62) expression_groupings -> LCURLY_BRACKET . expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
     (7) expression -> . expression POINTER expression
     (8) expression -> . expression PPOINTER expression
     (9) expression -> . expression PARALLEL expression
@@ -461,36 +689,138 @@ state 17
     (15) expression -> . factor RETRY expression_groupings
     (16) expression -> . variable_declaration
     (17) expression -> . term
-    (29) descriptor -> . INT
-    (30) factor -> . INT
-    (31) factor -> . FLOAT
-    (32) task -> . task_name
-    (33) task -> . IDENTIFIER DOUBLE_COLON task_name
-    (38) task -> . task LPAREN conditional_group RPAREN
-    (47) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
-    (48) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
-    (21) variable_declaration -> . VAR_DECL ASSIGN value
+    (42) descriptor -> . INT
+    (43) factor -> . INT
+    (44) factor -> . FLOAT
+    (45) factor -> . variable_reference
+    (20) task -> . meta_event
+    (21) task -> . meta_event LBRACKET assigment_expression_group RBRACKET
+    (46) task -> . task_name
+    (47) task -> . IDENTIFIER DOUBLE_COLON task_name
+    (52) task -> . task LPAREN conditional_group RPAREN
+    (61) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
+    (62) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (31) variable_declaration -> . VAR_DECL ASSIGN value
     (18) term -> . task
     (19) term -> . expression_groupings
-    (34) task_name -> . IDENTIFIER
-    (35) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
+    (22) meta_event -> . meta_mode LANGLE IDENTIFIER RANGLE
+    (23) meta_event -> . meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+    (48) task_name -> . IDENTIFIER
+    (49) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (24) meta_mode -> . MAP
+    (25) meta_mode -> . FILTER
+    (26) meta_mode -> . REDUCE
+    (27) meta_mode -> . FOREACH
+    (28) meta_mode -> . FLATMAP
+    (29) meta_mode -> . FANOUT
 
     INT             shift and go to state 13
     FLOAT           shift and go to state 14
-    IDENTIFIER      shift and go to state 16
-    LCURLY_BRACKET  shift and go to state 17
-    VAR_DECL        shift and go to state 34
+    IDENTIFIER      shift and go to state 18
+    LCURLY_BRACKET  shift and go to state 19
+    VAR_DECL        shift and go to state 45
+    VAR_ACCESS      shift and go to state 20
+    MAP             shift and go to state 22
+    FILTER          shift and go to state 23
+    REDUCE          shift and go to state 24
+    FOREACH         shift and go to state 25
+    FLATMAP         shift and go to state 26
+    FANOUT          shift and go to state 27
 
-    expression                     shift and go to state 32
+    expression                     shift and go to state 43
     descriptor                     shift and go to state 8
     factor                         shift and go to state 9
     task                           shift and go to state 10
     expression_groupings           shift and go to state 11
-    variable_declaration           shift and go to state 33
+    variable_declaration           shift and go to state 44
     term                           shift and go to state 12
-    task_name                      shift and go to state 15
+    variable_reference             shift and go to state 15
+    meta_event                     shift and go to state 16
+    task_name                      shift and go to state 17
+    meta_mode                      shift and go to state 21
 
-state 18
+state 20
+
+    (40) variable_reference -> VAR_ACCESS .
+    (41) variable_reference -> VAR_ACCESS . DOT IDENTIFIER
+
+    RETRY           reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    VAR_DECL        reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    INT             reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    FLOAT           reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    IDENTIFIER      reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    LCURLY_BRACKET  reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    VAR_ACCESS      reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    MAP             reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    FILTER          reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    REDUCE          reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    FOREACH         reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    FLATMAP         reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    FANOUT          reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    $end            reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    POINTER         reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    PPOINTER        reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    PARALLEL        reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    RCURLY_BRACKET  reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    SEPARATOR       reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    RPAREN          reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    RBRACKET        reduce using rule 40 (variable_reference -> VAR_ACCESS .)
+    DOT             shift and go to state 46
+
+
+state 21
+
+    (22) meta_event -> meta_mode . LANGLE IDENTIFIER RANGLE
+    (23) meta_event -> meta_mode . LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+
+    LANGLE          shift and go to state 47
+
+
+state 22
+
+    (24) meta_mode -> MAP .
+
+    LANGLE          reduce using rule 24 (meta_mode -> MAP .)
+
+
+state 23
+
+    (25) meta_mode -> FILTER .
+
+    LANGLE          reduce using rule 25 (meta_mode -> FILTER .)
+
+
+state 24
+
+    (26) meta_mode -> REDUCE .
+
+    LANGLE          reduce using rule 26 (meta_mode -> REDUCE .)
+
+
+state 25
+
+    (27) meta_mode -> FOREACH .
+
+    LANGLE          reduce using rule 27 (meta_mode -> FOREACH .)
+
+
+state 26
+
+    (28) meta_mode -> FLATMAP .
+
+    LANGLE          reduce using rule 28 (meta_mode -> FLATMAP .)
+
+
+state 27
+
+    (29) meta_mode -> FANOUT .
+
+    LANGLE          reduce using rule 29 (meta_mode -> FANOUT .)
+
+
+state 28
 
     (3) statement_list -> statement_list statement .
 
@@ -499,10 +829,17 @@ state 18
     FLOAT           reduce using rule 3 (statement_list -> statement_list statement .)
     IDENTIFIER      reduce using rule 3 (statement_list -> statement_list statement .)
     LCURLY_BRACKET  reduce using rule 3 (statement_list -> statement_list statement .)
+    VAR_ACCESS      reduce using rule 3 (statement_list -> statement_list statement .)
+    MAP             reduce using rule 3 (statement_list -> statement_list statement .)
+    FILTER          reduce using rule 3 (statement_list -> statement_list statement .)
+    REDUCE          reduce using rule 3 (statement_list -> statement_list statement .)
+    FOREACH         reduce using rule 3 (statement_list -> statement_list statement .)
+    FLATMAP         reduce using rule 3 (statement_list -> statement_list statement .)
+    FANOUT          reduce using rule 3 (statement_list -> statement_list statement .)
     $end            reduce using rule 3 (statement_list -> statement_list statement .)
 
 
-state 19
+state 29
 
     (7) expression -> expression POINTER . expression
     (7) expression -> . expression POINTER expression
@@ -516,36 +853,59 @@ state 19
     (15) expression -> . factor RETRY expression_groupings
     (16) expression -> . variable_declaration
     (17) expression -> . term
-    (29) descriptor -> . INT
-    (30) factor -> . INT
-    (31) factor -> . FLOAT
-    (32) task -> . task_name
-    (33) task -> . IDENTIFIER DOUBLE_COLON task_name
-    (38) task -> . task LPAREN conditional_group RPAREN
-    (47) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
-    (48) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
-    (21) variable_declaration -> . VAR_DECL ASSIGN value
+    (42) descriptor -> . INT
+    (43) factor -> . INT
+    (44) factor -> . FLOAT
+    (45) factor -> . variable_reference
+    (20) task -> . meta_event
+    (21) task -> . meta_event LBRACKET assigment_expression_group RBRACKET
+    (46) task -> . task_name
+    (47) task -> . IDENTIFIER DOUBLE_COLON task_name
+    (52) task -> . task LPAREN conditional_group RPAREN
+    (61) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
+    (62) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (31) variable_declaration -> . VAR_DECL ASSIGN value
     (18) term -> . task
     (19) term -> . expression_groupings
-    (34) task_name -> . IDENTIFIER
-    (35) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
+    (22) meta_event -> . meta_mode LANGLE IDENTIFIER RANGLE
+    (23) meta_event -> . meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+    (48) task_name -> . IDENTIFIER
+    (49) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (24) meta_mode -> . MAP
+    (25) meta_mode -> . FILTER
+    (26) meta_mode -> . REDUCE
+    (27) meta_mode -> . FOREACH
+    (28) meta_mode -> . FLATMAP
+    (29) meta_mode -> . FANOUT
 
     INT             shift and go to state 13
     FLOAT           shift and go to state 14
-    IDENTIFIER      shift and go to state 16
-    LCURLY_BRACKET  shift and go to state 17
-    VAR_DECL        shift and go to state 34
+    IDENTIFIER      shift and go to state 18
+    LCURLY_BRACKET  shift and go to state 19
+    VAR_DECL        shift and go to state 45
+    VAR_ACCESS      shift and go to state 20
+    MAP             shift and go to state 22
+    FILTER          shift and go to state 23
+    REDUCE          shift and go to state 24
+    FOREACH         shift and go to state 25
+    FLATMAP         shift and go to state 26
+    FANOUT          shift and go to state 27
 
-    expression                     shift and go to state 35
+    expression                     shift and go to state 48
     descriptor                     shift and go to state 8
     factor                         shift and go to state 9
     task                           shift and go to state 10
     expression_groupings           shift and go to state 11
-    variable_declaration           shift and go to state 33
+    variable_declaration           shift and go to state 44
     term                           shift and go to state 12
-    task_name                      shift and go to state 15
+    variable_reference             shift and go to state 15
+    meta_event                     shift and go to state 16
+    task_name                      shift and go to state 17
+    meta_mode                      shift and go to state 21
 
-state 20
+state 30
 
     (8) expression -> expression PPOINTER . expression
     (7) expression -> . expression POINTER expression
@@ -559,36 +919,59 @@ state 20
     (15) expression -> . factor RETRY expression_groupings
     (16) expression -> . variable_declaration
     (17) expression -> . term
-    (29) descriptor -> . INT
-    (30) factor -> . INT
-    (31) factor -> . FLOAT
-    (32) task -> . task_name
-    (33) task -> . IDENTIFIER DOUBLE_COLON task_name
-    (38) task -> . task LPAREN conditional_group RPAREN
-    (47) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
-    (48) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
-    (21) variable_declaration -> . VAR_DECL ASSIGN value
+    (42) descriptor -> . INT
+    (43) factor -> . INT
+    (44) factor -> . FLOAT
+    (45) factor -> . variable_reference
+    (20) task -> . meta_event
+    (21) task -> . meta_event LBRACKET assigment_expression_group RBRACKET
+    (46) task -> . task_name
+    (47) task -> . IDENTIFIER DOUBLE_COLON task_name
+    (52) task -> . task LPAREN conditional_group RPAREN
+    (61) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
+    (62) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (31) variable_declaration -> . VAR_DECL ASSIGN value
     (18) term -> . task
     (19) term -> . expression_groupings
-    (34) task_name -> . IDENTIFIER
-    (35) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
+    (22) meta_event -> . meta_mode LANGLE IDENTIFIER RANGLE
+    (23) meta_event -> . meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+    (48) task_name -> . IDENTIFIER
+    (49) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (24) meta_mode -> . MAP
+    (25) meta_mode -> . FILTER
+    (26) meta_mode -> . REDUCE
+    (27) meta_mode -> . FOREACH
+    (28) meta_mode -> . FLATMAP
+    (29) meta_mode -> . FANOUT
 
     INT             shift and go to state 13
     FLOAT           shift and go to state 14
-    IDENTIFIER      shift and go to state 16
-    LCURLY_BRACKET  shift and go to state 17
-    VAR_DECL        shift and go to state 34
+    IDENTIFIER      shift and go to state 18
+    LCURLY_BRACKET  shift and go to state 19
+    VAR_DECL        shift and go to state 45
+    VAR_ACCESS      shift and go to state 20
+    MAP             shift and go to state 22
+    FILTER          shift and go to state 23
+    REDUCE          shift and go to state 24
+    FOREACH         shift and go to state 25
+    FLATMAP         shift and go to state 26
+    FANOUT          shift and go to state 27
 
-    expression                     shift and go to state 36
+    expression                     shift and go to state 49
     descriptor                     shift and go to state 8
     factor                         shift and go to state 9
     task                           shift and go to state 10
     expression_groupings           shift and go to state 11
-    variable_declaration           shift and go to state 33
+    variable_declaration           shift and go to state 44
     term                           shift and go to state 12
-    task_name                      shift and go to state 15
+    variable_reference             shift and go to state 15
+    meta_event                     shift and go to state 16
+    task_name                      shift and go to state 17
+    meta_mode                      shift and go to state 21
 
-state 21
+state 31
 
     (9) expression -> expression PARALLEL . expression
     (7) expression -> . expression POINTER expression
@@ -602,72 +985,100 @@ state 21
     (15) expression -> . factor RETRY expression_groupings
     (16) expression -> . variable_declaration
     (17) expression -> . term
-    (29) descriptor -> . INT
-    (30) factor -> . INT
-    (31) factor -> . FLOAT
-    (32) task -> . task_name
-    (33) task -> . IDENTIFIER DOUBLE_COLON task_name
-    (38) task -> . task LPAREN conditional_group RPAREN
-    (47) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
-    (48) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
-    (21) variable_declaration -> . VAR_DECL ASSIGN value
+    (42) descriptor -> . INT
+    (43) factor -> . INT
+    (44) factor -> . FLOAT
+    (45) factor -> . variable_reference
+    (20) task -> . meta_event
+    (21) task -> . meta_event LBRACKET assigment_expression_group RBRACKET
+    (46) task -> . task_name
+    (47) task -> . IDENTIFIER DOUBLE_COLON task_name
+    (52) task -> . task LPAREN conditional_group RPAREN
+    (61) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
+    (62) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (31) variable_declaration -> . VAR_DECL ASSIGN value
     (18) term -> . task
     (19) term -> . expression_groupings
-    (34) task_name -> . IDENTIFIER
-    (35) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
+    (22) meta_event -> . meta_mode LANGLE IDENTIFIER RANGLE
+    (23) meta_event -> . meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+    (48) task_name -> . IDENTIFIER
+    (49) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (24) meta_mode -> . MAP
+    (25) meta_mode -> . FILTER
+    (26) meta_mode -> . REDUCE
+    (27) meta_mode -> . FOREACH
+    (28) meta_mode -> . FLATMAP
+    (29) meta_mode -> . FANOUT
 
     INT             shift and go to state 13
     FLOAT           shift and go to state 14
-    IDENTIFIER      shift and go to state 16
-    LCURLY_BRACKET  shift and go to state 17
-    VAR_DECL        shift and go to state 34
+    IDENTIFIER      shift and go to state 18
+    LCURLY_BRACKET  shift and go to state 19
+    VAR_DECL        shift and go to state 45
+    VAR_ACCESS      shift and go to state 20
+    MAP             shift and go to state 22
+    FILTER          shift and go to state 23
+    REDUCE          shift and go to state 24
+    FOREACH         shift and go to state 25
+    FLATMAP         shift and go to state 26
+    FANOUT          shift and go to state 27
 
-    expression                     shift and go to state 37
+    expression                     shift and go to state 50
     descriptor                     shift and go to state 8
     factor                         shift and go to state 9
     task                           shift and go to state 10
     expression_groupings           shift and go to state 11
-    variable_declaration           shift and go to state 33
+    variable_declaration           shift and go to state 44
     term                           shift and go to state 12
-    task_name                      shift and go to state 15
+    variable_reference             shift and go to state 15
+    meta_event                     shift and go to state 16
+    task_name                      shift and go to state 17
+    meta_mode                      shift and go to state 21
 
-state 22
+state 32
 
-    (21) variable_declaration -> VAR_DECL ASSIGN . value
-    (22) value -> . scalar_value
-    (23) value -> . variable_reference
-    (24) scalar_value -> . INT
-    (25) scalar_value -> . FLOAT
-    (26) scalar_value -> . BOOLEAN
-    (27) scalar_value -> . STRING_LITERAL
-    (28) variable_reference -> . VAR_ACCESS
+    (31) variable_declaration -> VAR_DECL ASSIGN . value
+    (32) value -> . scalar_value
+    (33) value -> . variable_reference
+    (34) value -> . null_value
+    (35) scalar_value -> . INT
+    (36) scalar_value -> . FLOAT
+    (37) scalar_value -> . BOOLEAN
+    (38) scalar_value -> . STRING_LITERAL
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
+    (39) null_value -> . NULL
 
-    INT             shift and go to state 41
-    FLOAT           shift and go to state 42
-    BOOLEAN         shift and go to state 43
-    STRING_LITERAL  shift and go to state 44
-    VAR_ACCESS      shift and go to state 45
+    INT             shift and go to state 55
+    FLOAT           shift and go to state 56
+    BOOLEAN         shift and go to state 57
+    STRING_LITERAL  shift and go to state 58
+    VAR_ACCESS      shift and go to state 20
+    NULL            shift and go to state 59
 
-    value                          shift and go to state 38
-    scalar_value                   shift and go to state 39
-    variable_reference             shift and go to state 40
+    value                          shift and go to state 51
+    scalar_value                   shift and go to state 52
+    variable_reference             shift and go to state 53
+    null_value                     shift and go to state 54
 
-state 23
+state 33
 
-    (20) directive -> VAR_DECL COLON . scalar_value
-    (24) scalar_value -> . INT
-    (25) scalar_value -> . FLOAT
-    (26) scalar_value -> . BOOLEAN
-    (27) scalar_value -> . STRING_LITERAL
+    (30) directive -> VAR_DECL COLON . scalar_value
+    (35) scalar_value -> . INT
+    (36) scalar_value -> . FLOAT
+    (37) scalar_value -> . BOOLEAN
+    (38) scalar_value -> . STRING_LITERAL
 
-    INT             shift and go to state 41
-    FLOAT           shift and go to state 42
-    BOOLEAN         shift and go to state 43
-    STRING_LITERAL  shift and go to state 44
+    INT             shift and go to state 55
+    FLOAT           shift and go to state 56
+    BOOLEAN         shift and go to state 57
+    STRING_LITERAL  shift and go to state 58
 
-    scalar_value                   shift and go to state 46
+    scalar_value                   shift and go to state 60
 
-state 24
+state 34
 
     (10) expression -> descriptor POINTER . expression
     (7) expression -> . expression POINTER expression
@@ -681,36 +1092,59 @@ state 24
     (15) expression -> . factor RETRY expression_groupings
     (16) expression -> . variable_declaration
     (17) expression -> . term
-    (29) descriptor -> . INT
-    (30) factor -> . INT
-    (31) factor -> . FLOAT
-    (32) task -> . task_name
-    (33) task -> . IDENTIFIER DOUBLE_COLON task_name
-    (38) task -> . task LPAREN conditional_group RPAREN
-    (47) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
-    (48) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
-    (21) variable_declaration -> . VAR_DECL ASSIGN value
+    (42) descriptor -> . INT
+    (43) factor -> . INT
+    (44) factor -> . FLOAT
+    (45) factor -> . variable_reference
+    (20) task -> . meta_event
+    (21) task -> . meta_event LBRACKET assigment_expression_group RBRACKET
+    (46) task -> . task_name
+    (47) task -> . IDENTIFIER DOUBLE_COLON task_name
+    (52) task -> . task LPAREN conditional_group RPAREN
+    (61) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
+    (62) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (31) variable_declaration -> . VAR_DECL ASSIGN value
     (18) term -> . task
     (19) term -> . expression_groupings
-    (34) task_name -> . IDENTIFIER
-    (35) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
+    (22) meta_event -> . meta_mode LANGLE IDENTIFIER RANGLE
+    (23) meta_event -> . meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+    (48) task_name -> . IDENTIFIER
+    (49) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (24) meta_mode -> . MAP
+    (25) meta_mode -> . FILTER
+    (26) meta_mode -> . REDUCE
+    (27) meta_mode -> . FOREACH
+    (28) meta_mode -> . FLATMAP
+    (29) meta_mode -> . FANOUT
 
     INT             shift and go to state 13
     FLOAT           shift and go to state 14
-    IDENTIFIER      shift and go to state 16
-    LCURLY_BRACKET  shift and go to state 17
-    VAR_DECL        shift and go to state 34
+    IDENTIFIER      shift and go to state 18
+    LCURLY_BRACKET  shift and go to state 19
+    VAR_DECL        shift and go to state 45
+    VAR_ACCESS      shift and go to state 20
+    MAP             shift and go to state 22
+    FILTER          shift and go to state 23
+    REDUCE          shift and go to state 24
+    FOREACH         shift and go to state 25
+    FLATMAP         shift and go to state 26
+    FANOUT          shift and go to state 27
 
     descriptor                     shift and go to state 8
-    expression                     shift and go to state 47
+    expression                     shift and go to state 61
     factor                         shift and go to state 9
     task                           shift and go to state 10
     expression_groupings           shift and go to state 11
-    variable_declaration           shift and go to state 33
+    variable_declaration           shift and go to state 44
     term                           shift and go to state 12
-    task_name                      shift and go to state 15
+    variable_reference             shift and go to state 15
+    meta_event                     shift and go to state 16
+    task_name                      shift and go to state 17
+    meta_mode                      shift and go to state 21
 
-state 25
+state 35
 
     (11) expression -> descriptor PPOINTER . expression
     (7) expression -> . expression POINTER expression
@@ -724,70 +1158,116 @@ state 25
     (15) expression -> . factor RETRY expression_groupings
     (16) expression -> . variable_declaration
     (17) expression -> . term
-    (29) descriptor -> . INT
-    (30) factor -> . INT
-    (31) factor -> . FLOAT
-    (32) task -> . task_name
-    (33) task -> . IDENTIFIER DOUBLE_COLON task_name
-    (38) task -> . task LPAREN conditional_group RPAREN
-    (47) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
-    (48) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
-    (21) variable_declaration -> . VAR_DECL ASSIGN value
+    (42) descriptor -> . INT
+    (43) factor -> . INT
+    (44) factor -> . FLOAT
+    (45) factor -> . variable_reference
+    (20) task -> . meta_event
+    (21) task -> . meta_event LBRACKET assigment_expression_group RBRACKET
+    (46) task -> . task_name
+    (47) task -> . IDENTIFIER DOUBLE_COLON task_name
+    (52) task -> . task LPAREN conditional_group RPAREN
+    (61) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
+    (62) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (31) variable_declaration -> . VAR_DECL ASSIGN value
     (18) term -> . task
     (19) term -> . expression_groupings
-    (34) task_name -> . IDENTIFIER
-    (35) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
+    (22) meta_event -> . meta_mode LANGLE IDENTIFIER RANGLE
+    (23) meta_event -> . meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+    (48) task_name -> . IDENTIFIER
+    (49) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (24) meta_mode -> . MAP
+    (25) meta_mode -> . FILTER
+    (26) meta_mode -> . REDUCE
+    (27) meta_mode -> . FOREACH
+    (28) meta_mode -> . FLATMAP
+    (29) meta_mode -> . FANOUT
 
     INT             shift and go to state 13
     FLOAT           shift and go to state 14
-    IDENTIFIER      shift and go to state 16
-    LCURLY_BRACKET  shift and go to state 17
-    VAR_DECL        shift and go to state 34
+    IDENTIFIER      shift and go to state 18
+    LCURLY_BRACKET  shift and go to state 19
+    VAR_DECL        shift and go to state 45
+    VAR_ACCESS      shift and go to state 20
+    MAP             shift and go to state 22
+    FILTER          shift and go to state 23
+    REDUCE          shift and go to state 24
+    FOREACH         shift and go to state 25
+    FLATMAP         shift and go to state 26
+    FANOUT          shift and go to state 27
 
     descriptor                     shift and go to state 8
-    expression                     shift and go to state 48
+    expression                     shift and go to state 62
     factor                         shift and go to state 9
     task                           shift and go to state 10
     expression_groupings           shift and go to state 11
-    variable_declaration           shift and go to state 33
+    variable_declaration           shift and go to state 44
     term                           shift and go to state 12
-    task_name                      shift and go to state 15
+    variable_reference             shift and go to state 15
+    meta_event                     shift and go to state 16
+    task_name                      shift and go to state 17
+    meta_mode                      shift and go to state 21
 
-state 26
+state 36
 
     (12) expression -> factor RETRY . task
     (15) expression -> factor RETRY . expression_groupings
-    (32) task -> . task_name
-    (33) task -> . IDENTIFIER DOUBLE_COLON task_name
-    (38) task -> . task LPAREN conditional_group RPAREN
-    (47) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
-    (48) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
-    (34) task_name -> . IDENTIFIER
-    (35) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (20) task -> . meta_event
+    (21) task -> . meta_event LBRACKET assigment_expression_group RBRACKET
+    (46) task -> . task_name
+    (47) task -> . IDENTIFIER DOUBLE_COLON task_name
+    (52) task -> . task LPAREN conditional_group RPAREN
+    (61) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
+    (62) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (22) meta_event -> . meta_mode LANGLE IDENTIFIER RANGLE
+    (23) meta_event -> . meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+    (48) task_name -> . IDENTIFIER
+    (49) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (24) meta_mode -> . MAP
+    (25) meta_mode -> . FILTER
+    (26) meta_mode -> . REDUCE
+    (27) meta_mode -> . FOREACH
+    (28) meta_mode -> . FLATMAP
+    (29) meta_mode -> . FANOUT
 
-    IDENTIFIER      shift and go to state 16
-    LCURLY_BRACKET  shift and go to state 17
+    IDENTIFIER      shift and go to state 18
+    LCURLY_BRACKET  shift and go to state 19
+    MAP             shift and go to state 22
+    FILTER          shift and go to state 23
+    REDUCE          shift and go to state 24
+    FOREACH         shift and go to state 25
+    FLATMAP         shift and go to state 26
+    FANOUT          shift and go to state 27
 
-    task                           shift and go to state 49
-    expression_groupings           shift and go to state 50
-    task_name                      shift and go to state 15
+    task                           shift and go to state 63
+    expression_groupings           shift and go to state 64
+    meta_event                     shift and go to state 16
+    task_name                      shift and go to state 17
+    meta_mode                      shift and go to state 21
 
-state 27
+state 37
 
     (13) expression -> task RETRY . factor
-    (30) factor -> . INT
-    (31) factor -> . FLOAT
+    (43) factor -> . INT
+    (44) factor -> . FLOAT
+    (45) factor -> . variable_reference
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
 
-    INT             shift and go to state 52
+    INT             shift and go to state 66
     FLOAT           shift and go to state 14
+    VAR_ACCESS      shift and go to state 20
 
-    factor                         shift and go to state 51
+    factor                         shift and go to state 65
+    variable_reference             shift and go to state 15
 
-state 28
+state 38
 
-    (38) task -> task LPAREN . conditional_group RPAREN
-    (36) conditional_group -> . expression SEPARATOR expression
-    (37) conditional_group -> . conditional_group SEPARATOR expression
+    (52) task -> task LPAREN . conditional_group RPAREN
+    (50) conditional_group -> . expression SEPARATOR expression
+    (51) conditional_group -> . conditional_group SEPARATOR expression
     (7) expression -> . expression POINTER expression
     (8) expression -> . expression PPOINTER expression
     (9) expression -> . expression PARALLEL expression
@@ -799,89 +1279,134 @@ state 28
     (15) expression -> . factor RETRY expression_groupings
     (16) expression -> . variable_declaration
     (17) expression -> . term
-    (29) descriptor -> . INT
-    (30) factor -> . INT
-    (31) factor -> . FLOAT
-    (32) task -> . task_name
-    (33) task -> . IDENTIFIER DOUBLE_COLON task_name
-    (38) task -> . task LPAREN conditional_group RPAREN
-    (47) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
-    (48) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
-    (21) variable_declaration -> . VAR_DECL ASSIGN value
+    (42) descriptor -> . INT
+    (43) factor -> . INT
+    (44) factor -> . FLOAT
+    (45) factor -> . variable_reference
+    (20) task -> . meta_event
+    (21) task -> . meta_event LBRACKET assigment_expression_group RBRACKET
+    (46) task -> . task_name
+    (47) task -> . IDENTIFIER DOUBLE_COLON task_name
+    (52) task -> . task LPAREN conditional_group RPAREN
+    (61) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
+    (62) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (31) variable_declaration -> . VAR_DECL ASSIGN value
     (18) term -> . task
     (19) term -> . expression_groupings
-    (34) task_name -> . IDENTIFIER
-    (35) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
+    (22) meta_event -> . meta_mode LANGLE IDENTIFIER RANGLE
+    (23) meta_event -> . meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+    (48) task_name -> . IDENTIFIER
+    (49) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (24) meta_mode -> . MAP
+    (25) meta_mode -> . FILTER
+    (26) meta_mode -> . REDUCE
+    (27) meta_mode -> . FOREACH
+    (28) meta_mode -> . FLATMAP
+    (29) meta_mode -> . FANOUT
 
     INT             shift and go to state 13
     FLOAT           shift and go to state 14
-    IDENTIFIER      shift and go to state 16
-    LCURLY_BRACKET  shift and go to state 17
-    VAR_DECL        shift and go to state 34
+    IDENTIFIER      shift and go to state 18
+    LCURLY_BRACKET  shift and go to state 19
+    VAR_DECL        shift and go to state 45
+    VAR_ACCESS      shift and go to state 20
+    MAP             shift and go to state 22
+    FILTER          shift and go to state 23
+    REDUCE          shift and go to state 24
+    FOREACH         shift and go to state 25
+    FLATMAP         shift and go to state 26
+    FANOUT          shift and go to state 27
 
     task                           shift and go to state 10
-    conditional_group              shift and go to state 53
-    expression                     shift and go to state 54
+    conditional_group              shift and go to state 67
+    expression                     shift and go to state 68
     descriptor                     shift and go to state 8
     factor                         shift and go to state 9
     expression_groupings           shift and go to state 11
-    variable_declaration           shift and go to state 33
+    variable_declaration           shift and go to state 44
     term                           shift and go to state 12
-    task_name                      shift and go to state 15
+    variable_reference             shift and go to state 15
+    meta_event                     shift and go to state 16
+    task_name                      shift and go to state 17
+    meta_mode                      shift and go to state 21
 
-state 29
+state 39
 
     (14) expression -> expression_groupings RETRY . factor
-    (30) factor -> . INT
-    (31) factor -> . FLOAT
+    (43) factor -> . INT
+    (44) factor -> . FLOAT
+    (45) factor -> . variable_reference
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
 
-    INT             shift and go to state 52
+    INT             shift and go to state 66
     FLOAT           shift and go to state 14
+    VAR_ACCESS      shift and go to state 20
 
-    factor                         shift and go to state 55
+    factor                         shift and go to state 69
+    variable_reference             shift and go to state 15
 
-state 30
+state 40
 
-    (33) task -> IDENTIFIER DOUBLE_COLON . task_name
-    (34) task_name -> . IDENTIFIER
-    (35) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (21) task -> meta_event LBRACKET . assigment_expression_group RBRACKET
+    (58) assigment_expression_group -> . assignment_expression
+    (59) assigment_expression_group -> . assignment_expression SEPARATOR assignment_expression
+    (60) assigment_expression_group -> . assigment_expression_group SEPARATOR assignment_expression
+    (53) assignment_expression -> . IDENTIFIER ASSIGN STRING_LITERAL
+    (54) assignment_expression -> . IDENTIFIER ASSIGN INT
+    (55) assignment_expression -> . IDENTIFIER ASSIGN FLOAT
+    (56) assignment_expression -> . IDENTIFIER ASSIGN BOOLEAN
+    (57) assignment_expression -> . IDENTIFIER ASSIGN variable_reference
 
-    IDENTIFIER      shift and go to state 56
+    IDENTIFIER      shift and go to state 72
 
-    task_name                      shift and go to state 57
+    assigment_expression_group     shift and go to state 70
+    assignment_expression          shift and go to state 71
 
-state 31
+state 41
 
-    (35) task_name -> IDENTIFIER LBRACKET . assigment_expression_group RBRACKET
-    (44) assigment_expression_group -> . assignment_expression
-    (45) assigment_expression_group -> . assignment_expression SEPARATOR assignment_expression
-    (46) assigment_expression_group -> . assigment_expression_group SEPARATOR assignment_expression
-    (39) assignment_expression -> . IDENTIFIER ASSIGN STRING_LITERAL
-    (40) assignment_expression -> . IDENTIFIER ASSIGN INT
-    (41) assignment_expression -> . IDENTIFIER ASSIGN FLOAT
-    (42) assignment_expression -> . IDENTIFIER ASSIGN BOOLEAN
-    (43) assignment_expression -> . IDENTIFIER ASSIGN variable_reference
+    (47) task -> IDENTIFIER DOUBLE_COLON . task_name
+    (48) task_name -> . IDENTIFIER
+    (49) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
 
-    IDENTIFIER      shift and go to state 58
+    IDENTIFIER      shift and go to state 73
 
-    assigment_expression_group     shift and go to state 59
-    assignment_expression          shift and go to state 60
+    task_name                      shift and go to state 74
 
-state 32
+state 42
 
-    (47) expression_groupings -> LCURLY_BRACKET expression . RCURLY_BRACKET
-    (48) expression_groupings -> LCURLY_BRACKET expression . RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (49) task_name -> IDENTIFIER LBRACKET . assigment_expression_group RBRACKET
+    (58) assigment_expression_group -> . assignment_expression
+    (59) assigment_expression_group -> . assignment_expression SEPARATOR assignment_expression
+    (60) assigment_expression_group -> . assigment_expression_group SEPARATOR assignment_expression
+    (53) assignment_expression -> . IDENTIFIER ASSIGN STRING_LITERAL
+    (54) assignment_expression -> . IDENTIFIER ASSIGN INT
+    (55) assignment_expression -> . IDENTIFIER ASSIGN FLOAT
+    (56) assignment_expression -> . IDENTIFIER ASSIGN BOOLEAN
+    (57) assignment_expression -> . IDENTIFIER ASSIGN variable_reference
+
+    IDENTIFIER      shift and go to state 72
+
+    assigment_expression_group     shift and go to state 75
+    assignment_expression          shift and go to state 71
+
+state 43
+
+    (61) expression_groupings -> LCURLY_BRACKET expression . RCURLY_BRACKET
+    (62) expression_groupings -> LCURLY_BRACKET expression . RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
     (7) expression -> expression . POINTER expression
     (8) expression -> expression . PPOINTER expression
     (9) expression -> expression . PARALLEL expression
 
-    RCURLY_BRACKET  shift and go to state 61
-    POINTER         shift and go to state 19
-    PPOINTER        shift and go to state 20
-    PARALLEL        shift and go to state 21
+    RCURLY_BRACKET  shift and go to state 76
+    POINTER         shift and go to state 29
+    PPOINTER        shift and go to state 30
+    PARALLEL        shift and go to state 31
 
 
-state 33
+state 44
 
     (16) expression -> variable_declaration .
 
@@ -894,19 +1419,41 @@ state 33
     FLOAT           reduce using rule 16 (expression -> variable_declaration .)
     IDENTIFIER      reduce using rule 16 (expression -> variable_declaration .)
     LCURLY_BRACKET  reduce using rule 16 (expression -> variable_declaration .)
+    VAR_ACCESS      reduce using rule 16 (expression -> variable_declaration .)
+    MAP             reduce using rule 16 (expression -> variable_declaration .)
+    FILTER          reduce using rule 16 (expression -> variable_declaration .)
+    REDUCE          reduce using rule 16 (expression -> variable_declaration .)
+    FOREACH         reduce using rule 16 (expression -> variable_declaration .)
+    FLATMAP         reduce using rule 16 (expression -> variable_declaration .)
+    FANOUT          reduce using rule 16 (expression -> variable_declaration .)
     $end            reduce using rule 16 (expression -> variable_declaration .)
     SEPARATOR       reduce using rule 16 (expression -> variable_declaration .)
     RPAREN          reduce using rule 16 (expression -> variable_declaration .)
 
 
-state 34
+state 45
 
-    (21) variable_declaration -> VAR_DECL . ASSIGN value
+    (31) variable_declaration -> VAR_DECL . ASSIGN value
 
-    ASSIGN          shift and go to state 22
+    ASSIGN          shift and go to state 32
 
 
-state 35
+state 46
+
+    (41) variable_reference -> VAR_ACCESS DOT . IDENTIFIER
+
+    IDENTIFIER      shift and go to state 77
+
+
+state 47
+
+    (22) meta_event -> meta_mode LANGLE . IDENTIFIER RANGLE
+    (23) meta_event -> meta_mode LANGLE . IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+
+    IDENTIFIER      shift and go to state 78
+
+
+state 48
 
     (7) expression -> expression POINTER expression .
     (7) expression -> expression . POINTER expression
@@ -921,17 +1468,24 @@ state 35
     FLOAT           reduce using rule 7 (expression -> expression POINTER expression .)
     IDENTIFIER      reduce using rule 7 (expression -> expression POINTER expression .)
     LCURLY_BRACKET  reduce using rule 7 (expression -> expression POINTER expression .)
+    VAR_ACCESS      reduce using rule 7 (expression -> expression POINTER expression .)
+    MAP             reduce using rule 7 (expression -> expression POINTER expression .)
+    FILTER          reduce using rule 7 (expression -> expression POINTER expression .)
+    REDUCE          reduce using rule 7 (expression -> expression POINTER expression .)
+    FOREACH         reduce using rule 7 (expression -> expression POINTER expression .)
+    FLATMAP         reduce using rule 7 (expression -> expression POINTER expression .)
+    FANOUT          reduce using rule 7 (expression -> expression POINTER expression .)
     $end            reduce using rule 7 (expression -> expression POINTER expression .)
     RCURLY_BRACKET  reduce using rule 7 (expression -> expression POINTER expression .)
     SEPARATOR       reduce using rule 7 (expression -> expression POINTER expression .)
     RPAREN          reduce using rule 7 (expression -> expression POINTER expression .)
 
-  ! POINTER         [ shift and go to state 19 ]
-  ! PPOINTER        [ shift and go to state 20 ]
-  ! PARALLEL        [ shift and go to state 21 ]
+  ! POINTER         [ shift and go to state 29 ]
+  ! PPOINTER        [ shift and go to state 30 ]
+  ! PARALLEL        [ shift and go to state 31 ]
 
 
-state 36
+state 49
 
     (8) expression -> expression PPOINTER expression .
     (7) expression -> expression . POINTER expression
@@ -946,17 +1500,24 @@ state 36
     FLOAT           reduce using rule 8 (expression -> expression PPOINTER expression .)
     IDENTIFIER      reduce using rule 8 (expression -> expression PPOINTER expression .)
     LCURLY_BRACKET  reduce using rule 8 (expression -> expression PPOINTER expression .)
+    VAR_ACCESS      reduce using rule 8 (expression -> expression PPOINTER expression .)
+    MAP             reduce using rule 8 (expression -> expression PPOINTER expression .)
+    FILTER          reduce using rule 8 (expression -> expression PPOINTER expression .)
+    REDUCE          reduce using rule 8 (expression -> expression PPOINTER expression .)
+    FOREACH         reduce using rule 8 (expression -> expression PPOINTER expression .)
+    FLATMAP         reduce using rule 8 (expression -> expression PPOINTER expression .)
+    FANOUT          reduce using rule 8 (expression -> expression PPOINTER expression .)
     $end            reduce using rule 8 (expression -> expression PPOINTER expression .)
     RCURLY_BRACKET  reduce using rule 8 (expression -> expression PPOINTER expression .)
     SEPARATOR       reduce using rule 8 (expression -> expression PPOINTER expression .)
     RPAREN          reduce using rule 8 (expression -> expression PPOINTER expression .)
 
-  ! POINTER         [ shift and go to state 19 ]
-  ! PPOINTER        [ shift and go to state 20 ]
-  ! PARALLEL        [ shift and go to state 21 ]
+  ! POINTER         [ shift and go to state 29 ]
+  ! PPOINTER        [ shift and go to state 30 ]
+  ! PARALLEL        [ shift and go to state 31 ]
 
 
-state 37
+state 50
 
     (9) expression -> expression PARALLEL expression .
     (7) expression -> expression . POINTER expression
@@ -971,174 +1532,268 @@ state 37
     FLOAT           reduce using rule 9 (expression -> expression PARALLEL expression .)
     IDENTIFIER      reduce using rule 9 (expression -> expression PARALLEL expression .)
     LCURLY_BRACKET  reduce using rule 9 (expression -> expression PARALLEL expression .)
+    VAR_ACCESS      reduce using rule 9 (expression -> expression PARALLEL expression .)
+    MAP             reduce using rule 9 (expression -> expression PARALLEL expression .)
+    FILTER          reduce using rule 9 (expression -> expression PARALLEL expression .)
+    REDUCE          reduce using rule 9 (expression -> expression PARALLEL expression .)
+    FOREACH         reduce using rule 9 (expression -> expression PARALLEL expression .)
+    FLATMAP         reduce using rule 9 (expression -> expression PARALLEL expression .)
+    FANOUT          reduce using rule 9 (expression -> expression PARALLEL expression .)
     $end            reduce using rule 9 (expression -> expression PARALLEL expression .)
     RCURLY_BRACKET  reduce using rule 9 (expression -> expression PARALLEL expression .)
     SEPARATOR       reduce using rule 9 (expression -> expression PARALLEL expression .)
     RPAREN          reduce using rule 9 (expression -> expression PARALLEL expression .)
 
-  ! POINTER         [ shift and go to state 19 ]
-  ! PPOINTER        [ shift and go to state 20 ]
-  ! PARALLEL        [ shift and go to state 21 ]
+  ! POINTER         [ shift and go to state 29 ]
+  ! PPOINTER        [ shift and go to state 30 ]
+  ! PARALLEL        [ shift and go to state 31 ]
 
 
-state 38
+state 51
 
-    (21) variable_declaration -> VAR_DECL ASSIGN value .
+    (31) variable_declaration -> VAR_DECL ASSIGN value .
 
-    VAR_DECL        reduce using rule 21 (variable_declaration -> VAR_DECL ASSIGN value .)
-    INT             reduce using rule 21 (variable_declaration -> VAR_DECL ASSIGN value .)
-    FLOAT           reduce using rule 21 (variable_declaration -> VAR_DECL ASSIGN value .)
-    IDENTIFIER      reduce using rule 21 (variable_declaration -> VAR_DECL ASSIGN value .)
-    LCURLY_BRACKET  reduce using rule 21 (variable_declaration -> VAR_DECL ASSIGN value .)
-    $end            reduce using rule 21 (variable_declaration -> VAR_DECL ASSIGN value .)
-    POINTER         reduce using rule 21 (variable_declaration -> VAR_DECL ASSIGN value .)
-    PPOINTER        reduce using rule 21 (variable_declaration -> VAR_DECL ASSIGN value .)
-    PARALLEL        reduce using rule 21 (variable_declaration -> VAR_DECL ASSIGN value .)
-    RCURLY_BRACKET  reduce using rule 21 (variable_declaration -> VAR_DECL ASSIGN value .)
-    SEPARATOR       reduce using rule 21 (variable_declaration -> VAR_DECL ASSIGN value .)
-    RPAREN          reduce using rule 21 (variable_declaration -> VAR_DECL ASSIGN value .)
-
-
-state 39
-
-    (22) value -> scalar_value .
-
-    VAR_DECL        reduce using rule 22 (value -> scalar_value .)
-    INT             reduce using rule 22 (value -> scalar_value .)
-    FLOAT           reduce using rule 22 (value -> scalar_value .)
-    IDENTIFIER      reduce using rule 22 (value -> scalar_value .)
-    LCURLY_BRACKET  reduce using rule 22 (value -> scalar_value .)
-    $end            reduce using rule 22 (value -> scalar_value .)
-    POINTER         reduce using rule 22 (value -> scalar_value .)
-    PPOINTER        reduce using rule 22 (value -> scalar_value .)
-    PARALLEL        reduce using rule 22 (value -> scalar_value .)
-    RCURLY_BRACKET  reduce using rule 22 (value -> scalar_value .)
-    SEPARATOR       reduce using rule 22 (value -> scalar_value .)
-    RPAREN          reduce using rule 22 (value -> scalar_value .)
+    VAR_DECL        reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    INT             reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    FLOAT           reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    IDENTIFIER      reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    LCURLY_BRACKET  reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    VAR_ACCESS      reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    MAP             reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    FILTER          reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    REDUCE          reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    FOREACH         reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    FLATMAP         reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    FANOUT          reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    $end            reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    POINTER         reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    PPOINTER        reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    PARALLEL        reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    RCURLY_BRACKET  reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    SEPARATOR       reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
+    RPAREN          reduce using rule 31 (variable_declaration -> VAR_DECL ASSIGN value .)
 
 
-state 40
+state 52
 
-    (23) value -> variable_reference .
+    (32) value -> scalar_value .
 
-    VAR_DECL        reduce using rule 23 (value -> variable_reference .)
-    INT             reduce using rule 23 (value -> variable_reference .)
-    FLOAT           reduce using rule 23 (value -> variable_reference .)
-    IDENTIFIER      reduce using rule 23 (value -> variable_reference .)
-    LCURLY_BRACKET  reduce using rule 23 (value -> variable_reference .)
-    $end            reduce using rule 23 (value -> variable_reference .)
-    POINTER         reduce using rule 23 (value -> variable_reference .)
-    PPOINTER        reduce using rule 23 (value -> variable_reference .)
-    PARALLEL        reduce using rule 23 (value -> variable_reference .)
-    RCURLY_BRACKET  reduce using rule 23 (value -> variable_reference .)
-    SEPARATOR       reduce using rule 23 (value -> variable_reference .)
-    RPAREN          reduce using rule 23 (value -> variable_reference .)
-
-
-state 41
-
-    (24) scalar_value -> INT .
-
-    VAR_DECL        reduce using rule 24 (scalar_value -> INT .)
-    INT             reduce using rule 24 (scalar_value -> INT .)
-    FLOAT           reduce using rule 24 (scalar_value -> INT .)
-    IDENTIFIER      reduce using rule 24 (scalar_value -> INT .)
-    LCURLY_BRACKET  reduce using rule 24 (scalar_value -> INT .)
-    $end            reduce using rule 24 (scalar_value -> INT .)
-    POINTER         reduce using rule 24 (scalar_value -> INT .)
-    PPOINTER        reduce using rule 24 (scalar_value -> INT .)
-    PARALLEL        reduce using rule 24 (scalar_value -> INT .)
-    RCURLY_BRACKET  reduce using rule 24 (scalar_value -> INT .)
-    SEPARATOR       reduce using rule 24 (scalar_value -> INT .)
-    RPAREN          reduce using rule 24 (scalar_value -> INT .)
+    VAR_DECL        reduce using rule 32 (value -> scalar_value .)
+    INT             reduce using rule 32 (value -> scalar_value .)
+    FLOAT           reduce using rule 32 (value -> scalar_value .)
+    IDENTIFIER      reduce using rule 32 (value -> scalar_value .)
+    LCURLY_BRACKET  reduce using rule 32 (value -> scalar_value .)
+    VAR_ACCESS      reduce using rule 32 (value -> scalar_value .)
+    MAP             reduce using rule 32 (value -> scalar_value .)
+    FILTER          reduce using rule 32 (value -> scalar_value .)
+    REDUCE          reduce using rule 32 (value -> scalar_value .)
+    FOREACH         reduce using rule 32 (value -> scalar_value .)
+    FLATMAP         reduce using rule 32 (value -> scalar_value .)
+    FANOUT          reduce using rule 32 (value -> scalar_value .)
+    $end            reduce using rule 32 (value -> scalar_value .)
+    POINTER         reduce using rule 32 (value -> scalar_value .)
+    PPOINTER        reduce using rule 32 (value -> scalar_value .)
+    PARALLEL        reduce using rule 32 (value -> scalar_value .)
+    RCURLY_BRACKET  reduce using rule 32 (value -> scalar_value .)
+    SEPARATOR       reduce using rule 32 (value -> scalar_value .)
+    RPAREN          reduce using rule 32 (value -> scalar_value .)
 
 
-state 42
+state 53
 
-    (25) scalar_value -> FLOAT .
+    (33) value -> variable_reference .
 
-    VAR_DECL        reduce using rule 25 (scalar_value -> FLOAT .)
-    INT             reduce using rule 25 (scalar_value -> FLOAT .)
-    FLOAT           reduce using rule 25 (scalar_value -> FLOAT .)
-    IDENTIFIER      reduce using rule 25 (scalar_value -> FLOAT .)
-    LCURLY_BRACKET  reduce using rule 25 (scalar_value -> FLOAT .)
-    $end            reduce using rule 25 (scalar_value -> FLOAT .)
-    POINTER         reduce using rule 25 (scalar_value -> FLOAT .)
-    PPOINTER        reduce using rule 25 (scalar_value -> FLOAT .)
-    PARALLEL        reduce using rule 25 (scalar_value -> FLOAT .)
-    RCURLY_BRACKET  reduce using rule 25 (scalar_value -> FLOAT .)
-    SEPARATOR       reduce using rule 25 (scalar_value -> FLOAT .)
-    RPAREN          reduce using rule 25 (scalar_value -> FLOAT .)
-
-
-state 43
-
-    (26) scalar_value -> BOOLEAN .
-
-    VAR_DECL        reduce using rule 26 (scalar_value -> BOOLEAN .)
-    INT             reduce using rule 26 (scalar_value -> BOOLEAN .)
-    FLOAT           reduce using rule 26 (scalar_value -> BOOLEAN .)
-    IDENTIFIER      reduce using rule 26 (scalar_value -> BOOLEAN .)
-    LCURLY_BRACKET  reduce using rule 26 (scalar_value -> BOOLEAN .)
-    $end            reduce using rule 26 (scalar_value -> BOOLEAN .)
-    POINTER         reduce using rule 26 (scalar_value -> BOOLEAN .)
-    PPOINTER        reduce using rule 26 (scalar_value -> BOOLEAN .)
-    PARALLEL        reduce using rule 26 (scalar_value -> BOOLEAN .)
-    RCURLY_BRACKET  reduce using rule 26 (scalar_value -> BOOLEAN .)
-    SEPARATOR       reduce using rule 26 (scalar_value -> BOOLEAN .)
-    RPAREN          reduce using rule 26 (scalar_value -> BOOLEAN .)
+    VAR_DECL        reduce using rule 33 (value -> variable_reference .)
+    INT             reduce using rule 33 (value -> variable_reference .)
+    FLOAT           reduce using rule 33 (value -> variable_reference .)
+    IDENTIFIER      reduce using rule 33 (value -> variable_reference .)
+    LCURLY_BRACKET  reduce using rule 33 (value -> variable_reference .)
+    VAR_ACCESS      reduce using rule 33 (value -> variable_reference .)
+    MAP             reduce using rule 33 (value -> variable_reference .)
+    FILTER          reduce using rule 33 (value -> variable_reference .)
+    REDUCE          reduce using rule 33 (value -> variable_reference .)
+    FOREACH         reduce using rule 33 (value -> variable_reference .)
+    FLATMAP         reduce using rule 33 (value -> variable_reference .)
+    FANOUT          reduce using rule 33 (value -> variable_reference .)
+    $end            reduce using rule 33 (value -> variable_reference .)
+    POINTER         reduce using rule 33 (value -> variable_reference .)
+    PPOINTER        reduce using rule 33 (value -> variable_reference .)
+    PARALLEL        reduce using rule 33 (value -> variable_reference .)
+    RCURLY_BRACKET  reduce using rule 33 (value -> variable_reference .)
+    SEPARATOR       reduce using rule 33 (value -> variable_reference .)
+    RPAREN          reduce using rule 33 (value -> variable_reference .)
 
 
-state 44
+state 54
 
-    (27) scalar_value -> STRING_LITERAL .
+    (34) value -> null_value .
 
-    VAR_DECL        reduce using rule 27 (scalar_value -> STRING_LITERAL .)
-    INT             reduce using rule 27 (scalar_value -> STRING_LITERAL .)
-    FLOAT           reduce using rule 27 (scalar_value -> STRING_LITERAL .)
-    IDENTIFIER      reduce using rule 27 (scalar_value -> STRING_LITERAL .)
-    LCURLY_BRACKET  reduce using rule 27 (scalar_value -> STRING_LITERAL .)
-    $end            reduce using rule 27 (scalar_value -> STRING_LITERAL .)
-    POINTER         reduce using rule 27 (scalar_value -> STRING_LITERAL .)
-    PPOINTER        reduce using rule 27 (scalar_value -> STRING_LITERAL .)
-    PARALLEL        reduce using rule 27 (scalar_value -> STRING_LITERAL .)
-    RCURLY_BRACKET  reduce using rule 27 (scalar_value -> STRING_LITERAL .)
-    SEPARATOR       reduce using rule 27 (scalar_value -> STRING_LITERAL .)
-    RPAREN          reduce using rule 27 (scalar_value -> STRING_LITERAL .)
-
-
-state 45
-
-    (28) variable_reference -> VAR_ACCESS .
-
-    VAR_DECL        reduce using rule 28 (variable_reference -> VAR_ACCESS .)
-    INT             reduce using rule 28 (variable_reference -> VAR_ACCESS .)
-    FLOAT           reduce using rule 28 (variable_reference -> VAR_ACCESS .)
-    IDENTIFIER      reduce using rule 28 (variable_reference -> VAR_ACCESS .)
-    LCURLY_BRACKET  reduce using rule 28 (variable_reference -> VAR_ACCESS .)
-    $end            reduce using rule 28 (variable_reference -> VAR_ACCESS .)
-    POINTER         reduce using rule 28 (variable_reference -> VAR_ACCESS .)
-    PPOINTER        reduce using rule 28 (variable_reference -> VAR_ACCESS .)
-    PARALLEL        reduce using rule 28 (variable_reference -> VAR_ACCESS .)
-    RCURLY_BRACKET  reduce using rule 28 (variable_reference -> VAR_ACCESS .)
-    SEPARATOR       reduce using rule 28 (variable_reference -> VAR_ACCESS .)
-    RPAREN          reduce using rule 28 (variable_reference -> VAR_ACCESS .)
-    RBRACKET        reduce using rule 28 (variable_reference -> VAR_ACCESS .)
+    VAR_DECL        reduce using rule 34 (value -> null_value .)
+    INT             reduce using rule 34 (value -> null_value .)
+    FLOAT           reduce using rule 34 (value -> null_value .)
+    IDENTIFIER      reduce using rule 34 (value -> null_value .)
+    LCURLY_BRACKET  reduce using rule 34 (value -> null_value .)
+    VAR_ACCESS      reduce using rule 34 (value -> null_value .)
+    MAP             reduce using rule 34 (value -> null_value .)
+    FILTER          reduce using rule 34 (value -> null_value .)
+    REDUCE          reduce using rule 34 (value -> null_value .)
+    FOREACH         reduce using rule 34 (value -> null_value .)
+    FLATMAP         reduce using rule 34 (value -> null_value .)
+    FANOUT          reduce using rule 34 (value -> null_value .)
+    $end            reduce using rule 34 (value -> null_value .)
+    POINTER         reduce using rule 34 (value -> null_value .)
+    PPOINTER        reduce using rule 34 (value -> null_value .)
+    PARALLEL        reduce using rule 34 (value -> null_value .)
+    RCURLY_BRACKET  reduce using rule 34 (value -> null_value .)
+    SEPARATOR       reduce using rule 34 (value -> null_value .)
+    RPAREN          reduce using rule 34 (value -> null_value .)
 
 
-state 46
+state 55
 
-    (20) directive -> VAR_DECL COLON scalar_value .
+    (35) scalar_value -> INT .
 
-    VAR_DECL        reduce using rule 20 (directive -> VAR_DECL COLON scalar_value .)
-    INT             reduce using rule 20 (directive -> VAR_DECL COLON scalar_value .)
-    FLOAT           reduce using rule 20 (directive -> VAR_DECL COLON scalar_value .)
-    IDENTIFIER      reduce using rule 20 (directive -> VAR_DECL COLON scalar_value .)
-    LCURLY_BRACKET  reduce using rule 20 (directive -> VAR_DECL COLON scalar_value .)
-    $end            reduce using rule 20 (directive -> VAR_DECL COLON scalar_value .)
+    VAR_DECL        reduce using rule 35 (scalar_value -> INT .)
+    INT             reduce using rule 35 (scalar_value -> INT .)
+    FLOAT           reduce using rule 35 (scalar_value -> INT .)
+    IDENTIFIER      reduce using rule 35 (scalar_value -> INT .)
+    LCURLY_BRACKET  reduce using rule 35 (scalar_value -> INT .)
+    VAR_ACCESS      reduce using rule 35 (scalar_value -> INT .)
+    MAP             reduce using rule 35 (scalar_value -> INT .)
+    FILTER          reduce using rule 35 (scalar_value -> INT .)
+    REDUCE          reduce using rule 35 (scalar_value -> INT .)
+    FOREACH         reduce using rule 35 (scalar_value -> INT .)
+    FLATMAP         reduce using rule 35 (scalar_value -> INT .)
+    FANOUT          reduce using rule 35 (scalar_value -> INT .)
+    $end            reduce using rule 35 (scalar_value -> INT .)
+    POINTER         reduce using rule 35 (scalar_value -> INT .)
+    PPOINTER        reduce using rule 35 (scalar_value -> INT .)
+    PARALLEL        reduce using rule 35 (scalar_value -> INT .)
+    RCURLY_BRACKET  reduce using rule 35 (scalar_value -> INT .)
+    SEPARATOR       reduce using rule 35 (scalar_value -> INT .)
+    RPAREN          reduce using rule 35 (scalar_value -> INT .)
 
 
-state 47
+state 56
+
+    (36) scalar_value -> FLOAT .
+
+    VAR_DECL        reduce using rule 36 (scalar_value -> FLOAT .)
+    INT             reduce using rule 36 (scalar_value -> FLOAT .)
+    FLOAT           reduce using rule 36 (scalar_value -> FLOAT .)
+    IDENTIFIER      reduce using rule 36 (scalar_value -> FLOAT .)
+    LCURLY_BRACKET  reduce using rule 36 (scalar_value -> FLOAT .)
+    VAR_ACCESS      reduce using rule 36 (scalar_value -> FLOAT .)
+    MAP             reduce using rule 36 (scalar_value -> FLOAT .)
+    FILTER          reduce using rule 36 (scalar_value -> FLOAT .)
+    REDUCE          reduce using rule 36 (scalar_value -> FLOAT .)
+    FOREACH         reduce using rule 36 (scalar_value -> FLOAT .)
+    FLATMAP         reduce using rule 36 (scalar_value -> FLOAT .)
+    FANOUT          reduce using rule 36 (scalar_value -> FLOAT .)
+    $end            reduce using rule 36 (scalar_value -> FLOAT .)
+    POINTER         reduce using rule 36 (scalar_value -> FLOAT .)
+    PPOINTER        reduce using rule 36 (scalar_value -> FLOAT .)
+    PARALLEL        reduce using rule 36 (scalar_value -> FLOAT .)
+    RCURLY_BRACKET  reduce using rule 36 (scalar_value -> FLOAT .)
+    SEPARATOR       reduce using rule 36 (scalar_value -> FLOAT .)
+    RPAREN          reduce using rule 36 (scalar_value -> FLOAT .)
+
+
+state 57
+
+    (37) scalar_value -> BOOLEAN .
+
+    VAR_DECL        reduce using rule 37 (scalar_value -> BOOLEAN .)
+    INT             reduce using rule 37 (scalar_value -> BOOLEAN .)
+    FLOAT           reduce using rule 37 (scalar_value -> BOOLEAN .)
+    IDENTIFIER      reduce using rule 37 (scalar_value -> BOOLEAN .)
+    LCURLY_BRACKET  reduce using rule 37 (scalar_value -> BOOLEAN .)
+    VAR_ACCESS      reduce using rule 37 (scalar_value -> BOOLEAN .)
+    MAP             reduce using rule 37 (scalar_value -> BOOLEAN .)
+    FILTER          reduce using rule 37 (scalar_value -> BOOLEAN .)
+    REDUCE          reduce using rule 37 (scalar_value -> BOOLEAN .)
+    FOREACH         reduce using rule 37 (scalar_value -> BOOLEAN .)
+    FLATMAP         reduce using rule 37 (scalar_value -> BOOLEAN .)
+    FANOUT          reduce using rule 37 (scalar_value -> BOOLEAN .)
+    $end            reduce using rule 37 (scalar_value -> BOOLEAN .)
+    POINTER         reduce using rule 37 (scalar_value -> BOOLEAN .)
+    PPOINTER        reduce using rule 37 (scalar_value -> BOOLEAN .)
+    PARALLEL        reduce using rule 37 (scalar_value -> BOOLEAN .)
+    RCURLY_BRACKET  reduce using rule 37 (scalar_value -> BOOLEAN .)
+    SEPARATOR       reduce using rule 37 (scalar_value -> BOOLEAN .)
+    RPAREN          reduce using rule 37 (scalar_value -> BOOLEAN .)
+
+
+state 58
+
+    (38) scalar_value -> STRING_LITERAL .
+
+    VAR_DECL        reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    INT             reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    FLOAT           reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    IDENTIFIER      reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    LCURLY_BRACKET  reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    VAR_ACCESS      reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    MAP             reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    FILTER          reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    REDUCE          reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    FOREACH         reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    FLATMAP         reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    FANOUT          reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    $end            reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    POINTER         reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    PPOINTER        reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    PARALLEL        reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    RCURLY_BRACKET  reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    SEPARATOR       reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+    RPAREN          reduce using rule 38 (scalar_value -> STRING_LITERAL .)
+
+
+state 59
+
+    (39) null_value -> NULL .
+
+    VAR_DECL        reduce using rule 39 (null_value -> NULL .)
+    INT             reduce using rule 39 (null_value -> NULL .)
+    FLOAT           reduce using rule 39 (null_value -> NULL .)
+    IDENTIFIER      reduce using rule 39 (null_value -> NULL .)
+    LCURLY_BRACKET  reduce using rule 39 (null_value -> NULL .)
+    VAR_ACCESS      reduce using rule 39 (null_value -> NULL .)
+    MAP             reduce using rule 39 (null_value -> NULL .)
+    FILTER          reduce using rule 39 (null_value -> NULL .)
+    REDUCE          reduce using rule 39 (null_value -> NULL .)
+    FOREACH         reduce using rule 39 (null_value -> NULL .)
+    FLATMAP         reduce using rule 39 (null_value -> NULL .)
+    FANOUT          reduce using rule 39 (null_value -> NULL .)
+    $end            reduce using rule 39 (null_value -> NULL .)
+    POINTER         reduce using rule 39 (null_value -> NULL .)
+    PPOINTER        reduce using rule 39 (null_value -> NULL .)
+    PARALLEL        reduce using rule 39 (null_value -> NULL .)
+    RCURLY_BRACKET  reduce using rule 39 (null_value -> NULL .)
+    SEPARATOR       reduce using rule 39 (null_value -> NULL .)
+    RPAREN          reduce using rule 39 (null_value -> NULL .)
+
+
+state 60
+
+    (30) directive -> VAR_DECL COLON scalar_value .
+
+    VAR_DECL        reduce using rule 30 (directive -> VAR_DECL COLON scalar_value .)
+    INT             reduce using rule 30 (directive -> VAR_DECL COLON scalar_value .)
+    FLOAT           reduce using rule 30 (directive -> VAR_DECL COLON scalar_value .)
+    IDENTIFIER      reduce using rule 30 (directive -> VAR_DECL COLON scalar_value .)
+    LCURLY_BRACKET  reduce using rule 30 (directive -> VAR_DECL COLON scalar_value .)
+    VAR_ACCESS      reduce using rule 30 (directive -> VAR_DECL COLON scalar_value .)
+    MAP             reduce using rule 30 (directive -> VAR_DECL COLON scalar_value .)
+    FILTER          reduce using rule 30 (directive -> VAR_DECL COLON scalar_value .)
+    REDUCE          reduce using rule 30 (directive -> VAR_DECL COLON scalar_value .)
+    FOREACH         reduce using rule 30 (directive -> VAR_DECL COLON scalar_value .)
+    FLATMAP         reduce using rule 30 (directive -> VAR_DECL COLON scalar_value .)
+    FANOUT          reduce using rule 30 (directive -> VAR_DECL COLON scalar_value .)
+    $end            reduce using rule 30 (directive -> VAR_DECL COLON scalar_value .)
+
+
+state 61
 
     (10) expression -> descriptor POINTER expression .
     (7) expression -> expression . POINTER expression
@@ -1153,17 +1808,24 @@ state 47
     FLOAT           reduce using rule 10 (expression -> descriptor POINTER expression .)
     IDENTIFIER      reduce using rule 10 (expression -> descriptor POINTER expression .)
     LCURLY_BRACKET  reduce using rule 10 (expression -> descriptor POINTER expression .)
+    VAR_ACCESS      reduce using rule 10 (expression -> descriptor POINTER expression .)
+    MAP             reduce using rule 10 (expression -> descriptor POINTER expression .)
+    FILTER          reduce using rule 10 (expression -> descriptor POINTER expression .)
+    REDUCE          reduce using rule 10 (expression -> descriptor POINTER expression .)
+    FOREACH         reduce using rule 10 (expression -> descriptor POINTER expression .)
+    FLATMAP         reduce using rule 10 (expression -> descriptor POINTER expression .)
+    FANOUT          reduce using rule 10 (expression -> descriptor POINTER expression .)
     $end            reduce using rule 10 (expression -> descriptor POINTER expression .)
     RCURLY_BRACKET  reduce using rule 10 (expression -> descriptor POINTER expression .)
     SEPARATOR       reduce using rule 10 (expression -> descriptor POINTER expression .)
     RPAREN          reduce using rule 10 (expression -> descriptor POINTER expression .)
 
-  ! POINTER         [ shift and go to state 19 ]
-  ! PPOINTER        [ shift and go to state 20 ]
-  ! PARALLEL        [ shift and go to state 21 ]
+  ! POINTER         [ shift and go to state 29 ]
+  ! PPOINTER        [ shift and go to state 30 ]
+  ! PARALLEL        [ shift and go to state 31 ]
 
 
-state 48
+state 62
 
     (11) expression -> descriptor PPOINTER expression .
     (7) expression -> expression . POINTER expression
@@ -1178,20 +1840,27 @@ state 48
     FLOAT           reduce using rule 11 (expression -> descriptor PPOINTER expression .)
     IDENTIFIER      reduce using rule 11 (expression -> descriptor PPOINTER expression .)
     LCURLY_BRACKET  reduce using rule 11 (expression -> descriptor PPOINTER expression .)
+    VAR_ACCESS      reduce using rule 11 (expression -> descriptor PPOINTER expression .)
+    MAP             reduce using rule 11 (expression -> descriptor PPOINTER expression .)
+    FILTER          reduce using rule 11 (expression -> descriptor PPOINTER expression .)
+    REDUCE          reduce using rule 11 (expression -> descriptor PPOINTER expression .)
+    FOREACH         reduce using rule 11 (expression -> descriptor PPOINTER expression .)
+    FLATMAP         reduce using rule 11 (expression -> descriptor PPOINTER expression .)
+    FANOUT          reduce using rule 11 (expression -> descriptor PPOINTER expression .)
     $end            reduce using rule 11 (expression -> descriptor PPOINTER expression .)
     RCURLY_BRACKET  reduce using rule 11 (expression -> descriptor PPOINTER expression .)
     SEPARATOR       reduce using rule 11 (expression -> descriptor PPOINTER expression .)
     RPAREN          reduce using rule 11 (expression -> descriptor PPOINTER expression .)
 
-  ! POINTER         [ shift and go to state 19 ]
-  ! PPOINTER        [ shift and go to state 20 ]
-  ! PARALLEL        [ shift and go to state 21 ]
+  ! POINTER         [ shift and go to state 29 ]
+  ! PPOINTER        [ shift and go to state 30 ]
+  ! PARALLEL        [ shift and go to state 31 ]
 
 
-state 49
+state 63
 
     (12) expression -> factor RETRY task .
-    (38) task -> task . LPAREN conditional_group RPAREN
+    (52) task -> task . LPAREN conditional_group RPAREN
 
     POINTER         reduce using rule 12 (expression -> factor RETRY task .)
     PPOINTER        reduce using rule 12 (expression -> factor RETRY task .)
@@ -1201,14 +1870,21 @@ state 49
     FLOAT           reduce using rule 12 (expression -> factor RETRY task .)
     IDENTIFIER      reduce using rule 12 (expression -> factor RETRY task .)
     LCURLY_BRACKET  reduce using rule 12 (expression -> factor RETRY task .)
+    VAR_ACCESS      reduce using rule 12 (expression -> factor RETRY task .)
+    MAP             reduce using rule 12 (expression -> factor RETRY task .)
+    FILTER          reduce using rule 12 (expression -> factor RETRY task .)
+    REDUCE          reduce using rule 12 (expression -> factor RETRY task .)
+    FOREACH         reduce using rule 12 (expression -> factor RETRY task .)
+    FLATMAP         reduce using rule 12 (expression -> factor RETRY task .)
+    FANOUT          reduce using rule 12 (expression -> factor RETRY task .)
     $end            reduce using rule 12 (expression -> factor RETRY task .)
     RCURLY_BRACKET  reduce using rule 12 (expression -> factor RETRY task .)
     SEPARATOR       reduce using rule 12 (expression -> factor RETRY task .)
     RPAREN          reduce using rule 12 (expression -> factor RETRY task .)
-    LPAREN          shift and go to state 28
+    LPAREN          shift and go to state 38
 
 
-state 50
+state 64
 
     (15) expression -> factor RETRY expression_groupings .
 
@@ -1220,13 +1896,20 @@ state 50
     FLOAT           reduce using rule 15 (expression -> factor RETRY expression_groupings .)
     IDENTIFIER      reduce using rule 15 (expression -> factor RETRY expression_groupings .)
     LCURLY_BRACKET  reduce using rule 15 (expression -> factor RETRY expression_groupings .)
+    VAR_ACCESS      reduce using rule 15 (expression -> factor RETRY expression_groupings .)
+    MAP             reduce using rule 15 (expression -> factor RETRY expression_groupings .)
+    FILTER          reduce using rule 15 (expression -> factor RETRY expression_groupings .)
+    REDUCE          reduce using rule 15 (expression -> factor RETRY expression_groupings .)
+    FOREACH         reduce using rule 15 (expression -> factor RETRY expression_groupings .)
+    FLATMAP         reduce using rule 15 (expression -> factor RETRY expression_groupings .)
+    FANOUT          reduce using rule 15 (expression -> factor RETRY expression_groupings .)
     $end            reduce using rule 15 (expression -> factor RETRY expression_groupings .)
     RCURLY_BRACKET  reduce using rule 15 (expression -> factor RETRY expression_groupings .)
     SEPARATOR       reduce using rule 15 (expression -> factor RETRY expression_groupings .)
     RPAREN          reduce using rule 15 (expression -> factor RETRY expression_groupings .)
 
 
-state 51
+state 65
 
     (13) expression -> task RETRY factor .
 
@@ -1238,53 +1921,67 @@ state 51
     FLOAT           reduce using rule 13 (expression -> task RETRY factor .)
     IDENTIFIER      reduce using rule 13 (expression -> task RETRY factor .)
     LCURLY_BRACKET  reduce using rule 13 (expression -> task RETRY factor .)
+    VAR_ACCESS      reduce using rule 13 (expression -> task RETRY factor .)
+    MAP             reduce using rule 13 (expression -> task RETRY factor .)
+    FILTER          reduce using rule 13 (expression -> task RETRY factor .)
+    REDUCE          reduce using rule 13 (expression -> task RETRY factor .)
+    FOREACH         reduce using rule 13 (expression -> task RETRY factor .)
+    FLATMAP         reduce using rule 13 (expression -> task RETRY factor .)
+    FANOUT          reduce using rule 13 (expression -> task RETRY factor .)
     $end            reduce using rule 13 (expression -> task RETRY factor .)
     RCURLY_BRACKET  reduce using rule 13 (expression -> task RETRY factor .)
     SEPARATOR       reduce using rule 13 (expression -> task RETRY factor .)
     RPAREN          reduce using rule 13 (expression -> task RETRY factor .)
 
 
-state 52
+state 66
 
-    (30) factor -> INT .
+    (43) factor -> INT .
 
-    POINTER         reduce using rule 30 (factor -> INT .)
-    PPOINTER        reduce using rule 30 (factor -> INT .)
-    PARALLEL        reduce using rule 30 (factor -> INT .)
-    VAR_DECL        reduce using rule 30 (factor -> INT .)
-    INT             reduce using rule 30 (factor -> INT .)
-    FLOAT           reduce using rule 30 (factor -> INT .)
-    IDENTIFIER      reduce using rule 30 (factor -> INT .)
-    LCURLY_BRACKET  reduce using rule 30 (factor -> INT .)
-    $end            reduce using rule 30 (factor -> INT .)
-    RCURLY_BRACKET  reduce using rule 30 (factor -> INT .)
-    SEPARATOR       reduce using rule 30 (factor -> INT .)
-    RPAREN          reduce using rule 30 (factor -> INT .)
-
-
-state 53
-
-    (38) task -> task LPAREN conditional_group . RPAREN
-    (37) conditional_group -> conditional_group . SEPARATOR expression
-
-    RPAREN          shift and go to state 62
-    SEPARATOR       shift and go to state 63
+    POINTER         reduce using rule 43 (factor -> INT .)
+    PPOINTER        reduce using rule 43 (factor -> INT .)
+    PARALLEL        reduce using rule 43 (factor -> INT .)
+    VAR_DECL        reduce using rule 43 (factor -> INT .)
+    INT             reduce using rule 43 (factor -> INT .)
+    FLOAT           reduce using rule 43 (factor -> INT .)
+    IDENTIFIER      reduce using rule 43 (factor -> INT .)
+    LCURLY_BRACKET  reduce using rule 43 (factor -> INT .)
+    VAR_ACCESS      reduce using rule 43 (factor -> INT .)
+    MAP             reduce using rule 43 (factor -> INT .)
+    FILTER          reduce using rule 43 (factor -> INT .)
+    REDUCE          reduce using rule 43 (factor -> INT .)
+    FOREACH         reduce using rule 43 (factor -> INT .)
+    FLATMAP         reduce using rule 43 (factor -> INT .)
+    FANOUT          reduce using rule 43 (factor -> INT .)
+    $end            reduce using rule 43 (factor -> INT .)
+    RCURLY_BRACKET  reduce using rule 43 (factor -> INT .)
+    SEPARATOR       reduce using rule 43 (factor -> INT .)
+    RPAREN          reduce using rule 43 (factor -> INT .)
 
 
-state 54
+state 67
 
-    (36) conditional_group -> expression . SEPARATOR expression
+    (52) task -> task LPAREN conditional_group . RPAREN
+    (51) conditional_group -> conditional_group . SEPARATOR expression
+
+    RPAREN          shift and go to state 79
+    SEPARATOR       shift and go to state 80
+
+
+state 68
+
+    (50) conditional_group -> expression . SEPARATOR expression
     (7) expression -> expression . POINTER expression
     (8) expression -> expression . PPOINTER expression
     (9) expression -> expression . PARALLEL expression
 
-    SEPARATOR       shift and go to state 64
-    POINTER         shift and go to state 19
-    PPOINTER        shift and go to state 20
-    PARALLEL        shift and go to state 21
+    SEPARATOR       shift and go to state 81
+    POINTER         shift and go to state 29
+    PPOINTER        shift and go to state 30
+    PARALLEL        shift and go to state 31
 
 
-state 55
+state 69
 
     (14) expression -> expression_groupings RETRY factor .
 
@@ -1296,407 +1993,645 @@ state 55
     FLOAT           reduce using rule 14 (expression -> expression_groupings RETRY factor .)
     IDENTIFIER      reduce using rule 14 (expression -> expression_groupings RETRY factor .)
     LCURLY_BRACKET  reduce using rule 14 (expression -> expression_groupings RETRY factor .)
+    VAR_ACCESS      reduce using rule 14 (expression -> expression_groupings RETRY factor .)
+    MAP             reduce using rule 14 (expression -> expression_groupings RETRY factor .)
+    FILTER          reduce using rule 14 (expression -> expression_groupings RETRY factor .)
+    REDUCE          reduce using rule 14 (expression -> expression_groupings RETRY factor .)
+    FOREACH         reduce using rule 14 (expression -> expression_groupings RETRY factor .)
+    FLATMAP         reduce using rule 14 (expression -> expression_groupings RETRY factor .)
+    FANOUT          reduce using rule 14 (expression -> expression_groupings RETRY factor .)
     $end            reduce using rule 14 (expression -> expression_groupings RETRY factor .)
     RCURLY_BRACKET  reduce using rule 14 (expression -> expression_groupings RETRY factor .)
     SEPARATOR       reduce using rule 14 (expression -> expression_groupings RETRY factor .)
     RPAREN          reduce using rule 14 (expression -> expression_groupings RETRY factor .)
 
 
-state 56
-
-    (34) task_name -> IDENTIFIER .
-    (35) task_name -> IDENTIFIER . LBRACKET assigment_expression_group RBRACKET
-
-    RETRY           reduce using rule 34 (task_name -> IDENTIFIER .)
-    LPAREN          reduce using rule 34 (task_name -> IDENTIFIER .)
-    POINTER         reduce using rule 34 (task_name -> IDENTIFIER .)
-    PPOINTER        reduce using rule 34 (task_name -> IDENTIFIER .)
-    PARALLEL        reduce using rule 34 (task_name -> IDENTIFIER .)
-    VAR_DECL        reduce using rule 34 (task_name -> IDENTIFIER .)
-    INT             reduce using rule 34 (task_name -> IDENTIFIER .)
-    FLOAT           reduce using rule 34 (task_name -> IDENTIFIER .)
-    IDENTIFIER      reduce using rule 34 (task_name -> IDENTIFIER .)
-    LCURLY_BRACKET  reduce using rule 34 (task_name -> IDENTIFIER .)
-    $end            reduce using rule 34 (task_name -> IDENTIFIER .)
-    RCURLY_BRACKET  reduce using rule 34 (task_name -> IDENTIFIER .)
-    SEPARATOR       reduce using rule 34 (task_name -> IDENTIFIER .)
-    RPAREN          reduce using rule 34 (task_name -> IDENTIFIER .)
-    LBRACKET        shift and go to state 31
-
-
-state 57
-
-    (33) task -> IDENTIFIER DOUBLE_COLON task_name .
-
-    RETRY           reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-    LPAREN          reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-    POINTER         reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-    PPOINTER        reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-    PARALLEL        reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-    VAR_DECL        reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-    INT             reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-    FLOAT           reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-    IDENTIFIER      reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-    LCURLY_BRACKET  reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-    $end            reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-    RCURLY_BRACKET  reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-    SEPARATOR       reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-    RPAREN          reduce using rule 33 (task -> IDENTIFIER DOUBLE_COLON task_name .)
-
-
-state 58
-
-    (39) assignment_expression -> IDENTIFIER . ASSIGN STRING_LITERAL
-    (40) assignment_expression -> IDENTIFIER . ASSIGN INT
-    (41) assignment_expression -> IDENTIFIER . ASSIGN FLOAT
-    (42) assignment_expression -> IDENTIFIER . ASSIGN BOOLEAN
-    (43) assignment_expression -> IDENTIFIER . ASSIGN variable_reference
-
-    ASSIGN          shift and go to state 65
-
-
-state 59
-
-    (35) task_name -> IDENTIFIER LBRACKET assigment_expression_group . RBRACKET
-    (46) assigment_expression_group -> assigment_expression_group . SEPARATOR assignment_expression
-
-    RBRACKET        shift and go to state 66
-    SEPARATOR       shift and go to state 67
-
-
-state 60
-
-    (44) assigment_expression_group -> assignment_expression .
-    (45) assigment_expression_group -> assignment_expression . SEPARATOR assignment_expression
-
-  ! shift/reduce conflict for SEPARATOR resolved as shift
-    RBRACKET        reduce using rule 44 (assigment_expression_group -> assignment_expression .)
-    SEPARATOR       shift and go to state 68
-
-  ! SEPARATOR       [ reduce using rule 44 (assigment_expression_group -> assignment_expression .) ]
-
-
-state 61
-
-    (47) expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .
-    (48) expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET . LBRACKET assigment_expression_group RBRACKET
-
-    RETRY           reduce using rule 47 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
-    POINTER         reduce using rule 47 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
-    PPOINTER        reduce using rule 47 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
-    PARALLEL        reduce using rule 47 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
-    VAR_DECL        reduce using rule 47 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
-    INT             reduce using rule 47 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
-    FLOAT           reduce using rule 47 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
-    IDENTIFIER      reduce using rule 47 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
-    LCURLY_BRACKET  reduce using rule 47 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
-    $end            reduce using rule 47 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
-    RCURLY_BRACKET  reduce using rule 47 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
-    SEPARATOR       reduce using rule 47 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
-    RPAREN          reduce using rule 47 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
-    LBRACKET        shift and go to state 69
-
-
-state 62
-
-    (38) task -> task LPAREN conditional_group RPAREN .
-
-    RETRY           reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-    LPAREN          reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-    POINTER         reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-    PPOINTER        reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-    PARALLEL        reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-    VAR_DECL        reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-    INT             reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-    FLOAT           reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-    IDENTIFIER      reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-    LCURLY_BRACKET  reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-    $end            reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-    RCURLY_BRACKET  reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-    SEPARATOR       reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-    RPAREN          reduce using rule 38 (task -> task LPAREN conditional_group RPAREN .)
-
-
-state 63
-
-    (37) conditional_group -> conditional_group SEPARATOR . expression
-    (7) expression -> . expression POINTER expression
-    (8) expression -> . expression PPOINTER expression
-    (9) expression -> . expression PARALLEL expression
-    (10) expression -> . descriptor POINTER expression
-    (11) expression -> . descriptor PPOINTER expression
-    (12) expression -> . factor RETRY task
-    (13) expression -> . task RETRY factor
-    (14) expression -> . expression_groupings RETRY factor
-    (15) expression -> . factor RETRY expression_groupings
-    (16) expression -> . variable_declaration
-    (17) expression -> . term
-    (29) descriptor -> . INT
-    (30) factor -> . INT
-    (31) factor -> . FLOAT
-    (32) task -> . task_name
-    (33) task -> . IDENTIFIER DOUBLE_COLON task_name
-    (38) task -> . task LPAREN conditional_group RPAREN
-    (47) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
-    (48) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
-    (21) variable_declaration -> . VAR_DECL ASSIGN value
-    (18) term -> . task
-    (19) term -> . expression_groupings
-    (34) task_name -> . IDENTIFIER
-    (35) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
-
-    INT             shift and go to state 13
-    FLOAT           shift and go to state 14
-    IDENTIFIER      shift and go to state 16
-    LCURLY_BRACKET  shift and go to state 17
-    VAR_DECL        shift and go to state 34
-
-    expression                     shift and go to state 70
-    descriptor                     shift and go to state 8
-    factor                         shift and go to state 9
-    task                           shift and go to state 10
-    expression_groupings           shift and go to state 11
-    variable_declaration           shift and go to state 33
-    term                           shift and go to state 12
-    task_name                      shift and go to state 15
-
-state 64
-
-    (36) conditional_group -> expression SEPARATOR . expression
-    (7) expression -> . expression POINTER expression
-    (8) expression -> . expression PPOINTER expression
-    (9) expression -> . expression PARALLEL expression
-    (10) expression -> . descriptor POINTER expression
-    (11) expression -> . descriptor PPOINTER expression
-    (12) expression -> . factor RETRY task
-    (13) expression -> . task RETRY factor
-    (14) expression -> . expression_groupings RETRY factor
-    (15) expression -> . factor RETRY expression_groupings
-    (16) expression -> . variable_declaration
-    (17) expression -> . term
-    (29) descriptor -> . INT
-    (30) factor -> . INT
-    (31) factor -> . FLOAT
-    (32) task -> . task_name
-    (33) task -> . IDENTIFIER DOUBLE_COLON task_name
-    (38) task -> . task LPAREN conditional_group RPAREN
-    (47) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
-    (48) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
-    (21) variable_declaration -> . VAR_DECL ASSIGN value
-    (18) term -> . task
-    (19) term -> . expression_groupings
-    (34) task_name -> . IDENTIFIER
-    (35) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
-
-    INT             shift and go to state 13
-    FLOAT           shift and go to state 14
-    IDENTIFIER      shift and go to state 16
-    LCURLY_BRACKET  shift and go to state 17
-    VAR_DECL        shift and go to state 34
-
-    expression                     shift and go to state 71
-    descriptor                     shift and go to state 8
-    factor                         shift and go to state 9
-    task                           shift and go to state 10
-    expression_groupings           shift and go to state 11
-    variable_declaration           shift and go to state 33
-    term                           shift and go to state 12
-    task_name                      shift and go to state 15
-
-state 65
-
-    (39) assignment_expression -> IDENTIFIER ASSIGN . STRING_LITERAL
-    (40) assignment_expression -> IDENTIFIER ASSIGN . INT
-    (41) assignment_expression -> IDENTIFIER ASSIGN . FLOAT
-    (42) assignment_expression -> IDENTIFIER ASSIGN . BOOLEAN
-    (43) assignment_expression -> IDENTIFIER ASSIGN . variable_reference
-    (28) variable_reference -> . VAR_ACCESS
-
-    STRING_LITERAL  shift and go to state 72
-    INT             shift and go to state 73
-    FLOAT           shift and go to state 74
-    BOOLEAN         shift and go to state 75
-    VAR_ACCESS      shift and go to state 45
-
-    variable_reference             shift and go to state 76
-
-state 66
-
-    (35) task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .
-
-    RETRY           reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-    LPAREN          reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-    POINTER         reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-    PPOINTER        reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-    PARALLEL        reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-    VAR_DECL        reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-    INT             reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-    FLOAT           reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-    IDENTIFIER      reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-    LCURLY_BRACKET  reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-    $end            reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-    RCURLY_BRACKET  reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-    SEPARATOR       reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-    RPAREN          reduce using rule 35 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
-
-
-state 67
-
-    (46) assigment_expression_group -> assigment_expression_group SEPARATOR . assignment_expression
-    (39) assignment_expression -> . IDENTIFIER ASSIGN STRING_LITERAL
-    (40) assignment_expression -> . IDENTIFIER ASSIGN INT
-    (41) assignment_expression -> . IDENTIFIER ASSIGN FLOAT
-    (42) assignment_expression -> . IDENTIFIER ASSIGN BOOLEAN
-    (43) assignment_expression -> . IDENTIFIER ASSIGN variable_reference
-
-    IDENTIFIER      shift and go to state 58
-
-    assignment_expression          shift and go to state 77
-
-state 68
-
-    (45) assigment_expression_group -> assignment_expression SEPARATOR . assignment_expression
-    (39) assignment_expression -> . IDENTIFIER ASSIGN STRING_LITERAL
-    (40) assignment_expression -> . IDENTIFIER ASSIGN INT
-    (41) assignment_expression -> . IDENTIFIER ASSIGN FLOAT
-    (42) assignment_expression -> . IDENTIFIER ASSIGN BOOLEAN
-    (43) assignment_expression -> . IDENTIFIER ASSIGN variable_reference
-
-    IDENTIFIER      shift and go to state 58
-
-    assignment_expression          shift and go to state 78
-
-state 69
-
-    (48) expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET . assigment_expression_group RBRACKET
-    (44) assigment_expression_group -> . assignment_expression
-    (45) assigment_expression_group -> . assignment_expression SEPARATOR assignment_expression
-    (46) assigment_expression_group -> . assigment_expression_group SEPARATOR assignment_expression
-    (39) assignment_expression -> . IDENTIFIER ASSIGN STRING_LITERAL
-    (40) assignment_expression -> . IDENTIFIER ASSIGN INT
-    (41) assignment_expression -> . IDENTIFIER ASSIGN FLOAT
-    (42) assignment_expression -> . IDENTIFIER ASSIGN BOOLEAN
-    (43) assignment_expression -> . IDENTIFIER ASSIGN variable_reference
-
-    IDENTIFIER      shift and go to state 58
-
-    assigment_expression_group     shift and go to state 79
-    assignment_expression          shift and go to state 60
-
 state 70
 
-    (37) conditional_group -> conditional_group SEPARATOR expression .
-    (7) expression -> expression . POINTER expression
-    (8) expression -> expression . PPOINTER expression
-    (9) expression -> expression . PARALLEL expression
+    (21) task -> meta_event LBRACKET assigment_expression_group . RBRACKET
+    (60) assigment_expression_group -> assigment_expression_group . SEPARATOR assignment_expression
 
-    RPAREN          reduce using rule 37 (conditional_group -> conditional_group SEPARATOR expression .)
-    SEPARATOR       reduce using rule 37 (conditional_group -> conditional_group SEPARATOR expression .)
-    POINTER         shift and go to state 19
-    PPOINTER        shift and go to state 20
-    PARALLEL        shift and go to state 21
+    RBRACKET        shift and go to state 82
+    SEPARATOR       shift and go to state 83
 
 
 state 71
 
-    (36) conditional_group -> expression SEPARATOR expression .
-    (7) expression -> expression . POINTER expression
-    (8) expression -> expression . PPOINTER expression
-    (9) expression -> expression . PARALLEL expression
+    (58) assigment_expression_group -> assignment_expression .
+    (59) assigment_expression_group -> assignment_expression . SEPARATOR assignment_expression
 
-    RPAREN          reduce using rule 36 (conditional_group -> expression SEPARATOR expression .)
-    SEPARATOR       reduce using rule 36 (conditional_group -> expression SEPARATOR expression .)
-    POINTER         shift and go to state 19
-    PPOINTER        shift and go to state 20
-    PARALLEL        shift and go to state 21
+  ! shift/reduce conflict for SEPARATOR resolved as shift
+    RBRACKET        reduce using rule 58 (assigment_expression_group -> assignment_expression .)
+    SEPARATOR       shift and go to state 84
+
+  ! SEPARATOR       [ reduce using rule 58 (assigment_expression_group -> assignment_expression .) ]
 
 
 state 72
 
-    (39) assignment_expression -> IDENTIFIER ASSIGN STRING_LITERAL .
+    (53) assignment_expression -> IDENTIFIER . ASSIGN STRING_LITERAL
+    (54) assignment_expression -> IDENTIFIER . ASSIGN INT
+    (55) assignment_expression -> IDENTIFIER . ASSIGN FLOAT
+    (56) assignment_expression -> IDENTIFIER . ASSIGN BOOLEAN
+    (57) assignment_expression -> IDENTIFIER . ASSIGN variable_reference
 
-    SEPARATOR       reduce using rule 39 (assignment_expression -> IDENTIFIER ASSIGN STRING_LITERAL .)
-    RBRACKET        reduce using rule 39 (assignment_expression -> IDENTIFIER ASSIGN STRING_LITERAL .)
+    ASSIGN          shift and go to state 85
 
 
 state 73
 
-    (40) assignment_expression -> IDENTIFIER ASSIGN INT .
+    (48) task_name -> IDENTIFIER .
+    (49) task_name -> IDENTIFIER . LBRACKET assigment_expression_group RBRACKET
 
-    SEPARATOR       reduce using rule 40 (assignment_expression -> IDENTIFIER ASSIGN INT .)
-    RBRACKET        reduce using rule 40 (assignment_expression -> IDENTIFIER ASSIGN INT .)
+    RETRY           reduce using rule 48 (task_name -> IDENTIFIER .)
+    LPAREN          reduce using rule 48 (task_name -> IDENTIFIER .)
+    POINTER         reduce using rule 48 (task_name -> IDENTIFIER .)
+    PPOINTER        reduce using rule 48 (task_name -> IDENTIFIER .)
+    PARALLEL        reduce using rule 48 (task_name -> IDENTIFIER .)
+    VAR_DECL        reduce using rule 48 (task_name -> IDENTIFIER .)
+    INT             reduce using rule 48 (task_name -> IDENTIFIER .)
+    FLOAT           reduce using rule 48 (task_name -> IDENTIFIER .)
+    IDENTIFIER      reduce using rule 48 (task_name -> IDENTIFIER .)
+    LCURLY_BRACKET  reduce using rule 48 (task_name -> IDENTIFIER .)
+    VAR_ACCESS      reduce using rule 48 (task_name -> IDENTIFIER .)
+    MAP             reduce using rule 48 (task_name -> IDENTIFIER .)
+    FILTER          reduce using rule 48 (task_name -> IDENTIFIER .)
+    REDUCE          reduce using rule 48 (task_name -> IDENTIFIER .)
+    FOREACH         reduce using rule 48 (task_name -> IDENTIFIER .)
+    FLATMAP         reduce using rule 48 (task_name -> IDENTIFIER .)
+    FANOUT          reduce using rule 48 (task_name -> IDENTIFIER .)
+    $end            reduce using rule 48 (task_name -> IDENTIFIER .)
+    RCURLY_BRACKET  reduce using rule 48 (task_name -> IDENTIFIER .)
+    SEPARATOR       reduce using rule 48 (task_name -> IDENTIFIER .)
+    RPAREN          reduce using rule 48 (task_name -> IDENTIFIER .)
+    LBRACKET        shift and go to state 42
 
 
 state 74
 
-    (41) assignment_expression -> IDENTIFIER ASSIGN FLOAT .
+    (47) task -> IDENTIFIER DOUBLE_COLON task_name .
 
-    SEPARATOR       reduce using rule 41 (assignment_expression -> IDENTIFIER ASSIGN FLOAT .)
-    RBRACKET        reduce using rule 41 (assignment_expression -> IDENTIFIER ASSIGN FLOAT .)
+    RETRY           reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    LPAREN          reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    POINTER         reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    PPOINTER        reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    PARALLEL        reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    VAR_DECL        reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    INT             reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    FLOAT           reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    IDENTIFIER      reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    LCURLY_BRACKET  reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    VAR_ACCESS      reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    MAP             reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    FILTER          reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    REDUCE          reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    FOREACH         reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    FLATMAP         reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    FANOUT          reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    $end            reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    RCURLY_BRACKET  reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    SEPARATOR       reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
+    RPAREN          reduce using rule 47 (task -> IDENTIFIER DOUBLE_COLON task_name .)
 
 
 state 75
 
-    (42) assignment_expression -> IDENTIFIER ASSIGN BOOLEAN .
+    (49) task_name -> IDENTIFIER LBRACKET assigment_expression_group . RBRACKET
+    (60) assigment_expression_group -> assigment_expression_group . SEPARATOR assignment_expression
 
-    SEPARATOR       reduce using rule 42 (assignment_expression -> IDENTIFIER ASSIGN BOOLEAN .)
-    RBRACKET        reduce using rule 42 (assignment_expression -> IDENTIFIER ASSIGN BOOLEAN .)
+    RBRACKET        shift and go to state 86
+    SEPARATOR       shift and go to state 83
 
 
 state 76
 
-    (43) assignment_expression -> IDENTIFIER ASSIGN variable_reference .
+    (61) expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .
+    (62) expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET . LBRACKET assigment_expression_group RBRACKET
 
-    SEPARATOR       reduce using rule 43 (assignment_expression -> IDENTIFIER ASSIGN variable_reference .)
-    RBRACKET        reduce using rule 43 (assignment_expression -> IDENTIFIER ASSIGN variable_reference .)
+    RETRY           reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    POINTER         reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    PPOINTER        reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    PARALLEL        reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    VAR_DECL        reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    INT             reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    FLOAT           reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    IDENTIFIER      reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    LCURLY_BRACKET  reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    VAR_ACCESS      reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    MAP             reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    FILTER          reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    REDUCE          reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    FOREACH         reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    FLATMAP         reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    FANOUT          reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    $end            reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    RCURLY_BRACKET  reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    SEPARATOR       reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    RPAREN          reduce using rule 61 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET .)
+    LBRACKET        shift and go to state 87
 
 
 state 77
 
-    (46) assigment_expression_group -> assigment_expression_group SEPARATOR assignment_expression .
+    (41) variable_reference -> VAR_ACCESS DOT IDENTIFIER .
 
-    RBRACKET        reduce using rule 46 (assigment_expression_group -> assigment_expression_group SEPARATOR assignment_expression .)
-    SEPARATOR       reduce using rule 46 (assigment_expression_group -> assigment_expression_group SEPARATOR assignment_expression .)
+    RETRY           reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    VAR_DECL        reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    INT             reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    FLOAT           reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    IDENTIFIER      reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    LCURLY_BRACKET  reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    VAR_ACCESS      reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    MAP             reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    FILTER          reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    REDUCE          reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    FOREACH         reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    FLATMAP         reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    FANOUT          reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    $end            reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    POINTER         reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    PPOINTER        reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    PARALLEL        reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    RCURLY_BRACKET  reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    SEPARATOR       reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    RPAREN          reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
+    RBRACKET        reduce using rule 41 (variable_reference -> VAR_ACCESS DOT IDENTIFIER .)
 
 
 state 78
 
-    (45) assigment_expression_group -> assignment_expression SEPARATOR assignment_expression .
+    (22) meta_event -> meta_mode LANGLE IDENTIFIER . RANGLE
+    (23) meta_event -> meta_mode LANGLE IDENTIFIER . DOUBLE_COLON IDENTIFIER RANGLE
 
-    RBRACKET        reduce using rule 45 (assigment_expression_group -> assignment_expression SEPARATOR assignment_expression .)
-    SEPARATOR       reduce using rule 45 (assigment_expression_group -> assignment_expression SEPARATOR assignment_expression .)
+    RANGLE          shift and go to state 88
+    DOUBLE_COLON    shift and go to state 89
 
 
 state 79
 
-    (48) expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group . RBRACKET
-    (46) assigment_expression_group -> assigment_expression_group . SEPARATOR assignment_expression
+    (52) task -> task LPAREN conditional_group RPAREN .
 
-    RBRACKET        shift and go to state 80
-    SEPARATOR       shift and go to state 67
+    RETRY           reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    LPAREN          reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    POINTER         reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    PPOINTER        reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    PARALLEL        reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    VAR_DECL        reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    INT             reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    FLOAT           reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    IDENTIFIER      reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    LCURLY_BRACKET  reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    VAR_ACCESS      reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    MAP             reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    FILTER          reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    REDUCE          reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    FOREACH         reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    FLATMAP         reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    FANOUT          reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    $end            reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    RCURLY_BRACKET  reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    SEPARATOR       reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
+    RPAREN          reduce using rule 52 (task -> task LPAREN conditional_group RPAREN .)
 
 
 state 80
 
-    (48) expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .
+    (51) conditional_group -> conditional_group SEPARATOR . expression
+    (7) expression -> . expression POINTER expression
+    (8) expression -> . expression PPOINTER expression
+    (9) expression -> . expression PARALLEL expression
+    (10) expression -> . descriptor POINTER expression
+    (11) expression -> . descriptor PPOINTER expression
+    (12) expression -> . factor RETRY task
+    (13) expression -> . task RETRY factor
+    (14) expression -> . expression_groupings RETRY factor
+    (15) expression -> . factor RETRY expression_groupings
+    (16) expression -> . variable_declaration
+    (17) expression -> . term
+    (42) descriptor -> . INT
+    (43) factor -> . INT
+    (44) factor -> . FLOAT
+    (45) factor -> . variable_reference
+    (20) task -> . meta_event
+    (21) task -> . meta_event LBRACKET assigment_expression_group RBRACKET
+    (46) task -> . task_name
+    (47) task -> . IDENTIFIER DOUBLE_COLON task_name
+    (52) task -> . task LPAREN conditional_group RPAREN
+    (61) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
+    (62) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (31) variable_declaration -> . VAR_DECL ASSIGN value
+    (18) term -> . task
+    (19) term -> . expression_groupings
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
+    (22) meta_event -> . meta_mode LANGLE IDENTIFIER RANGLE
+    (23) meta_event -> . meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+    (48) task_name -> . IDENTIFIER
+    (49) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (24) meta_mode -> . MAP
+    (25) meta_mode -> . FILTER
+    (26) meta_mode -> . REDUCE
+    (27) meta_mode -> . FOREACH
+    (28) meta_mode -> . FLATMAP
+    (29) meta_mode -> . FANOUT
 
-    RETRY           reduce using rule 48 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
-    POINTER         reduce using rule 48 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
-    PPOINTER        reduce using rule 48 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
-    PARALLEL        reduce using rule 48 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
-    VAR_DECL        reduce using rule 48 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
-    INT             reduce using rule 48 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
-    FLOAT           reduce using rule 48 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
-    IDENTIFIER      reduce using rule 48 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
-    LCURLY_BRACKET  reduce using rule 48 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
-    $end            reduce using rule 48 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
-    RCURLY_BRACKET  reduce using rule 48 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
-    SEPARATOR       reduce using rule 48 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
-    RPAREN          reduce using rule 48 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    INT             shift and go to state 13
+    FLOAT           shift and go to state 14
+    IDENTIFIER      shift and go to state 18
+    LCURLY_BRACKET  shift and go to state 19
+    VAR_DECL        shift and go to state 45
+    VAR_ACCESS      shift and go to state 20
+    MAP             shift and go to state 22
+    FILTER          shift and go to state 23
+    REDUCE          shift and go to state 24
+    FOREACH         shift and go to state 25
+    FLATMAP         shift and go to state 26
+    FANOUT          shift and go to state 27
+
+    expression                     shift and go to state 90
+    descriptor                     shift and go to state 8
+    factor                         shift and go to state 9
+    task                           shift and go to state 10
+    expression_groupings           shift and go to state 11
+    variable_declaration           shift and go to state 44
+    term                           shift and go to state 12
+    variable_reference             shift and go to state 15
+    meta_event                     shift and go to state 16
+    task_name                      shift and go to state 17
+    meta_mode                      shift and go to state 21
+
+state 81
+
+    (50) conditional_group -> expression SEPARATOR . expression
+    (7) expression -> . expression POINTER expression
+    (8) expression -> . expression PPOINTER expression
+    (9) expression -> . expression PARALLEL expression
+    (10) expression -> . descriptor POINTER expression
+    (11) expression -> . descriptor PPOINTER expression
+    (12) expression -> . factor RETRY task
+    (13) expression -> . task RETRY factor
+    (14) expression -> . expression_groupings RETRY factor
+    (15) expression -> . factor RETRY expression_groupings
+    (16) expression -> . variable_declaration
+    (17) expression -> . term
+    (42) descriptor -> . INT
+    (43) factor -> . INT
+    (44) factor -> . FLOAT
+    (45) factor -> . variable_reference
+    (20) task -> . meta_event
+    (21) task -> . meta_event LBRACKET assigment_expression_group RBRACKET
+    (46) task -> . task_name
+    (47) task -> . IDENTIFIER DOUBLE_COLON task_name
+    (52) task -> . task LPAREN conditional_group RPAREN
+    (61) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET
+    (62) expression_groupings -> . LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
+    (31) variable_declaration -> . VAR_DECL ASSIGN value
+    (18) term -> . task
+    (19) term -> . expression_groupings
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
+    (22) meta_event -> . meta_mode LANGLE IDENTIFIER RANGLE
+    (23) meta_event -> . meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
+    (48) task_name -> . IDENTIFIER
+    (49) task_name -> . IDENTIFIER LBRACKET assigment_expression_group RBRACKET
+    (24) meta_mode -> . MAP
+    (25) meta_mode -> . FILTER
+    (26) meta_mode -> . REDUCE
+    (27) meta_mode -> . FOREACH
+    (28) meta_mode -> . FLATMAP
+    (29) meta_mode -> . FANOUT
+
+    INT             shift and go to state 13
+    FLOAT           shift and go to state 14
+    IDENTIFIER      shift and go to state 18
+    LCURLY_BRACKET  shift and go to state 19
+    VAR_DECL        shift and go to state 45
+    VAR_ACCESS      shift and go to state 20
+    MAP             shift and go to state 22
+    FILTER          shift and go to state 23
+    REDUCE          shift and go to state 24
+    FOREACH         shift and go to state 25
+    FLATMAP         shift and go to state 26
+    FANOUT          shift and go to state 27
+
+    expression                     shift and go to state 91
+    descriptor                     shift and go to state 8
+    factor                         shift and go to state 9
+    task                           shift and go to state 10
+    expression_groupings           shift and go to state 11
+    variable_declaration           shift and go to state 44
+    term                           shift and go to state 12
+    variable_reference             shift and go to state 15
+    meta_event                     shift and go to state 16
+    task_name                      shift and go to state 17
+    meta_mode                      shift and go to state 21
+
+state 82
+
+    (21) task -> meta_event LBRACKET assigment_expression_group RBRACKET .
+
+    RETRY           reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    LPAREN          reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    POINTER         reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    PPOINTER        reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    PARALLEL        reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    VAR_DECL        reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    INT             reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    FLOAT           reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    IDENTIFIER      reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    LCURLY_BRACKET  reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    VAR_ACCESS      reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    MAP             reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    FILTER          reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    REDUCE          reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    FOREACH         reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    FLATMAP         reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    FANOUT          reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    $end            reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    RCURLY_BRACKET  reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    SEPARATOR       reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+    RPAREN          reduce using rule 21 (task -> meta_event LBRACKET assigment_expression_group RBRACKET .)
+
+
+state 83
+
+    (60) assigment_expression_group -> assigment_expression_group SEPARATOR . assignment_expression
+    (53) assignment_expression -> . IDENTIFIER ASSIGN STRING_LITERAL
+    (54) assignment_expression -> . IDENTIFIER ASSIGN INT
+    (55) assignment_expression -> . IDENTIFIER ASSIGN FLOAT
+    (56) assignment_expression -> . IDENTIFIER ASSIGN BOOLEAN
+    (57) assignment_expression -> . IDENTIFIER ASSIGN variable_reference
+
+    IDENTIFIER      shift and go to state 72
+
+    assignment_expression          shift and go to state 92
+
+state 84
+
+    (59) assigment_expression_group -> assignment_expression SEPARATOR . assignment_expression
+    (53) assignment_expression -> . IDENTIFIER ASSIGN STRING_LITERAL
+    (54) assignment_expression -> . IDENTIFIER ASSIGN INT
+    (55) assignment_expression -> . IDENTIFIER ASSIGN FLOAT
+    (56) assignment_expression -> . IDENTIFIER ASSIGN BOOLEAN
+    (57) assignment_expression -> . IDENTIFIER ASSIGN variable_reference
+
+    IDENTIFIER      shift and go to state 72
+
+    assignment_expression          shift and go to state 93
+
+state 85
+
+    (53) assignment_expression -> IDENTIFIER ASSIGN . STRING_LITERAL
+    (54) assignment_expression -> IDENTIFIER ASSIGN . INT
+    (55) assignment_expression -> IDENTIFIER ASSIGN . FLOAT
+    (56) assignment_expression -> IDENTIFIER ASSIGN . BOOLEAN
+    (57) assignment_expression -> IDENTIFIER ASSIGN . variable_reference
+    (40) variable_reference -> . VAR_ACCESS
+    (41) variable_reference -> . VAR_ACCESS DOT IDENTIFIER
+
+    STRING_LITERAL  shift and go to state 94
+    INT             shift and go to state 95
+    FLOAT           shift and go to state 96
+    BOOLEAN         shift and go to state 97
+    VAR_ACCESS      shift and go to state 20
+
+    variable_reference             shift and go to state 98
+
+state 86
+
+    (49) task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .
+
+    RETRY           reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    LPAREN          reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    POINTER         reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    PPOINTER        reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    PARALLEL        reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    VAR_DECL        reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    INT             reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    FLOAT           reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    IDENTIFIER      reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    LCURLY_BRACKET  reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    VAR_ACCESS      reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    MAP             reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    FILTER          reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    REDUCE          reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    FOREACH         reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    FLATMAP         reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    FANOUT          reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    $end            reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    RCURLY_BRACKET  reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    SEPARATOR       reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+    RPAREN          reduce using rule 49 (task_name -> IDENTIFIER LBRACKET assigment_expression_group RBRACKET .)
+
+
+state 87
+
+    (62) expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET . assigment_expression_group RBRACKET
+    (58) assigment_expression_group -> . assignment_expression
+    (59) assigment_expression_group -> . assignment_expression SEPARATOR assignment_expression
+    (60) assigment_expression_group -> . assigment_expression_group SEPARATOR assignment_expression
+    (53) assignment_expression -> . IDENTIFIER ASSIGN STRING_LITERAL
+    (54) assignment_expression -> . IDENTIFIER ASSIGN INT
+    (55) assignment_expression -> . IDENTIFIER ASSIGN FLOAT
+    (56) assignment_expression -> . IDENTIFIER ASSIGN BOOLEAN
+    (57) assignment_expression -> . IDENTIFIER ASSIGN variable_reference
+
+    IDENTIFIER      shift and go to state 72
+
+    assigment_expression_group     shift and go to state 99
+    assignment_expression          shift and go to state 71
+
+state 88
+
+    (22) meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .
+
+    LBRACKET        reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    RETRY           reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    LPAREN          reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    POINTER         reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    PPOINTER        reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    PARALLEL        reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    VAR_DECL        reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    INT             reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    FLOAT           reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    IDENTIFIER      reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    LCURLY_BRACKET  reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    VAR_ACCESS      reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    MAP             reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    FILTER          reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    REDUCE          reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    FOREACH         reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    FLATMAP         reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    FANOUT          reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    $end            reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    RCURLY_BRACKET  reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    SEPARATOR       reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+    RPAREN          reduce using rule 22 (meta_event -> meta_mode LANGLE IDENTIFIER RANGLE .)
+
+
+state 89
+
+    (23) meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON . IDENTIFIER RANGLE
+
+    IDENTIFIER      shift and go to state 100
+
+
+state 90
+
+    (51) conditional_group -> conditional_group SEPARATOR expression .
+    (7) expression -> expression . POINTER expression
+    (8) expression -> expression . PPOINTER expression
+    (9) expression -> expression . PARALLEL expression
+
+    RPAREN          reduce using rule 51 (conditional_group -> conditional_group SEPARATOR expression .)
+    SEPARATOR       reduce using rule 51 (conditional_group -> conditional_group SEPARATOR expression .)
+    POINTER         shift and go to state 29
+    PPOINTER        shift and go to state 30
+    PARALLEL        shift and go to state 31
+
+
+state 91
+
+    (50) conditional_group -> expression SEPARATOR expression .
+    (7) expression -> expression . POINTER expression
+    (8) expression -> expression . PPOINTER expression
+    (9) expression -> expression . PARALLEL expression
+
+    RPAREN          reduce using rule 50 (conditional_group -> expression SEPARATOR expression .)
+    SEPARATOR       reduce using rule 50 (conditional_group -> expression SEPARATOR expression .)
+    POINTER         shift and go to state 29
+    PPOINTER        shift and go to state 30
+    PARALLEL        shift and go to state 31
+
+
+state 92
+
+    (60) assigment_expression_group -> assigment_expression_group SEPARATOR assignment_expression .
+
+    RBRACKET        reduce using rule 60 (assigment_expression_group -> assigment_expression_group SEPARATOR assignment_expression .)
+    SEPARATOR       reduce using rule 60 (assigment_expression_group -> assigment_expression_group SEPARATOR assignment_expression .)
+
+
+state 93
+
+    (59) assigment_expression_group -> assignment_expression SEPARATOR assignment_expression .
+
+    RBRACKET        reduce using rule 59 (assigment_expression_group -> assignment_expression SEPARATOR assignment_expression .)
+    SEPARATOR       reduce using rule 59 (assigment_expression_group -> assignment_expression SEPARATOR assignment_expression .)
+
+
+state 94
+
+    (53) assignment_expression -> IDENTIFIER ASSIGN STRING_LITERAL .
+
+    SEPARATOR       reduce using rule 53 (assignment_expression -> IDENTIFIER ASSIGN STRING_LITERAL .)
+    RBRACKET        reduce using rule 53 (assignment_expression -> IDENTIFIER ASSIGN STRING_LITERAL .)
+
+
+state 95
+
+    (54) assignment_expression -> IDENTIFIER ASSIGN INT .
+
+    SEPARATOR       reduce using rule 54 (assignment_expression -> IDENTIFIER ASSIGN INT .)
+    RBRACKET        reduce using rule 54 (assignment_expression -> IDENTIFIER ASSIGN INT .)
+
+
+state 96
+
+    (55) assignment_expression -> IDENTIFIER ASSIGN FLOAT .
+
+    SEPARATOR       reduce using rule 55 (assignment_expression -> IDENTIFIER ASSIGN FLOAT .)
+    RBRACKET        reduce using rule 55 (assignment_expression -> IDENTIFIER ASSIGN FLOAT .)
+
+
+state 97
+
+    (56) assignment_expression -> IDENTIFIER ASSIGN BOOLEAN .
+
+    SEPARATOR       reduce using rule 56 (assignment_expression -> IDENTIFIER ASSIGN BOOLEAN .)
+    RBRACKET        reduce using rule 56 (assignment_expression -> IDENTIFIER ASSIGN BOOLEAN .)
+
+
+state 98
+
+    (57) assignment_expression -> IDENTIFIER ASSIGN variable_reference .
+
+    SEPARATOR       reduce using rule 57 (assignment_expression -> IDENTIFIER ASSIGN variable_reference .)
+    RBRACKET        reduce using rule 57 (assignment_expression -> IDENTIFIER ASSIGN variable_reference .)
+
+
+state 99
+
+    (62) expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group . RBRACKET
+    (60) assigment_expression_group -> assigment_expression_group . SEPARATOR assignment_expression
+
+    RBRACKET        shift and go to state 101
+    SEPARATOR       shift and go to state 83
+
+
+state 100
+
+    (23) meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER . RANGLE
+
+    RANGLE          shift and go to state 102
+
+
+state 101
+
+    (62) expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .
+
+    RETRY           reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    POINTER         reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    PPOINTER        reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    PARALLEL        reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    VAR_DECL        reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    INT             reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    FLOAT           reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    IDENTIFIER      reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    LCURLY_BRACKET  reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    VAR_ACCESS      reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    MAP             reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    FILTER          reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    REDUCE          reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    FOREACH         reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    FLATMAP         reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    FANOUT          reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    $end            reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    RCURLY_BRACKET  reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    SEPARATOR       reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+    RPAREN          reduce using rule 62 (expression_groupings -> LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET .)
+
+
+state 102
+
+    (23) meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .
+
+    LBRACKET        reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    RETRY           reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    LPAREN          reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    POINTER         reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    PPOINTER        reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    PARALLEL        reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    VAR_DECL        reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    INT             reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    FLOAT           reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    IDENTIFIER      reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    LCURLY_BRACKET  reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    VAR_ACCESS      reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    MAP             reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    FILTER          reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    REDUCE          reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    FOREACH         reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    FLATMAP         reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    FANOUT          reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    $end            reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    RCURLY_BRACKET  reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    SEPARATOR       reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
+    RPAREN          reduce using rule 23 (meta_event -> meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE .)
 
 WARNING: 
 WARNING: Conflicts:
 WARNING: 
-WARNING: shift/reduce conflict for SEPARATOR in state 60 resolved as shift
+WARNING: shift/reduce conflict for SEPARATOR in state 71 resolved as shift
 WARNING: reduce/reduce conflict in state 4 resolved using rule (statement -> variable_declaration)
 WARNING: rejected rule (expression -> variable_declaration) in state 4
