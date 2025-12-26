@@ -1,10 +1,13 @@
 import logging
 import typing
+import asyncio
 import grpc
 from concurrent import futures
-from .base import BaseManager
+from .base import BaseManager, Protocol
 from volnux.protos import task_pb2, task_pb2_grpc
-from volnux.executors.message import TaskMessage
+from volnux.executors.message import TaskMessage, deserialize_message, serialize_dict, serialize_object
+from volnux.utils import create_error_response
+from volnux.constants import ErrorCodes
 
 logger = logging.getLogger(__name__)
 
@@ -12,72 +15,106 @@ logger = logging.getLogger(__name__)
 class TaskExecutorServicer(task_pb2_grpc.TaskExecutorServicer):
     """Implementation of TaskExecutor service."""
 
-    def Execute(self, request, context):
-        """Execute a task and return the result."""
+    def __init__(self, manager):
+        self.manager = manager
+
+    async def _process_execution(self, request, context) -> typing.Dict:
+        """
+        Internal helper to process execution logic (Async).
+        Returns the raw result dict (containing status, result, message/error).
+        """
         try:
-            # Deserialize arguments
-            fn, _ = TaskMessage.deserialize(request.fn)
-            args, _ = TaskMessage.deserialize(request.args)
-            kwargs, _ = TaskMessage.deserialize(request.kwargs)
+            # Reconstruct TaskMessage from request
+            args_tuple, is_task = deserialize_message(request.args)
+            kwargs_dict, is_task = deserialize_message(request.kwargs)
+            combined_args = kwargs_dict if kwargs_dict else {}
+            event_name = request.name
 
-            # Execute function
-            result = fn(*args, **kwargs)
+            # Construct TaskMessage locally
+            task_msg = TaskMessage(
+                event=event_name,
+                args=combined_args,
+                correlation_id=request.task_id if request.task_id else None
+            )
 
-            # Serialize result
-            serialized_result = TaskMessage.serialize_object(result)
+            # Setup async sync
+            completion_event = asyncio.Event()
+            client_context = {
+                "event": completion_event,
+                "result_container": {}
+            }
 
-            return task_pb2.TaskResponse(success=True, result=serialized_result)
+            # Dispatch
+            self.manager.handle_task(task_msg, Protocol.GRPC, client_context)
+
+            # Wait
+            try:
+                await asyncio.wait_for(completion_event.wait(), timeout=300)
+                result_data = client_context["result_container"].get("data")
+                return result_data
+            except asyncio.TimeoutError:
+                return create_error_response(
+                    code=ErrorCodes.TASK_TIMEOUT,
+                    message="Task execution timed out",
+                    correlation_id=request.task_id
+                )
 
         except Exception as e:
-            logger.error(
-                f"Error executing task {request.task_id}, name: {request.name}: {str(e)}",
-                exc_info=e,
-            )
-            serialized_result = TaskMessage.serialize_object(e)
-            return task_pb2.TaskResponse(
-                success=False, error=str(e), result=serialized_result
-            )
-
-    def ExecuteStream(self, request, context):
-        """Execute a task and stream status updates."""
-        try:
-            # Initial status
-            yield task_pb2.TaskStatus(
-                status=task_pb2.TaskStatus.PENDING, message="Task received"
-            )
-
-            # Deserialize arguments
-            fn, _ = TaskMessage.deserialize(request.fn)
-            args, _ = TaskMessage.deserialize(request.args)
-            kwargs, _ = TaskMessage.deserialize(request.kwargs)
-
-            yield task_pb2.TaskStatus(
-                status=task_pb2.TaskStatus.RUNNING, message="Task started"
-            )
-
-            # Execute with arguments
-            result = fn(*args, **kwargs)
-
-            # Serialize result
-            serialized_result = TaskMessage.serialize_object(result)
-
-            # Send completion
-            yield task_pb2.TaskStatus(
-                status=task_pb2.TaskStatus.COMPLETED,
-                result=serialized_result,
-                message="Task completed",
-            )
-
-        except Exception as e:
-            logger.error(
-                f"Error in streaming task {request.task_id}: {str(e)}", exc_info=e
-            )
-            serialized_result = TaskMessage.serialize_object(e)
-            yield task_pb2.TaskStatus(
-                status=task_pb2.TaskStatus.FAILED,
+            logger.error(f"Error executing task {request.task_id}: {str(e)}", exc_info=e)
+            return create_error_response(
+                code=ErrorCodes.INTERNAL_ERROR,
                 message=str(e),
-                result=serialized_result,
+                correlation_id=request.task_id
             )
+
+    async def Execute(self, request, context):
+        """Execute a task and return the result via TaskResponse (Unary)"""
+        result_data = await self._process_execution(request, context)
+
+        is_success = result_data.get("status") == "success"
+        error_msg = result_data.get("message", "") if not is_success else ""
+
+        # Serialize result
+        inner_result = result_data.get("result")
+        if isinstance(inner_result, dict):
+            serialized_result = serialize_dict(inner_result)
+        else:
+            serialized_result = serialize_object(inner_result) if not isinstance(inner_result, bytes) else (inner_result or b"")
+
+        return task_pb2.TaskResponse(
+            success=is_success,
+            error=error_msg,
+            result=serialized_result
+        )
+
+    async def ExecuteStream(self, request, context):
+        """Execute a task and yield result via TaskStatus (Streaming)"""
+        result_data = await self._process_execution(request, context)
+
+        status_str = result_data.get("status")
+        msg = result_data.get("message", "")
+
+        # Map string status to Enum
+        if status_str == "success":
+            status_enum = task_pb2.TaskStatus.COMPLETED
+        elif status_str == "error" or status_str == "failed":
+            status_enum = task_pb2.TaskStatus.FAILED
+        else:
+            status_enum = task_pb2.TaskStatus.PENDING # Should not happen after wait
+
+        # Serialize result
+        inner_result = result_data.get("result")
+        if isinstance(inner_result, dict):
+            serialized_result = serialize_dict(inner_result)
+        else:
+            serialized_result = serialize_object(inner_result) if not isinstance(inner_result, bytes) else (inner_result or b"")
+
+        # Yield final status
+        yield task_pb2.TaskStatus(
+            status=status_enum,
+            result=serialized_result,
+            message=msg
+        )
 
 
 class GRPCManager(BaseManager):
@@ -106,39 +143,58 @@ class GRPCManager(BaseManager):
         self._server = None
         self._shutdown = False
 
-    def start(self, *args, **kwargs) -> None:
-        """Start the gRPC server"""
+    def _route_tcp_response(self, task_info: typing.Dict, result_data: typing.Dict):
+        pass
+
+    async def _route_grpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
+        """
+        Route response back to the gRPC handler waiting on event.
+        """
+        client_context = task_info.get("client_context")
+        if not client_context:
+            logger.error("No client context for GRPC response")
+            return
+
+        completion_event = client_context.get("event")
+        result_container = client_context.get("result_container")
+
+        if result_container is not None:
+            # result_data contains: status, result, completed_at, etc.
+            result_container["data"] = result_data
+
+        if completion_event:
+            completion_event.set()
+
+    def _route_xrpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
+        pass # Not used in GRPCManager
+
+    async def _start_grpc_server(self):
+        """Start the Async gRPC Server"""
         try:
-            # Create server
-            self._server = grpc.server(
+             # Create server
+            self._server = grpc.aio.server(
                 futures.ThreadPoolExecutor(max_workers=self._max_workers)
             )
 
             # Add servicer
             task_pb2_grpc.add_TaskExecutorServicer_to_server(
-                TaskExecutorServicer(), self._server
+                TaskExecutorServicer(self), self._server
             )
 
             # Configure encryption if enabled
             if self._use_encryption:
                 if not (self._server_cert_path and self._server_key_path):
-                    raise ValueError(
-                        "Server certificate and key required for encryption"
-                    )
+                    raise ValueError("Server certificate and key required for encryption")
 
-                # Load server credentials
                 with open(self._server_key_path, "rb") as f:
                     private_key = f.read()
                 with open(self._server_cert_path, "rb") as f:
                     certificate_chain = f.read()
 
-                # Load client CA if required
                 root_certificates = None
                 if self._require_client_cert:
                     if not self._client_ca_path:
-                        raise ValueError(
-                            "Client CA required when client cert is required"
-                        )
+                        raise ValueError("Client CA required when client cert is required")
                     with open(self._client_ca_path, "rb") as f:
                         root_certificates = f.read()
 
@@ -154,18 +210,29 @@ class GRPCManager(BaseManager):
                 port = self._server.add_insecure_port(f"{self._host}:{self._port}")
 
             # Start server
-            self._server.start()
-            logger.info(f"gRPC server listening on {self._host}:{port}")
+            await self._server.start()
+            logger.info(f"Async gRPC server listening on {self._host}:{port}")
 
-            # Wait for shutdown
-            self._server.wait_for_termination()
+            await self._server.wait_for_termination()
 
+        except asyncio.CancelledError:
+             # Graceful stop on cancel
+             if self._server:
+                 await self._server.stop(grace=5)
         except Exception as e:
             logger.error(f"Error starting gRPC server: {e}")
-            raise
+
+    def _get_extra_async_tasks(self) -> typing.List[asyncio.Task]:
+        """Start the gRPC server as an extra task"""
+        return [asyncio.create_task(self._start_grpc_server())]
+
+    def start(self, *args, **kwargs) -> None:
+        """Start the gRPC server"""
+        # Start BaseManager components (which starts thread loop -> starts extra tasks)
+        super().start()
 
     def shutdown(self) -> None:
         """Shutdown the gRPC server"""
-        if self._server:
-            self._server.stop(grace=5)  # 5 seconds grace period
-            self._server = None
+        super().shutdown()
+        # No-op here if async loop handles it, or clean up if manual start
+        self._server = None

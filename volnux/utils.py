@@ -399,3 +399,27 @@ def is_multiprocessing_executor(executor_class: typing.Type["BaseExecutor"]) -> 
     return executor_class == ProcessPoolExecutor or getattr(
         executor_class, "support_parallel_execution", False
     )
+
+
+def create_error_response(
+    code: str,
+    message: str,
+    correlation_id: typing.Optional[str] = None
+) -> typing.Dict[str, typing.Any]:
+    """
+    Create a standardized error response dictionary.
+    Args:
+        code: Error code from volnux.constants.ErrorCodes
+        message: Human readable error message
+        correlation_id: Optional correlation ID
+    Returns:
+        dict: Standard error payload
+    """
+    from datetime import datetime
+    return {
+        "status": "error",
+        "code": code,
+        "message": message,
+        "correlation_id": correlation_id,
+        "timestamp": datetime.now().isoformat()
+    }

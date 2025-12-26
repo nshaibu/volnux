@@ -452,6 +452,15 @@ class StopConditionProcessor:
             "message": self.message,
         }
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop("logger", None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.logger = logging.getLogger(__name__)
+
 
 class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
     """

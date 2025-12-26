@@ -6,16 +6,24 @@ import ssl
 import typing
 import pickle
 import logging
+import threading
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from volnux.concurrency.async_utils import to_thread
 
-from .base import BaseManager
+from .base import BaseManager, Protocol
 from volnux.conf import ConfigLoader
 from volnux.utils import (
     send_data_over_socket,
     receive_data_from_socket,
     create_server_ssl_context,
 )
-from volnux.executors.message import TaskMessage
+from volnux.executors.message import TaskMessage, deserialize_message, serialize_dict
+from volnux.manager.result_store import get_result_store
+from volnux.manager.base import get_client_task_registry
+from volnux.utils import create_error_response
+from volnux.constants import ErrorCodes
+
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +75,39 @@ class RemoteTaskManager(BaseManager):
         self._sock: typing.Optional[socket.socket] = None
         # self._process_context = mp.get_context("spawn")
         # self._process_pool = ProcessPoolExecutor(mp_context=self._process_context)
-        self._thread_pool = ThreadPoolExecutor(max_workers=4)
+        self._thread_pool = ThreadPoolExecutor(max_workers=8)
+
+    async def _route_tcp_response(self, task_info: typing.Dict, result_data: typing.Dict):
+        """Route response via TCP (Async)"""
+        client_context = task_info.get("client_context")
+        if not client_context or not isinstance(client_context, dict):
+            logger.error("Invalid client context for TCP response")
+            return
+
+        writer = client_context.get("writer")
+
+        if not writer:
+            logger.error(f"No client writer found for TCP response (correlation_id={task_info.get('correlation_id')})")
+            return
+
+        try:
+            # result_data is a dictionary, use serialize_dict
+            response_data = serialize_dict(result_data)
+
+            writer.write(response_data)
+            await writer.drain()
+
+            logger.info(f"Routed response via TCP, size: {len(response_data)} bytes")
+
+        except Exception as e:
+            logger.error(f"Failed to send response via TCP: {e}. Re-raising for fallback.")
+            raise
+
+    def _route_grpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
+        pass # Not used in RemoteTaskManager
+
+    def _route_xrpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
+        pass # Not used in RemoteTaskManager
 
     def _create_server_socket(self) -> socket.socket:
         """Create and configure the server socket with proper timeout and SSL if enabled"""
@@ -92,112 +132,141 @@ class RemoteTaskManager(BaseManager):
             logger.error(f"Failed to create SSL context: {str(e)}", exc_info=e)
             raise
 
-    def _handle_client(
-        self, client_sock: socket.socket, client_addr: typing.Tuple[str, int]
-    ) -> None:
-        """Handle a client connection"""
-        client_info = f"{client_addr[0]}:{client_addr[1]}"
+    async def _handle_client_async(self, reader, writer):
+        """Handle a client connection (Async)"""
+        addr = writer.get_extra_info('peername')
+        client_info = f"{addr[0]}:{addr[1]}"
         logger.info(f"New client connection from {client_info}")
 
         try:
-            client_sock.settimeout(self._socket_timeout)
-            exception = None
-
-            # Receive task message
-            try:
-                msg_data = receive_data_from_socket(client_sock, chunk_size=CHUNK_SIZE)
-
-                task_message, is_task_message = TaskMessage.deserialize(msg_data)
-                if not is_task_message:
-                    logger.error(
-                        f"Invalid message: {task_message} is not a task message"
-                    )
-                    exception = ValueError(
-                        "Invalid task message: Received message from client is not a task message"
-                    )
-            except (zlib.error, pickle.UnpicklingError) as e:
-                logger.error(f"Failed to decompress message: {str(e)}", exc_info=e)
-                exception = ValueError(f"Invalid task data received: {str(e)}")
-            except ModuleNotFoundError as e:
-                logger.error(f"Failed to decompress task data: {str(e)}", exc_info=e)
-                exception = e
-
-            # Execute task
-            if exception is None:
+            while not self._shutdown:
                 try:
-                    result = task_message.fn(*task_message.args, **task_message.kwargs)
+                    # Receive task message
+                    # Using reader.read. Protocol needs framing (msg size header) or robust deserialization.
+                    # Current impl uses `receive_data_from_socket` which handles size header.
+                    # We need an async version of that or use to_thread.
+                    # But reader.read is raw bytes.
+                    # `receive_data_from_socket` reads 4 bytes (size) then N bytes.
+
+                    # Async framing:
+                    try:
+                        header_data = await reader.readexactly(4)
+                        import struct
+                        msg_len = struct.unpack("!I", header_data)[0]
+                        msg_data = await reader.readexactly(msg_len)
+                    except asyncio.IncompleteReadError:
+                         break # EOF
+
+                    if not msg_data:
+                        break
+
+                    task_message, is_task_message = deserialize_message(msg_data)
+                    if not is_task_message:
+                         logger.warning(f"Invalid message received from {client_info}")
+                         continue
+
+                    # Handle POLL event
+                    if task_message.event == "POLL":
+                        target_task_id = task_message.args.get("task_id")
+                        if not target_task_id:
+                             # We could send error back
+                             continue
+
+                        # Using to_thread to be safe if store has locks.
+                        result = await to_thread(get_result_store().get, target_task_id)
+
+                        if result:
+                            # Found result, send it back immediately
+                            response_data = serialize_dict(result)
+                            writer.write(response_data)
+                            await writer.drain()
+                            logger.info(f"Polled result retrieved for {target_task_id}")
+                        else:
+                            # 2. Check Registry
+                            registry = get_client_task_registry()
+                            task_info = await to_thread(registry.get_task, target_task_id)
+
+                            status = "PENDING" if task_info else "NOT_FOUND"
+                            response_data = serialize_dict({
+                                "correlation_id": target_task_id,
+                                "status": status
+                            })
+                            writer.write(response_data)
+                            await writer.drain()
+
+                        continue
+
+                    client_context = {
+                        "writer": writer,
+                    }
+
+                    # Dispatch using BaseManager
+                    self.handle_task(task_message, Protocol.TCP, client_context)
+
                 except Exception as e:
-                    logger.error(
-                        f"Task execution failed for client {client_info}: {str(e)}",
-                        exc_info=e,
-                    )
-                    result = e
-            else:
-                result = exception
-
-            # Send result back
-            data_size = send_data_over_socket(
-                client_sock,
-                data=TaskMessage.serialize_object(result),
-                chunk_size=CHUNK_SIZE,
-            )
-
-            logger.info(
-                f"Successfully completed task for client {client_info}, data size: {data_size} bytes sent"
-            )
+                    logger.error(f"Error reading/processing message from {client_info}: {e}", exc_info=e)
+                    # Try to send error response
+                    try:
+                        error_result = create_error_response(
+                            code=ErrorCodes.PROCESSING_ERROR,
+                            message=str(e)
+                        )
+                        response_data = serialize_dict(error_result)
+                        writer.write(response_data)
+                        await writer.drain()
+                    except Exception:
+                        pass
+                    break
 
         except Exception as e:
-            logger.error(f"Error handling client {client_info}: {str(e)}", exc_info=e)
+            logger.error(f"Error handling connection {client_info}: {str(e)}", exc_info=e)
         finally:
             try:
-                client_sock.close()
+                writer.close()
+                await writer.wait_closed()
                 logger.debug(f"Closed connection from {client_info}")
             except Exception:
                 pass
 
-    def start(self) -> None:
-        """Start the task manager with proper error handling"""
+    async def _start_tcp_server(self):
+        """Start the Async TCP Server"""
         try:
-            self._sock = self._create_server_socket()
-            self._sock.bind((self._host, self._port))
-            self._sock.listen(BACKLOG_SIZE)
+            # SSL Context (TODO: Pass ssl context to start_server)
+            ssl_ctx = None
+            if self._cert_path and self._key_path:
+                 ssl_ctx = create_server_ssl_context(
+                    cert_path=self._cert_path,
+                    key_path=self._key_path,
+                    ca_certs_path=self._ca_certs_path,
+                    require_client_cert=self._require_client_cert,
+                 )
 
-            logger.info(f"Task manager listening on {self._host}:{self._port}")
+            server = await asyncio.start_server(
+                self._handle_client_async,
+                self._host,
+                self._port,
+                ssl=ssl_ctx
+            )
 
-            while not self._shutdown:
-                try:
-                    client_sock, client_addr = self._sock.accept()
+            logger.info(f"Async TCP Task manager listening on {self._host}:{self._port}")
 
-                    self._thread_pool.submit(
-                        self._handle_client, client_sock, client_addr
-                    )
-                except socket.error as e:
-                    # Check if the error is genuinely just "no connection ready"
-                    if e.errno == errno.EAGAIN or e.errno == errno.EWOULDBLOCK:
-                        # No connection pending, wait a bit and try again
-                        time.sleep(0.1)
-                        continue
-                    elif e.errno == errno.EINTR:
-                        # Interrupted system call (e.g., a signal was received)
-                        print("Accept interrupted by signal, retrying...")
-                        continue
-                    else:
-                        # A real, fatal error occurred
-                        print(f"Fatal socket error: {e}")
-                        break
-                # except socket.timeout:
-                #     continue  # Allow checking a shutdown flag
-                except Exception as e:
-                    if not self._shutdown:
-                        logger.error(
-                            f"Error accepting client connection: {str(e)}", exc_info=e
-                        )
+            async with server:
+                await server.serve_forever()
 
+        except asyncio.CancelledError:
+             pass
         except Exception as e:
-            logger.error(f"Fatal error in task manager: {str(e)}", exc_info=e)
-            raise
-        finally:
-            self.shutdown()
+            logger.error(f"Failed to start Async TCP server: {e}")
+
+    def _get_extra_async_tasks(self) -> typing.List[asyncio.Task]:
+        """Start the TCP server as an extra task in the main loop"""
+        return [asyncio.create_task(self._start_tcp_server())]
+
+    def start(self) -> None:
+        """Start the task manager"""
+        # BaseManager.start() starts variables and the thread loop
+        # The thread loop calls _get_extra_async_tasks which starts our server.
+        super().start()
 
     def shutdown(self) -> None:
         """Gracefully shutdown the task manager"""
@@ -206,6 +275,9 @@ class RemoteTaskManager(BaseManager):
 
         self._shutdown = True
         logger.info("Shutting down task manager...")
+
+        # Shutdown BaseManager components
+        super().shutdown()
 
         if self._sock:
             try:

@@ -100,7 +100,6 @@ class RemoteExecutor(Executor):
             )
 
             with self._create_secure_connection() as sock:
-                # Track sent data
                 data_size = send_data_over_socket(
                     sock, data=task_message.serialize(), chunk_size=CHUNK_SIZE
                 )

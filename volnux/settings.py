@@ -1,12 +1,20 @@
 from pathlib import Path
 
+
 PROJECT_ROOT_DIR = Path(__file__).resolve().parent.parent
 
+SECRET_KEY = "your-secret-key"
+
+ALLOWED_EVENTS = ["DataProcessEvent"]
+
 MAX_EVENT_RETRIES = 5
+
 MAX_EVENT_BACKOFF_FACTOR = 0.05
 MAX_EVENT_BACKOFF = 100
 
 MAX_BATCH_PROCESSING_WORKERS = 4
+MAX_PENDING_TASKS = 100
+WORKER_COUNT = 8
 
 RESULT_BACKEND_CONFIG = {
     "ENGINE": "volnux.backends.stores.inmemory_store.InMemoryKeyValueStoreBackend",
