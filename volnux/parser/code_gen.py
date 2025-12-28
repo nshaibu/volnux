@@ -52,6 +52,12 @@ class ExecutableASTGenerator(ASTVisitorInterface):
             return self.visit_block(node)
         elif isinstance(node, ast.LiteralNode):
             return self.visit_literal(node)
+        elif isinstance(node, ast.EnvironmentVariableAccessNode):
+            return self.visit_environment_variable_access(node)
+        elif isinstance(node, ast.VariableAccessNode):
+            return self.visit_variable_access(node)
+        elif isinstance(node, ast.MetaEventNode):
+            return self.visit_meta_event(node)
         else:
             raise PointyParseError(f"Unknown node type: {type(node)}")
 
@@ -146,9 +152,7 @@ class ExecutableASTGenerator(ASTVisitorInterface):
         if node.type == ast.BlockType.ASSIGNMENT:
             return self.visit_assignment_block(node)
         elif node.type == ast.BlockType.CONDITIONAL:
-            if typing.TYPE_CHECKING:
-                node = typing.cast(ast.ConditionalNode, typing.cast(ast.ASTNode, node))
-
+            node = typing.cast(ast.ConditionalNode, typing.cast(ast.ASTNode, node))
             return self.visit_conditional(node)
         elif node.type == ast.BlockType.GROUP:
             return self.visit_group_block(node)
@@ -235,6 +239,17 @@ class ExecutableASTGenerator(ASTVisitorInterface):
                 )
 
         return parent
+
+    def visit_environment_variable_access(
+        self, node: ast.EnvironmentVariableAccessNode
+    ):
+        return node.resolve()
+
+    def visit_variable_access(self, node: ast.VariableAccessNode):
+        return node.resolve()
+
+    def visit_meta_event(self, node: ast.MetaEventNode):
+        pass
 
     def generate(self) -> typing.Optional[TaskProtocol]:
         if self._current_task is None:

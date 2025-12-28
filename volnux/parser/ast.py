@@ -179,7 +179,7 @@ class EnvironmentVariableAccessNode(ASTNode):
         Raises:
             KeyError if environment variable is not defined.
         """
-        return environ[self.name]
+        return environ.get(self.name)
 
 
 @dataclass
@@ -308,3 +308,41 @@ class MetaEventNode(ASTNode):
     def accept(self, visitor):
         """Visitor pattern support"""
         return visitor.visit_meta_event(self)
+
+
+@dataclass
+class NullCoalesceExprNode(ASTNode):
+    left: ASTNode
+    right: ASTNode
+
+    def __repr__(self):
+        return f"NullCoalesce({self.left} ?? {self.right})"
+
+    def accept(self, visitor: "ASTVisitor"):
+        pass
+
+
+@dataclass
+class ComparisonExprNode(ASTNode):
+    operator: str
+    left: ASTNode
+    right: ASTNode
+
+    def __repr__(self):
+        return f"Comparison({self.left} {self.operator} {self.right})"
+
+    def accept(self, visitor: "ASTVisitor"):
+        pass
+
+
+@dataclass
+class TernaryExprNode(ASTNode):
+    condition: ASTNode
+    true_expr: ASTNode
+    false_expr: ASTNode
+
+    def __repr__(self):
+        return f"Ternary({self.condition} ? {self.true_expr} : {self.false_expr})"
+
+    def accept(self, visitor: "ASTVisitor"):
+        pass

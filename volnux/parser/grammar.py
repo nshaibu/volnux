@@ -23,7 +23,11 @@ from .ast import (
     MetaEventNode,
     ListNode,
     MapNode,
+    TernaryExprNode,
+    ComparisonExprNode,
+    NullCoalesceExprNode,
 )
+from .parser_mode import ParserMode
 from .dag_visitor import CycleDetectionVisitor, DAGValidationError, format_cycle_error
 
 logger = logging.getLogger("volnux.parser")
@@ -33,7 +37,13 @@ tokens = pointy_lexer.tokens
 
 variables = {}
 
-precedence = (("left", "RETRY", "POINTER", "PPOINTER", "PARALLEL"),)
+precedence = (
+    ("left", "RETRY", "POINTER", "PPOINTER", "PARALLEL"),
+    ("right", "TERNARY"),
+    ("left", "NULLCOALESCE"),  # ??
+    ("left", "EQ", "NE"),  # == !=
+    ("left", "LANGLE", "RANGLE", "LE", "GE"),
+)
 
 
 def p_program(p):
@@ -60,8 +70,8 @@ def p_program(p):
             chain_expression = statement
 
     # Validate DAG mode if specified
-    mode = directives.get("mode", "CFG")
-    if mode == "DAG" and chain_expression is not None:
+    mode = directives.get("mode", ParserMode.CFG)
+    if mode == ParserMode.DAG and chain_expression is not None:
         cycle_detector = CycleDetectionVisitor()
         cycle_path = cycle_detector.has_cycle(chain_expression)
 
@@ -114,6 +124,28 @@ def p_expression(p):
         p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
 
 
+def p_expression_ternary(p):
+    """ternary_expression : comparison_expression QUESTION expression COLON expression %prec TERNARY"""
+    p[0] = TernaryExprNode(condition=p[1], true_expr=p[3], false_expr=p[5])
+
+
+def p_expression_comparison(p):
+    """
+    comparison_expression : expression EQ expression
+                  | expression NE expression
+                  | expression LANGLE expression
+                  | expression RANGLE expression
+                  | expression LE expression
+                  | expression GE expression
+    """
+    p[0] = ComparisonExprNode(left=p[1], operator=p[2], right=p[3])
+
+
+def p_expression_null_coalesce(p):
+    """null_coalesce_expression : expression NULLCOALESCE expression"""
+    p[0] = NullCoalesceExprNode(left=p[1], right=p[3])
+
+
 def p_expression_term(p):
     """
     expression : term
@@ -125,6 +157,8 @@ def p_task(p):
     """
     term : task
         | expression_groupings
+        | value
+        | variable_reference
     """
     p[0] = p[1]
 
@@ -177,7 +211,8 @@ def p_directive(p):
     """directive : VAR_DECL COLON scalar_value"""
     if p[1] == "mode":
         # validate cfg and dag text
-        pass
+        if p[3] in ParserMode.DAG.modes:
+            raise YaccError("Unknown parser mode '%s'" % p[3])
 
     p[0] = DirectiveNode(name=p[1], value=p[3])
 
@@ -201,6 +236,9 @@ def p_value(p):
             | list
             | map
             | null_value
+            | comparison_expression
+            | ternary_expression
+            | null_coalesce_expression
     """
     p[0] = p[1]
 
@@ -382,15 +420,9 @@ def p_task_conditional_statement(p):
 
 def p_assignment_expression(p):
     """
-    assignment_expression : IDENTIFIER ASSIGN STRING_LITERAL
-                            | IDENTIFIER ASSIGN INT
-                            | IDENTIFIER ASSIGN FLOAT
-                            | IDENTIFIER ASSIGN BOOLEAN
-                            | IDENTIFIER ASSIGN variable_reference
+    assignment_expression : IDENTIFIER ASSIGN value
     """
-    p[0] = AssignmentNode(
-        p[1], LiteralNode(p[3], type=LiteralType.determine_literal_type(p[3]))
-    )
+    p[0] = AssignmentNode(p[1], p[3])
 
 
 def p_assignment_expression_group(p):

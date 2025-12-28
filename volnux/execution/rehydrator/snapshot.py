@@ -1,0 +1,80 @@
+import typing
+from dataclasses import dataclass, asdict
+from volnux import __version__ as volnux_version
+
+
+@dataclass
+class ContextSnapshot:
+    """
+    Serializable snapshot of ExecutionContext state.
+    This is the canonical data structure for rehydration.
+    """
+
+    # Identity
+    state_id: str
+    workflow_id: str
+
+    # Hierarchy (Tree Structure)
+    parent_id: typing.Optional[str]
+    child_ids: typing.List[str]
+    depth: int
+
+    # Horizontal Links (Doubly-Linked List)
+    previous_context_id: typing.Optional[str]
+    next_context_id: typing.Optional[str]
+
+    # Task Queue State
+    traversal: "TraversalSnapshot"
+
+    # Pipeline Reference
+    pipeline_id: str
+    pipeline_class_path: str  # e.g., "myapp.pipelines.DataProcessingPipeline"
+
+    # Execution State
+    status: str
+    errors: typing.List[str]  # Serialized exception messages
+    results: typing.List[dict]  # Serialized EventResult objects
+    # aggregated_result: typing.Optional[dict]
+
+    # Metrics
+    metrics: typing.Dict[str, typing.Any]
+
+    # Metadata
+    snapshot_timestamp: float
+    snapshot_version: str = volnux_version
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ContextSnapshot":
+        """Reconstruct from dict"""
+        # Handle nested TraversalSnapshot
+        data["traversal"] = TraversalSnapshot(**data["traversal"])
+        return cls(**data)
+
+
+@dataclass
+class TraversalSnapshot:
+    """
+    Captures the state of the execution queue at snapshot time.
+    """
+
+    # Current task being executed (maybe mid-flight)
+    current_task_id: typing.Optional[str]
+    current_task_event_name: typing.Optional[str]
+    current_task_checkpoint: typing.Optional[dict]  # For idempotency
+
+    # Remaining tasks in queue (LIFO order preserved)
+    queue_snapshot: typing.List[dict]  # Serialized PipelineTask objects
+
+    # Queue position tracking
+    queue_index: int  # Position in the original queue
+    total_queue_size: int
+
+    # Sink nodes (deferred execution)
+    sink_nodes: typing.List[typing.Dict[str, typing.Any]]  # Serialized sink tasks
+
+    # Engine state markers
+    tasks_processed: int  # How many tasks completed before snapshot?
+    is_multitask_context: bool  # Was this a parallel execution group?

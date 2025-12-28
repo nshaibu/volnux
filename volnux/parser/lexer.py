@@ -12,14 +12,22 @@ class PointyLexer(object):
         "true": "BOOLEAN",
         "false": "BOOLEAN",
         "RETRY": "RETRY",
+        # Meta event
         "MAP": "MAP",
         "FILTER": "FILTER",
         "REDUCE": "REDUCE",
         "FOREACH": "FOREACH",
         "FLATMAP": "FLATMAP",
         "FANOUT": "FANOUT",
+        # Other
         "env": "env",
         "null": "NULL",
+        # Executor
+        "THREADPOOL_EXECUTOR": "EXECUTOR",
+        "PROCESSPOOL_EXECUTOR": "EXECUTOR",
+        "DEFAULT_EXECUTOR": "EXECUTOR",
+        "GRPC_EXECUTOR": "EXECUTOR",
+        "TCP_EXECUTOR": "EXECUTOR",
     }
 
     builtin_event_token = (
@@ -32,12 +40,20 @@ class PointyLexer(object):
         "FANOUT",
     )
 
+    builtin_executors_token = (
+        "THREADPOOL_EXECUTOR",
+        "PROCESSPOOL_EXECUTOR",
+        "DEFAULT_EXECUTOR",
+        "GRPC_EXECUTOR",
+        "TCP_EXECUTOR",
+    )
+
     builtins = ("NULL",)
 
     tokens = (
         (
-            "LANGLE",  # <
-            "RANGLE",  # >
+            "LANGLE",  # < will be used for comparison as well
+            "RANGLE",  # > will be used for comparison
             "SEPARATOR",
             "COLON",
             "DOT",
@@ -57,6 +73,7 @@ class PointyLexer(object):
             "RBRACKET",
             "LCURLY_BRACKET",
             "RCURLY_BRACKET",
+            # Type
             "STRING_LITERAL",
             "INT",
             "FLOAT",
@@ -65,14 +82,15 @@ class PointyLexer(object):
             "NULLCOALESCE",  # ??
             "EQ",  # ==
             "NE",  # !=
-            "LT",  #
-            "GT",  # >
+            # "LT",  #
+            # "GT",  # >
             "LE",  # <=
             "GE",  # >=
             "QUESTION",  # ?
         )
         + builtin_event_token
         + builtins
+        + builtin_executors_token
     )
 
     t_QUESTION = r"\?"
@@ -112,13 +130,13 @@ class PointyLexer(object):
         r"!="
         return t
 
-    def t_LT(self, t):
-        r"<"
-        return t
-
-    def t_GT(self, t):
-        r">"
-        return t
+    # def t_LT(self, t):
+    #     r"<"
+    #     return t
+    #
+    # def t_GT(self, t):
+    #     r">"
+    #     return t
 
     def t_FLOAT(self, t):
         r"[+-]?([0-9]+\.[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?"

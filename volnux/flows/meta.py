@@ -55,7 +55,7 @@ class MetaFlow(BaseFlow):
             Future object representing the result of the flow.
         Exceptions:
             ValueError: if the executor or the execution config is invalid.
-            RuntimeError: if the event submission or execution fails
+            RuntimeError: if the event submission or execution fails,
             BrokenPipeError: if the internal queue of the executor is broken.
         """
         try:
