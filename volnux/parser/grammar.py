@@ -25,7 +25,11 @@ from .ast import (
     MapNode,
     UnaryOpNode,
     ExpressionNode,
+    TernaryExprNode,
+    ComparisonExprNode,
+    NullCoalesceExprNode,
 )
+from .parser_mode import ParserMode
 from .dag_visitor import CycleDetectionVisitor, DAGValidationError, format_cycle_error
 
 logger = logging.getLogger("volnux.parser")
@@ -38,12 +42,14 @@ variables = {}
 precedence = (
     ("left", "RETRY", "POINTER", "PPOINTER", "PARALLEL"),
 
-    #('left', 'PARALLEL'),
+    ("right", "TERNARY"),
+    ("left", "NULLCOALESCE"),  # ??
     ('left', 'LOGICAL_AND'),
     ('left', 'BITWISE_OR'),
     ('left', 'BITWISE_XOR'),
     ('left', 'BITWISE_AND'),
-    ('nonassoc', 'LT', 'LE', 'GT', 'GE', 'EQ', 'NE'),              # relational operators
+    ("nonassoc", "EQ", "NE"),  # == !=
+    ('nonassoc', 'LANGLE', 'LE', 'RANGLE', 'GE'),              # relational operators
     ('left', 'LSHL', 'LSHR', 'ASHR'),                              # shift operators
     ('left', 'PLUS', 'MINUS'),                                     # additive operators
     ('left', 'MULT', 'DIV', 'MOD'),                                # multiplicative operators
@@ -76,8 +82,8 @@ def p_program(p):
             chain_expression = statement
 
     # Validate DAG mode if specified
-    mode = directives.get("mode", "CFG")
-    if mode == "DAG" and chain_expression is not None:
+    mode = directives.get("mode", ParserMode.CFG)
+    if mode == ParserMode.DAG and chain_expression is not None:
         cycle_detector = CycleDetectionVisitor()
         cycle_path = cycle_detector.has_cycle(chain_expression)
 
@@ -130,6 +136,28 @@ def p_expression(p):
         p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
 
 
+def p_expression_ternary(p):
+    """ternary_expression : comparison_expression QUESTION expression COLON expression %prec TERNARY"""
+    p[0] = TernaryExprNode(condition=p[1], true_expr=p[3], false_expr=p[5])
+
+
+def p_expression_comparison(p):
+    """
+    comparison_expression : expression EQ expression
+                  | expression NE expression
+                  | expression LANGLE expression
+                  | expression RANGLE expression
+                  | expression LE expression
+                  | expression GE expression
+    """
+    p[0] = ComparisonExprNode(left=p[1], operator=p[2], right=p[3])
+
+
+def p_expression_null_coalesce(p):
+    """null_coalesce_expression : expression NULLCOALESCE expression"""
+    p[0] = NullCoalesceExprNode(left=p[1], right=p[3])
+
+
 def p_expression_term(p):
     """
     expression : term
@@ -141,6 +169,8 @@ def p_task(p):
     """
     term : task
         | expression_groupings
+        | value
+        | variable_reference
     """
     p[0] = p[1]
 
@@ -193,7 +223,8 @@ def p_directive(p):
     """directive : VAR_DECL COLON scalar_value"""
     if p[1] == "mode":
         # validate cfg and dag text
-        pass
+        if p[3] in ParserMode.DAG.modes:
+            raise YaccError("Unknown parser mode '%s'" % p[3])
 
     p[0] = DirectiveNode(name=p[1], value=p[3])
 
@@ -218,6 +249,9 @@ def p_value(p):
             | map
             | arithmetic_expression
             | null_value
+            | comparison_expression
+            | ternary_expression
+            | null_coalesce_expression
     """
     p[0] = p[1]
 
@@ -405,15 +439,9 @@ def p_task_conditional_statement(p):
 
 def p_assignment_expression(p):
     """
-    assignment_expression : IDENTIFIER ASSIGN STRING_LITERAL
-                            | IDENTIFIER ASSIGN INT
-                            | IDENTIFIER ASSIGN FLOAT
-                            | IDENTIFIER ASSIGN BOOLEAN
-                            | IDENTIFIER ASSIGN variable_reference
+    assignment_expression : IDENTIFIER ASSIGN value
     """
-    p[0] = AssignmentNode(
-        p[1], LiteralNode(p[3], type=LiteralType.determine_literal_type(p[3]))
-    )
+    p[0] = AssignmentNode(p[1], p[3])
 
 
 def p_assignment_expression_group(p):
@@ -454,9 +482,9 @@ def p_arithmetic_expression(p):
                      | arithmetic_expression BITWISE_AND arithmetic_expression
                      | arithmetic_expression EQ arithmetic_expression
                      | arithmetic_expression NE arithmetic_expression
-                     | arithmetic_expression LT arithmetic_expression
+                     | arithmetic_expression LANGLE arithmetic_expression
                      | arithmetic_expression LE arithmetic_expression
-                     | arithmetic_expression GT arithmetic_expression
+                     | arithmetic_expression RANGLE arithmetic_expression
                      | arithmetic_expression GE arithmetic_expression
                      | arithmetic_expression LSHL arithmetic_expression
                      | arithmetic_expression LSHR arithmetic_expression

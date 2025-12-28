@@ -1,4 +1,5 @@
 import typing
+import logging
 from enum import Enum
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -6,6 +7,9 @@ from dataclasses import dataclass
 from volnux.pipeline import Pipeline
 from volnux.parser.protocols import TaskType
 from volnux.execution.context import ExecutionContext
+
+
+logger = logging.getLogger(__name__)
 
 
 class EngineExecutionResult(Enum):
@@ -40,6 +44,11 @@ class WorkflowEngine(ABC):
     Engines delegate actual task execution, metrics, and hooks to ExecutionContext and Coordinator.
     """
 
+    def __init__(self):
+        self._tasks_processed: int = 0
+        self._current_task_node: typing.Optional["TaskNode"] = None
+        self._checkpointer: typing.Optional[AutoCheckpointer] = None
+
     @abstractmethod
     def execute(
         self,
@@ -71,3 +80,58 @@ class WorkflowEngine(ABC):
             Human-readable engine name
         """
         pass
+
+    def enable_checkpointing(
+        self, checkpointer: AutoCheckpointer, checkpoint_frequency: str = "per_task"
+    ):
+        """
+        Enable automatic checkpointing for this engine.
+
+        Args:
+            checkpointer: The checkpointer instance
+            checkpoint_frequency: When to checkpoint
+                - "per_task": Before each task execution
+                - "periodic": Only on timer (from checkpointer)
+                - "on_state_change": On status changes
+        """
+        self._checkpointer = checkpointer
+        self._checkpoint_frequency = checkpoint_frequency
+
+    async def _checkpoint_before_task(
+        self, context: "ExecutionContext", task_node: "TaskNode"
+    ):
+        """
+        Checkpoint before executing a task (idempotency support).
+
+        This is called by the engine before context.dispatch().
+        """
+        if not self._checkpointer:
+            return
+
+        # Store current task for snapshot
+        self._current_task_node = task_node
+
+        # Create checkpoint
+        if self._checkpoint_frequency == "per_task":
+            await context.persist(self._checkpointer.state_store)
+            logger.debug(f"Checkpointed before task: {task_node.task.event}")
+
+    async def _checkpoint_after_task(self, context: "ExecutionContext", success: bool):
+        """
+        Checkpoint after task completion.
+
+        Args:
+            context: The execution context
+            success: Whether task completed successfully
+        """
+        if not self._checkpointer:
+            return
+
+        self._tasks_processed += 1
+
+        # Clear current task
+        self._current_task_node = None
+
+        # Checkpoint if configured
+        if self._checkpoint_frequency in ["per_task", "on_state_change"]:
+            await context.persist(self._checkpointer.state_store)

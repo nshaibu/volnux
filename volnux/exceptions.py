@@ -8,6 +8,12 @@ class ImproperlyConfigured(Exception):
     pass
 
 
+class SerializationError(Exception):
+    """Raised when serialization or deserialization fails."""
+
+    pass
+
+
 class PipelineError(Exception):
     def __init__(
         self, message: str, code: typing.Any = None, params: typing.Any = None

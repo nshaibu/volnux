@@ -44,6 +44,9 @@ class MetaAttributes(typing.TypedDict, total=False):
     concurrent: bool
     concurrency_mode: typing.Literal["thread", "process"]
     timeout: typing.Optional[float]
+    partial_success: bool
+    # filter
+    invert: bool
 
 
 def is_control_flow_event(
@@ -166,7 +169,7 @@ class ControlFlowEvent(EventBase):
         Raises:
             TypeError: If attributes are not valid
         """
-        validate_params: MetaAttributes = {}
+        validated_params: MetaAttributes = {}
         for param_name, config in self.attributes.items():
             is_required = config.get("required", False)
             data_type = config.get("type", object)
@@ -195,12 +198,13 @@ class ControlFlowEvent(EventBase):
             for validator in validators:
                 if not validator(value_to_set):
                     raise TypeError(
-                        f"Validation failed for parameter '{param_name}' in event '{self.__class__.__name__}'"
+                        f"Validation failed for parameter '{param_name}' "
+                        f"in event '{self.__class__.__name__}' with value: {value_to_set}"
                     )
 
-            validate_params[param_name] = value_to_set
+            validated_params[param_name] = value_to_set
 
-        return validate_params
+        return validated_params
 
     def get_template_class(self) -> typing.Type[EventBase]:
         return getattr(self, "template_class", None)
@@ -224,7 +228,7 @@ class ControlFlowEvent(EventBase):
                     self, "template_class", resolve_event_str_to_class(template_class)
                 )
         except ValueError as e:
-            logger.error(e)
+            logger.error(f"Failed to resolve template class '{template_class}': {e}")
             raise StopProcessingError(str(e))
 
         try:
@@ -265,42 +269,55 @@ class ControlFlowEvent(EventBase):
             temp_results, errors = await ResultProcessor().process_futures([future])
 
             aggregated = self.aggregate_results(temp_results, input_data)
-            if not isinstance(aggregated, EventResult):
-                aggregated = EventResult(
-                    content=aggregated,  # type: ignore
-                    error=False,  # type: ignore
-                    event_name=self._generate_meta_event_name(),  # type: ignore
-                    task_id=self._task_id,  # type: ignore
-                )
 
-            await self._execution_context.update_aggregated_result(aggregated)
-
-            return True, temp_results
+            return True, aggregated
 
         except Exception as e:
             logger.error(f"{self.name} execution failed: {e}", exc_info=True)
             raise MetaEventExecutionError(f"{self.name} failed: {e}") from e
 
-    @abstractmethod
     def action(self, input_data: ResultSet) -> typing.List[TaskDefinition]:
         """
-        Define the business logic for this meta-event.
+        Generate task definitions for Meta operation.
 
-        This method generates task definitions based on input data.
-        Each subclass implements its own logic.
+        Creates one task per input item (or batch if batching enabled).
+        Each task independently processes its input through the template event.
 
         Args:
-            input_data: The input data to process
+            input_data: Collection of items to map over
 
         Returns:
-            List of TaskDefinition objects
+            List of TaskDefinition objects, one per item/batch
+
+        Note:
+            Task order is preserved to maintain result ordering
         """
-        raise NotImplementedError(f"{self.__class__.__name__} must implement action()")
+        attributes: MetaAttributes = self.options.extras
+        batch_size: int = attributes.get("batch_size", 0)
+        task_defs = []
+
+        # Generate tasks from batched or individual items
+        for index, batch in enumerate(self.batch_input_data(input_data, batch_size)):
+            task_def = TaskDefinition(
+                template_class=self.get_template_class(),
+                input_data=batch,
+                order=index,
+                task_id=self._generate_task_id(index),
+                options=self.options,
+            )
+            task_defs.append(task_def)
+
+        logger.debug(
+            f"{self.name}: Created {len(task_defs)} tasks "
+            f"from {len(input_data)} items (batch_size={batch_size})"
+        )
+
+        return task_defs
 
     @abstractmethod
     def aggregate_results(
         self, results: ResultSet[EventResult], original_input: typing.Any
-    ) -> EventResult:
+    ) -> typing.Any:
         """
         Aggregate individual task results into final output.
 
