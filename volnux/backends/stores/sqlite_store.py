@@ -12,15 +12,11 @@ from volnux.exceptions import (
     ObjectDoesNotExist,
     ObjectExistError,
     SqlOperationError,
+    SerializationError
 )
 
 logger = logging.getLogger(__name__)
 
-
-class SerializationError(Exception):
-    """Raised when serialization or deserialization fails."""
-
-    pass
 
 
 class SqliteStoreBackend(KeyValueStoreBackendBase):

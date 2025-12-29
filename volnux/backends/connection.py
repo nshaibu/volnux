@@ -329,7 +329,6 @@ class BackendConnectorBase(ABC, Generic[CursorType]):
             logger.debug(f"Error during connector cleanup: {e}")
 
     def __repr__(self) -> str:
-        """String representation of the connector."""
         status = "connected" if self._is_connected else "disconnected"
         return (
             f"<{self.__class__.__name__} "

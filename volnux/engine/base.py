@@ -18,6 +18,12 @@ class EngineExecutionResult(Enum):
     FAILED = "failed"
 
 
+class CheckPointFrequency(str, Enum):
+    PER_TASK = "per_task"  # Before each task execution
+    PERIODIC = "periodic"  # Only on timer (from checkpointer)
+    ON_STATE_CHANGE = "on_state_change"  # On status changes
+
+
 class TaskNode(typing.NamedTuple):
     task: TaskType
     previous_context: typing.Optional[ExecutionContext] = None
@@ -82,7 +88,7 @@ class WorkflowEngine(ABC):
         pass
 
     def enable_checkpointing(
-        self, checkpointer: AutoCheckpointer, checkpoint_frequency: str = "per_task"
+        self, checkpointer: AutoCheckpointer, checkpoint_frequency: CheckPointFrequency = CheckPointFrequency.PER_TASK
     ):
         """
         Enable automatic checkpointing for this engine.
@@ -90,9 +96,6 @@ class WorkflowEngine(ABC):
         Args:
             checkpointer: The checkpointer instance
             checkpoint_frequency: When to checkpoint
-                - "per_task": Before each task execution
-                - "periodic": Only on timer (from checkpointer)
-                - "on_state_change": On status changes
         """
         self._checkpointer = checkpointer
         self._checkpoint_frequency = checkpoint_frequency
@@ -108,7 +111,6 @@ class WorkflowEngine(ABC):
         if not self._checkpointer:
             return
 
-        # Store current task for snapshot
         self._current_task_node = task_node
 
         # Create checkpoint
@@ -133,5 +135,5 @@ class WorkflowEngine(ABC):
         self._current_task_node = None
 
         # Checkpoint if configured
-        if self._checkpoint_frequency in ["per_task", "on_state_change"]:
+        if self._checkpoint_frequency in [CheckPointFrequency.PER_TASK, CheckPointFrequency.ON_STATE_CHANGE]:
             await context.persist(self._checkpointer.state_store)

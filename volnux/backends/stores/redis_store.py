@@ -8,7 +8,7 @@ from redis.exceptions import RedisError
 
 from volnux.backends.connectors.redis import RedisConnector
 from volnux.backends.store import KeyValueStoreBackendBase
-from volnux.exceptions import ObjectDoesNotExist, ObjectExistError
+from volnux.exceptions import ObjectDoesNotExist, ObjectExistError, SerializationError
 
 logger = logging.getLogger(__name__)
 
