@@ -52,7 +52,7 @@ class RehydrationManager:
         """
         logger.info(f"Starting workflow rehydration for {workflow_id}")
 
-        # Step 1: Fetch all snapshots, ordered by depth
+        # Fetch all snapshots, ordered by depth
         snapshots = await self.state_store.get_active_snapshots(
             workflow_id, statuses=["RUNNING", "PENDING"]  # Only resume active workflows
         )
@@ -63,7 +63,7 @@ class RehydrationManager:
 
         logger.info(f"Found {len(snapshots)} contexts to rehydrate")
 
-        # Step 2: Reconstruct all contexts
+        # Reconstruct all contexts
         root_context = None
         for snapshot in snapshots:
             context = await self._rebuild_context(snapshot)
@@ -76,13 +76,13 @@ class RehydrationManager:
             logger.error("No root context found in snapshots")
             return None
 
-        # Step 3: Rebuild horizontal links
+        # Rebuild horizontal links
         await self._rebuild_horizontal_links(snapshots)
 
-        # Step 4: Rebuild vertical links
+        # Rebuild vertical links
         await self._rebuild_vertical_links(snapshots)
 
-        # Step 5: Create and configure the engine
+        # Create and configure the engine
         if engine_class is None:
             engine_class = CheckpointedWorkflowEngine
 
@@ -92,7 +92,7 @@ class RehydrationManager:
             strict_mode=True,
         )
 
-        # Step 6: Restore engine state from root context's snapshot
+        # Restore engine state from root context's snapshot
         root_snapshot = next(
             s for s in snapshots if s.state_id == root_context.state_id
         )

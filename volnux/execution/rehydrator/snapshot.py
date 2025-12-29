@@ -1,10 +1,40 @@
 import typing
 from dataclasses import dataclass, asdict
+from pydantic_mini import BaseModel
+
 from volnux import __version__ as volnux_version
+
+@dataclass
+class TraversalSnapshot:
+    """
+    Captures the state of the execution queue at snapshot time.
+    """
+
+    # Current task being executed (maybe mid-flight)
+    current_task_id: typing.Optional[str]
+    current_task_event_name: typing.Optional[str]
+    current_task_checkpoint: typing.Optional[dict]  # For idempotency
+
+    # Remaining tasks in queue (LIFO order preserved)
+    # Serialized PipelineTask objects
+    queue_snapshot: typing.List[dict]
+
+    # Queue position tracking
+    # Position in the original queue
+    queue_index: int
+    total_queue_size: int
+
+    # Sink nodes (deferred execution)
+    # Serialized sink tasks
+    sink_nodes: typing.List[dict]
+
+    # Engine state markers
+    tasks_processed: int  # How many tasks completed before snapshot?
+    is_multitask_context: bool  # Was this a parallel execution group?
 
 
 @dataclass
-class ContextSnapshot:
+class ContextSnapshot(BaseModel):
     """
     Serializable snapshot of ExecutionContext state.
     This is the canonical data structure for rehydration.
@@ -52,29 +82,3 @@ class ContextSnapshot:
         # Handle nested TraversalSnapshot
         data["traversal"] = TraversalSnapshot(**data["traversal"])
         return cls(**data)
-
-
-@dataclass
-class TraversalSnapshot:
-    """
-    Captures the state of the execution queue at snapshot time.
-    """
-
-    # Current task being executed (maybe mid-flight)
-    current_task_id: typing.Optional[str]
-    current_task_event_name: typing.Optional[str]
-    current_task_checkpoint: typing.Optional[dict]  # For idempotency
-
-    # Remaining tasks in queue (LIFO order preserved)
-    queue_snapshot: typing.List[dict]  # Serialized PipelineTask objects
-
-    # Queue position tracking
-    queue_index: int  # Position in the original queue
-    total_queue_size: int
-
-    # Sink nodes (deferred execution)
-    sink_nodes: typing.List[typing.Dict[str, typing.Any]]  # Serialized sink tasks
-
-    # Engine state markers
-    tasks_processed: int  # How many tasks completed before snapshot?
-    is_multitask_context: bool  # Was this a parallel execution group?
