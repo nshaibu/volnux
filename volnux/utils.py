@@ -1,3 +1,7 @@
+import base64
+import hashlib
+import hmac
+import json
 import logging
 import socket
 import ssl
@@ -22,7 +26,7 @@ except ImportError:
     from io import StringIO
 
 from .constants import EMPTY
-from .exceptions import ImproperlyConfigured
+from .exceptions import ImproperlyConfigured, RemoteExecutionError
 from .typing import BatchProcessType
 
 if typing.TYPE_CHECKING:
@@ -31,6 +35,7 @@ if typing.TYPE_CHECKING:
     from .pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
+ALGORITHM = "sha256"
 
 
 def _extend_recursion_depth(
@@ -399,3 +404,38 @@ def is_multiprocessing_executor(executor_class: typing.Type["BaseExecutor"]) -> 
     return executor_class == ProcessPoolExecutor or getattr(
         executor_class, "support_parallel_execution", False
     )
+
+
+def generate_hmac(data: typing.Dict[str, typing.Any], secret_key) -> typing.Tuple[str, str]:
+    """Generate a hmac for the payload."""
+    data_bytes = json.dumps(data, sort_keys=True).encode("utf-8")
+
+    checksum = hmac.new(
+        secret_key, data_bytes, getattr(hashlib, ALGORITHM)
+    ).digest()
+
+    return base64.b64encode(checksum).decode("utf-8"), ALGORITHM
+
+
+def verify_hmac(data: typing.Dict[str, typing.Any], secret_key) -> bool:
+    """verify hmac to check if it is the expected signature."""
+    if "hmac" not in data:
+        raise RemoteExecutionError("INVALID_CHECKSUM")
+
+    received_checksum = data["hmac"]
+    try:
+        received_signature_bytes = base64.b64decode(received_checksum)
+    except Exception:
+        return False
+
+    verification_data = data.copy()
+
+    verification_bytes = json.dumps(verification_data, sort_keys=True).encode("utf-8")
+
+    expected_signature = hmac.new(
+        secret_key,
+        verification_bytes,
+        getattr(hashlib, ALGORITHM),
+    ).digest()
+
+    return hmac.compare_digest(received_signature_bytes, expected_signature)

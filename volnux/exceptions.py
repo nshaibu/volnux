@@ -155,3 +155,7 @@ class ExecutorNotFound(IndexError):
 
 class PointyNotExecutable(Exception):
     """Exception raised when a pointy script is not executable."""
+
+class RemoteExecutionError(Exception):
+    """Exception raised when a remote execution fails."""
+    pass
