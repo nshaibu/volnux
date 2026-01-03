@@ -6,7 +6,9 @@ from dataclasses import dataclass
 
 from volnux.pipeline import Pipeline
 from volnux.parser.protocols import TaskType
+from volnux.mixins import ObjectIdentityMixin
 from volnux.execution.context import ExecutionContext
+from volnux.execution.rehydrator.checkpoint import AutoCheckpointer
 
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,7 @@ class EngineResult:
     tasks_processed: int = 0
 
 
-class WorkflowEngine(ABC):
+class WorkflowEngine(ObjectIdentityMixin, ABC):
     """
     Abstract interface for workflow execution engines.
 
@@ -50,13 +52,23 @@ class WorkflowEngine(ABC):
     Engines delegate actual task execution, metrics, and hooks to ExecutionContext and Coordinator.
     """
 
-    def __init__(self):
+    def __init__(
+        self, enable_checkpointing: bool = False, checkpoint_interval: float = 5.0
+    ) -> None:
+        ObjectIdentityMixin.__init__(self)
+
         self._tasks_processed: int = 0
-        self._current_task_node: typing.Optional["TaskNode"] = None
+
+        # task queue
+        self.queue: typing.Optional[typing.Deque[TaskNode]] = None
+        self._current_task_node: typing.Optional[TaskNode] = None
+
+        # Auto checking
         self._checkpointer: typing.Optional[AutoCheckpointer] = None
+        self._checkpoint_frequency = None
 
     @abstractmethod
-    def execute(
+    async def execute(
         self,
         root_task: TaskType,
         pipeline: Pipeline,
@@ -88,7 +100,9 @@ class WorkflowEngine(ABC):
         pass
 
     def enable_checkpointing(
-        self, checkpointer: AutoCheckpointer, checkpoint_frequency: CheckPointFrequency = CheckPointFrequency.PER_TASK
+        self,
+        checkpointer: "AutoCheckpointer",
+        checkpoint_frequency: CheckPointFrequency = CheckPointFrequency.PER_TASK,
     ):
         """
         Enable automatic checkpointing for this engine.
@@ -135,5 +149,8 @@ class WorkflowEngine(ABC):
         self._current_task_node = None
 
         # Checkpoint if configured
-        if self._checkpoint_frequency in [CheckPointFrequency.PER_TASK, CheckPointFrequency.ON_STATE_CHANGE]:
+        if self._checkpoint_frequency in [
+            CheckPointFrequency.PER_TASK,
+            CheckPointFrequency.ON_STATE_CHANGE,
+        ]:
             await context.persist(self._checkpointer.state_store)

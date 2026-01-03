@@ -25,6 +25,19 @@ DATA_CHUNK_SIZE = 4096
 CONNECTION_BACKLOG_SIZE = 5
 DATA_QUEUE_SIZE = 1000
 
+DEFAULT_EVENT_VERSIONING_CLASS = {
+    # Default versioning class for all events
+    "DEFAULT_VERSIONING_CLASS": "volnux.versioning.NoVersioning",
+    # Default version if isn't specified
+    "DEFAULT_VERSION": "1.0.0",
+    # Allowed versions (None = all allowed)
+    "ALLOWED_VERSIONS": None,  # or ['1.0.0', '1.1.0', '2.0.0']
+    # Default namespace
+    "DEFAULT_NAMESPACE": "local",
+    # Deprecation warnings
+    "DEPRECATION_WARNINGS": True,
+}
+
 
 LOGGING_CONFIG = {
     "version": 1,

@@ -1,5 +1,5 @@
 import logging
-import pickle
+import json
 from typing import Any, Dict, List, Optional, Type, Union
 
 from pydantic_mini import BaseModel
@@ -19,19 +19,6 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
     storage. Each schema is represented as a key namespace, and records
     are serialized using pickle for efficient storage.
 
-    Features:
-        - High-performance in-memory storage
-        - Automatic TTL (time-to-live) support
-        - Namespace isolation per schema
-        - Efficient batch operations
-        - CAS (check-and-set) support for atomic updates
-        - Compression for large values
-
-    Note:
-        Memcache is best suited for caching and temporary storage, not
-        as a primary data store. Data can be evicted at any time based
-        on memory pressure or TTL expiration.
-
     Example:
         >>> backend = MemcacheStoreBackend(
         ...     host="localhost",
@@ -45,9 +32,7 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
 
     connector_klass = MemcacheConnector
 
-    # Configuration
     DEFAULT_TTL = 0  # 0 means no expiration
-    PICKLE_PROTOCOL = pickle.HIGHEST_PROTOCOL
     NAMESPACE_SEPARATOR = ":"
     INDEX_SUFFIX = "_index"
 
@@ -86,22 +71,6 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
             logger.warning("Memcache connection lost, attempting to reconnect...")
             self.connector.connect()
 
-    def _build_key(self, schema_name: str, record_key: str) -> str:
-        """Build a fully-qualified key with namespace.
-
-        Args:
-            schema_name: The schema namespace.
-            record_key: The record key within the schema.
-
-        Returns:
-            Fully-qualified key string.
-        """
-        parts = []
-        if self.namespace_prefix:
-            parts.append(self.namespace_prefix)
-        parts.extend([schema_name, record_key])
-        return self.NAMESPACE_SEPARATOR.join(parts)
-
     def _build_index_key(self, schema_name: str) -> str:
         """Build the key for a schema's index.
 
@@ -117,48 +86,48 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         parts.append(schema_name + self.INDEX_SUFFIX)
         return self.NAMESPACE_SEPARATOR.join(parts)
 
-    def _serialize_record(self, record: BaseModel) -> bytes:
-        """Serialize a record to bytes.
-
-        Args:
-            record: The record to serialize.
-
-        Returns:
-            Serialized record as bytes.
-
-        Raises:
-            SerializationError: If serialization fails.
-        """
-        try:
-            state = record.__getstate__()
-            return pickle.dumps(state, protocol=self.PICKLE_PROTOCOL)
-        except Exception as e:
-            logger.error(f"Failed to serialize record: {e}")
-            raise SerializationError(f"Serialization failed: {e}")
-
-    def _deserialize_record(
-        self, data: bytes, record_klass: Type[BaseModel]
-    ) -> BaseModel:
-        """Deserialize bytes to a record object.
-
-        Args:
-            data: Serialized record data.
-            record_klass: The class to instantiate.
-
-        Returns:
-            Deserialized record instance.
-
-        Raises:
-            SerializationError: If deserialization fails.
-        """
-        try:
-            state = pickle.loads(data)
-            record = record_klass.__new__(record_klass)
-            record.__setstate__(state)
-            return record
-        except Exception as e:
-            logger.error(f"Failed to deserialize record: {e}")
-            raise SerializationError(f"Deserialization failed: {e}")
+    # def _serialize_record(self, record: BaseModel) -> bytes:
+    #     """Serialize a record to bytes.
+    #
+    #     Args:
+    #         record: The record to serialize.
+    #
+    #     Returns:
+    #         Serialized record as bytes.
+    #
+    #     Raises:
+    #         SerializationError: If serialization fails.
+    #     """
+    #     try:
+    #         state = record.__getstate__()
+    #         return pickle.dumps(state, protocol=self.PICKLE_PROTOCOL)
+    #     except Exception as e:
+    #         logger.error(f"Failed to serialize record: {e}")
+    #         raise SerializationError(f"Serialization failed: {e}")
+    #
+    # def _deserialize_record(
+    #     self, data: bytes, record_klass: Type[BaseModel]
+    # ) -> BaseModel:
+    #     """Deserialize bytes to a record object.
+    #
+    #     Args:
+    #         data: Serialized record data.
+    #         record_klass: The class to instantiate.
+    #
+    #     Returns:
+    #         Deserialized record instance.
+    #
+    #     Raises:
+    #         SerializationError: If deserialization fails.
+    #     """
+    #     try:
+    #         state = pickle.loads(data)
+    #         record = record_klass.__new__(record_klass)
+    #         record.__setstate__(state)
+    #         return record
+    #     except Exception as e:
+    #         logger.error(f"Failed to deserialize record: {e}")
+    #         raise SerializationError(f"Deserialization failed: {e}")
 
     def _get_schema_index(self, schema_name: str) -> set:
         """Get the set of record keys in a schema.
@@ -180,7 +149,7 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
             if index_data is None:
                 return set()
 
-            return pickle.loads(index_data)
+            return json.loads(index_data)
         except Exception as e:
             logger.warning(f"Failed to get schema index: {e}")
             return set()
@@ -212,7 +181,7 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
                 index.discard(record_key)
 
             # Save updated index (with no expiration)
-            serialized_index = pickle.dumps(index, protocol=self.PICKLE_PROTOCOL)
+            serialized_index = json.dumps(index)
             self.connector.cursor.set(index_key, serialized_index, expire=0)
 
         except Exception as e:

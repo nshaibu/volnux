@@ -176,8 +176,6 @@ class EnvironmentVariableAccessNode(ASTNode):
         Resolve environment variables.
         Returns:
             Value
-        Raises:
-            KeyError if environment variable is not defined.
         """
         return environ.get(self.name)
 

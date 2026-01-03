@@ -22,6 +22,8 @@ from volnux.signal.signals import (
     event_execution_retry_done,
     event_init,
 )
+from volnux.versioning.handler import VersionHandler
+from volnux.versioning import BaseVersioning, NoVersioning, DeprecationInfo, VersionInfo
 
 from .conf import ConfigLoader
 from .constants import EMPTY, MAX_BACKOFF, MAX_BACKOFF_FACTOR, MAX_RETRIES
@@ -499,13 +501,26 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
     processing pipeline data.
     """
 
+    # Version configuration
+    versioning_class: typing.Type[BaseVersioning] = NoVersioning
+    version: str = "1.0.0"
+    changelog: typing.Optional[str] = None
+    deprecated: bool = False
+    deprecation_info: typing.Optional[DeprecationInfo] = None
+
+    _version_handler: typing.Optional[VersionHandler] = None
+
+    # Custom name and namespace
+    namespace: str = "local"
+    name: typing.Optional[str] = None
+
+    # The event types
+    event_type: EventType = EventType.OTHER
+
     # how we want the execution results of this event to be evaluated by the pipeline
     result_evaluation_strategy: ExecutionResultEvaluationStrategyBase = (
         ResultEvaluationStrategies.ALL_MUST_SUCCEED
     )
-
-    # The event types
-    event_type: EventType = EventType.OTHER
 
     # The schema for adding extra event initialization arguments without modify the __init__
     # It uses event signal 'event_init' to hook an initializer function.
@@ -576,7 +591,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
 
         self.get_retry_policy()  # config retry if error
 
-        self._init_args = get_function_call_args(self.__class__.__init__, locals())
+        self._init_args = get_function_call_args(self.__class__.__init__, locals())  # type: ignore
         self._call_args = EMPTY
 
         event_init.emit(sender=self.__class__, event=self, init_kwargs=self._init_args)
@@ -590,6 +605,41 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
     def get_call_args(self) -> typing.Dict[str, typing.Any]:
         return self._call_args  # type: ignore
 
+    @classmethod
+    def get_version_handler(cls) -> VersionHandler:
+        """Get version handler for this class"""
+        if cls._version_handler is None:
+            cls._version_handler = VersionHandler.from_class(
+                cls, config_key="DEFAULT_EVENT_VERSIONING"
+            )
+        return cls._version_handler
+
+    @classmethod
+    def get_version_info(cls) -> VersionInfo:
+        """Get version information by delegating to handler."""
+        return cls.get_version_handler().get_info()
+
+    @classmethod
+    def is_deprecated(cls) -> bool:
+        """Check if deprecated by delegating to handler."""
+        return cls.get_version_handler().is_deprecated()
+
+    @classmethod
+    def get_all_versions(cls, name: typing.Optional[str] = None) -> typing.List[str]:
+        """Get all versions from registry."""
+        handler = cls.get_version_handler()
+        event_name = name or handler.class_name
+        return _event_registry.list_versions(event_name, handler.namespace)
+
+    @classmethod
+    def get_latest_version(
+        cls, name: typing.Optional[str] = None
+    ) -> typing.Optional[str]:
+        """Get the latest version from registry."""
+        handler = cls.get_version_handler()
+        event_name = name or handler.class_name
+        return _event_registry.get_latest_version(event_name, handler.namespace)
+
     def goto(
         self,
         descriptor: int,
@@ -599,7 +649,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
         execute_on_event_method: bool = True,
     ) -> None:
         """
-        Transitions to the new sub-child of parent task with the given descriptor
+        Transitions to the new sub-child of a parent task with the given descriptor
         while optionally processing the result.
         Args:
             descriptor (int): The identifier of the next task to switch to.
@@ -609,7 +659,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
             execute_on_event_method (bool, optional): If True, processes the result via
                 success/failure handlers; otherwise, wraps it in `EventResult`.
         Raises:
-            ValueError: If the descriptor is not an integer between 0 to 9.
+            ValueError: If the descriptor is not an integer between 0 and 9.
             SwitchTask: Always raised to signal the task switch.
         """
         if not isinstance(descriptor, int):
@@ -650,8 +700,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
         if not issubclass(event_klass, EventBase):
             raise ValueError(f"Event '{event_klass}' must be a subclass of EventBase")
 
-        # Register this class in the global registry
-        _event_registry.register(event_klass)
+        _event_registry.register(event_klass, name=getattr(event_klass, "name", None))
 
     @classmethod
     def evaluator(cls) -> EventEvaluator:

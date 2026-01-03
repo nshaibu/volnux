@@ -1,8 +1,9 @@
 import logging
 import pickle
+import typing
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Type, TypeVar
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Type, TypeVar, cast
 
 from volnux.backends.store import KeyValueStoreBackendBase
 from volnux.conf import ConfigLoader
@@ -108,11 +109,13 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
 
             backend_class = import_string(backend_class_path)
 
-            connector_config = backend_config.get("CONNECTOR_CONFIG", {})
+            connector_config = cast(
+                Dict[str, Any], backend_config.get("CONNECTOR_CONFIG", {})
+            )
 
             cls._backend_store = backend_class(**connector_config)
 
-            # Ensure backend is connected
+            # Ensure the backend is connected
             if hasattr(cls._backend_store.connector, "connect"):
                 if not cls._backend_store.connector.is_connected():
                     cls._backend_store.connector.connect()
@@ -163,7 +166,9 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         """Mark this instance as loaded from backend."""
         self._loaded_from_backend = True
 
-    def save(self, force_insert: bool = False) -> None:
+    def save(
+        self, force_insert: bool = False, ttl: typing.Optional[int] = None
+    ) -> None:
         """Save this object to the backend store.
 
         Performs an insert if the record doesn't exist, or an update if it does.
@@ -171,6 +176,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
 
         Args:
             force_insert: If True, always attempt insert (raises error if exists).
+            ttl: Optional TTL for the new record.
 
         Raises:
             ObjectExistError: If force_insert is True and record already exists.
@@ -180,7 +186,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             schema_name = self.get_schema_name()
 
             if force_insert:
-                backend.insert(schema_name, self.id, self)
+                backend.insert(schema_name, self.id, self, ttl=ttl)
                 logger.debug(f"Inserted {self.__class__.__name__}:{self.id}")
             else:
                 # Use upsert for save operation
@@ -189,7 +195,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
                 else:
                     # Fallback: try insert, if fails then update
                     try:
-                        backend.insert(schema_name, self.id, self)
+                        backend.insert(schema_name, self.id, self, ttl=ttl)
                     except ObjectExistError:
                         backend.update(schema_name, self.id, self)
 
@@ -433,7 +439,6 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             logger.error(f"Failed to bulk delete {cls.__name__}: {e}")
             raise
 
-
     @classmethod
     def clear_all(cls) -> None:
         """Delete all records of this class from the backend.
@@ -454,8 +459,6 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         except Exception as e:
             logger.error(f"Failed to clear {cls.__name__} records: {e}")
             raise
-
-
 
     @contextmanager
     def atomic(self):

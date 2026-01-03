@@ -5,11 +5,7 @@ import pickle
 import typing
 import weakref
 from collections import deque
-from dataclasses import asdict, dataclass, field
-from datetime import datetime
-from enum import Enum
 
-import redis.asyncio as aioredis
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +24,8 @@ class RehydrationManager:
 
     def __init__(
         self,
-        state_store: PersistentStateStore,
         pipeline_registry: typing.Optional[dict] = None,
     ):
-        self.state_store = state_store
         self.pipeline_registry = pipeline_registry or {}
         self._context_cache: typing.Dict[str, "ExecutionContext"] = {}
 

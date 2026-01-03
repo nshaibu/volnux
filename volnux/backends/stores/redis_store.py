@@ -1,6 +1,4 @@
 import logging
-import pickle
-import zlib
 from typing import Any, Dict, List, Optional, Type, Union
 
 from pydantic_mini import BaseModel
@@ -16,10 +14,6 @@ logger = logging.getLogger(__name__)
 class RedisStoreBackend(KeyValueStoreBackendBase):
     """Redis-backed key-value store implementation.
 
-    This backend uses Redis hashes to store records, with each schema
-    representing a separate hash. Records are serialized using pickle
-    for efficient storage and retrieval.
-
     Example:
         >>> backend = RedisStoreBackend(host="localhost", port=6379, database=0)
         >>> backend.insert("users", "user_1", user_record)
@@ -32,24 +26,19 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
     #  Number of items to fetch per HSCAN iteration
     DEFAULT_SCAN_COUNT = 100
 
-    PICKLE_PROTOCOL = pickle.HIGHEST_PROTOCOL
-
     def __init__(
         self,
         scan_count: int = DEFAULT_SCAN_COUNT,
-        enable_compression: bool = False,
         **connector_config: Any,
     ):
         """Initialize the Redis store backend.
 
         Args:
             scan_count: Number of items to fetch per HSCAN iteration.
-            enable_compression: Enable compression for serialized data (future feature).
             **connector_config: Configuration passed to RedisConnector.
         """
         super().__init__(**connector_config)
         self.scan_count = scan_count
-        self.enable_compression = enable_compression
 
         # Ensure connection on initialization
         if not self.connector.is_connected():
@@ -64,71 +53,6 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
         if not self.connector.is_connected():
             logger.warning("Redis connection lost, attempting to reconnect...")
             self.connector.connect()
-
-    def _serialize_record(self, record: BaseModel) -> bytes:
-        """Serialize a record to bytes.
-
-        Args:
-            record: The record to serialize.
-
-        Returns:
-            Serialized record as bytes.
-
-        Raises:
-            SerializationError: If serialization fails.
-        """
-        try:
-            state = record.__getstate__()
-            serialized = pickle.dumps(state, protocol=self.PICKLE_PROTOCOL)
-
-            if self.enable_compression:
-                serialized = zlib.compress(serialized)
-
-            return serialized
-        except Exception as e:
-            logger.error(f"Failed to serialize record: {e}")
-            raise SerializationError(f"Serialization failed: {e}")
-
-    def _deserialize_record(
-        self, data: bytes, record_klass: Type[BaseModel]
-    ) -> BaseModel:
-        """Deserialize bytes to a record object.
-
-        Args:
-            data: Serialized record data.
-            record_klass: The class to instantiate.
-
-        Returns:
-            Deserialized record instance.
-
-        Raises:
-            SerializationError: If deserialization fails.
-        """
-        try:
-            if self.enable_compression:
-                data = zlib.decompress(data)
-
-            state = pickle.loads(data)
-            record = record_klass.__new__(record_klass)
-            record.__setstate__(state)
-            return record
-        except Exception as e:
-            logger.error(f"Failed to deserialize record: {e}")
-            raise SerializationError(f"Deserialization failed: {e}")
-
-    def _get_full_key(self, schema_name: str, record_key: Union[str, int]) -> str:
-        """Generate a full key by combining schema and record key.
-
-        Args:
-            schema_name: The schema/namespace name.
-            record_key: The record key within the schema.
-
-        Returns:
-            String representation of the full key.
-        """
-        return str(record_key)
-
-    # Core CRUD Operations
 
     def exists(self, schema_name: str, record_key: str) -> bool:
         """Check if a record exists in the store.
@@ -147,13 +71,20 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Redis error checking existence: {e}")
             raise ConnectionError(f"Failed to check record existence: {e}")
 
-    def insert(self, schema_name: str, record_key: str, record: BaseModel) -> None:
+    def insert(
+        self,
+        schema_name: str,
+        record_key: str,
+        record: BaseModel,
+        ttl: Optional[int] = None,
+    ) -> None:
         """Insert a new record into the store.
 
         Args:
             schema_name: The schema to insert into.
             record_key: The unique key for the record.
             record: The record object to insert.
+            ttl: Optional TTL for the new record.
 
         Raises:
             ObjectExistError: If a record with the same key already exists.
@@ -171,6 +102,9 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
 
             with self.connector.get_pipeline(transaction=True) as pipe:
                 pipe.hset(schema_name, record_key, serialized)
+                if ttl is not None:
+                    pipe.expire(schema_name, ttl)
+
                 pipe.execute()
 
             logger.debug(f"Inserted record '{record_key}' into schema '{schema_name}'")
@@ -289,8 +223,6 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
         except RedisError as e:
             logger.error(f"Redis error during get: {e}")
             raise ConnectionError(f"Failed to get record: {e}")
-
-    # Query Operations
 
     def filter(
         self, schema_name: str, record_klass: Type[BaseModel], **filter_kwargs: Any

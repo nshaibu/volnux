@@ -55,7 +55,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
     def get_name(self) -> str:
         return "DefaultIterativeEngine"
 
-    def execute(
+    async def execute(
         self,
         root_task: TaskType,
         pipeline: Pipeline,
@@ -90,8 +90,8 @@ class DefaultWorkflowEngine(WorkflowEngine):
             )
 
         # Work queue: (task, previous_context)
-        queue: typing.Deque[TaskNode] = deque()
-        queue.append(TaskNode(root_task, None))
+        self.queue: typing.Deque[TaskNode] = deque()
+        self.queue.append(TaskNode(root_task, None))
 
         # Deferred sink nodes
         sink_queue: typing.Deque[TaskType] = deque()
@@ -101,8 +101,8 @@ class DefaultWorkflowEngine(WorkflowEngine):
         execution_error: typing.Optional[Exception] = None
 
         try:
-            while queue:
-                executable_node = queue.popleft()
+            while self.queue:
+                executable_node = self.queue.popleft()
                 tasks_processed += 1
 
                 if self.enable_debug_logging:
@@ -122,7 +122,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
                     final_context = execution_context
 
-                    # Display task for execution
+                    # Dispatch task for execution
                     execution_context.dispatch()
                     execution_state = execution_context.state
 

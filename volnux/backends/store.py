@@ -6,14 +6,22 @@ with support for CRUD operations, filtering, and record management.
 """
 
 import abc
+import typing
+import zlib
+import json
 import threading
+import logging
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional, Type, Union
 
 from .connection import BackendConnectorBase
+from volnux.exceptions import SerializationError
 
 if TYPE_CHECKING:
-    from volnux.mixins.backend import BackendIntegrationMixin
+    from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
+
+
+logger = logging.getLogger(__name__)
 
 
 class KeyValueStoreBackendBase(abc.ABC):
@@ -30,12 +38,17 @@ class KeyValueStoreBackendBase(abc.ABC):
 
     connector_klass: Type[BackendConnectorBase]
 
-    def __init__(self, **connector_config: Any) -> None:
+    NAMESPACE_SEPARATOR = ":"
+
+    def __init__(
+        self, namespace_prefix: typing.Optional[str] = None, **connector_config: Any
+    ) -> None:
         """Initialize the backend with connector configuration.
 
         Args:
             **connector_config: Configuration parameters passed to the connector.
         """
+        self._namespace_prefix = namespace_prefix
         self.connector = self.connector_klass(**connector_config)
         self._connector_lock = threading.RLock()
 
@@ -85,6 +98,65 @@ class KeyValueStoreBackendBase(abc.ABC):
         """Context manager exit with automatic cleanup."""
         self.close()
 
+    def _build_key(self, schema_name: str, record_key: str) -> str:
+        """Build a fully qualified key with namespace.
+
+        Args:
+            schema_name: The schema namespace.
+            record_key: The record key within the schema.
+
+        Returns:
+            Fully-qualified key string.
+        """
+        parts = []
+        if self._namespace_prefix:
+            parts.append(self._namespace_prefix)
+        parts.extend([schema_name, record_key])
+        return self.NAMESPACE_SEPARATOR.join(parts)
+
+    def _serialize_record(self, record: "KeyValueStoreIntegrationMixin") -> str:
+        """Serialize a record to bytes.
+
+        Args:
+            record: The record to serialize.
+
+        Returns:
+            Serialized record as bytes.
+
+        Raises:
+            SerializationError: If serialization fails.
+        """
+        try:
+            state = record.__getstate__()
+            return json.dumps(state)
+        except Exception as e:
+            logger.error(f"Failed to serialize record: {e}")
+            raise SerializationError(f"Serialization failed: {e}")
+
+    def _deserialize_record(
+        self, data: bytes, record_klass: Type["KeyValueStoreIntegrationMixin"]
+    ) -> "KeyValueStoreIntegrationMixin":
+        """Deserialize bytes to a record object.
+
+        Args:
+            data: Serialized record data.
+            record_klass: The class to instantiate.
+
+        Returns:
+            Deserialized record instance.
+
+        Raises:
+            SerializationError: If deserialization fails.
+        """
+        try:
+            state = json.loads(data)
+            record = record_klass.__new__(record_klass)
+            record.__setstate__(state)
+            return record
+        except Exception as e:
+            logger.error(f"Failed to deserialize record: {e}")
+            raise SerializationError(f"Deserialization failed: {e}")
+
     @abc.abstractmethod
     def exists(self, schema_name: str, record_key: str) -> bool:
         """Check if a record exists in the store.
@@ -100,7 +172,11 @@ class KeyValueStoreBackendBase(abc.ABC):
 
     @abc.abstractmethod
     def insert(
-        self, schema_name: str, record_key: str, record: "BackendIntegrationMixin"
+        self,
+        schema_name: str,
+        record_key: str,
+        record: "KeyValueStoreIntegrationMixin",
+        ttl: Optional[int] = None,
     ) -> None:
         """Insert a new record into the store.
 
@@ -108,6 +184,7 @@ class KeyValueStoreBackendBase(abc.ABC):
             schema_name: The schema/namespace to insert into.
             record_key: The unique key for the new record.
             record: The record object to insert.
+            ttl: Optional TTL for the new record.
 
         Raises:
             KeyError: If a record with the same key already exists.
@@ -116,7 +193,7 @@ class KeyValueStoreBackendBase(abc.ABC):
 
     @abc.abstractmethod
     def update(
-        self, schema_name: str, record_key: str, record: "BackendIntegrationMixin"
+        self, schema_name: str, record_key: str, record: "KeyValueStoreIntegrationMixin"
     ) -> None:
         """Update an existing record in the store.
 
@@ -148,8 +225,8 @@ class KeyValueStoreBackendBase(abc.ABC):
         self,
         schema_name: str,
         record_key: Union[str, int],
-        record_klass: Type["BackendIntegrationMixin"],
-    ) -> Optional["BackendIntegrationMixin"]:
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+    ) -> Optional["KeyValueStoreIntegrationMixin"]:
         """Retrieve a single record from the store.
 
         Args:
@@ -166,9 +243,9 @@ class KeyValueStoreBackendBase(abc.ABC):
     def filter(
         self,
         schema_name: str,
-        record_klass: Type["BackendIntegrationMixin"],
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
         **filter_kwargs: Any,
-    ) -> Iterable["BackendIntegrationMixin"]:
+    ) -> Iterable["KeyValueStoreIntegrationMixin"]:
         """Filter records matching the specified criteria.
 
         Args:
@@ -197,8 +274,9 @@ class KeyValueStoreBackendBase(abc.ABC):
     @staticmethod
     @abc.abstractmethod
     def load_record(
-        record_state: Dict[str, Any], record_klass: Type["BackendIntegrationMixin"]
-    ) -> "BackendIntegrationMixin":
+        record_state: Dict[str, Any],
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+    ) -> "KeyValueStoreIntegrationMixin":
         """Load a record from its serialized state.
 
         Args:
@@ -212,8 +290,8 @@ class KeyValueStoreBackendBase(abc.ABC):
 
     @abc.abstractmethod
     def reload(
-        self, schema_name: str, record: "BackendIntegrationMixin"
-    ) -> "BackendIntegrationMixin":
+        self, schema_name: str, record: "KeyValueStoreIntegrationMixin"
+    ) -> "KeyValueStoreIntegrationMixin":
         """Reload a record's data from the backend.
 
         Args:
@@ -229,7 +307,7 @@ class KeyValueStoreBackendBase(abc.ABC):
         raise NotImplementedError
 
     def upsert(
-        self, schema_name: str, record_key: str, record: "BackendIntegrationMixin"
+        self, schema_name: str, record_key: str, record: "KeyValueStoreIntegrationMixin"
     ) -> None:
         """Insert or update a record (upsert operation).
 
@@ -244,8 +322,8 @@ class KeyValueStoreBackendBase(abc.ABC):
             self.insert(schema_name, record_key, record)
 
     def list_all(
-        self, schema_name: str, record_klass: Type["BackendIntegrationMixin"]
-    ) -> Iterable["BackendIntegrationMixin"]:
+        self, schema_name: str, record_klass: Type["KeyValueStoreIntegrationMixin"]
+    ) -> Iterable["KeyValueStoreIntegrationMixin"]:
         """List all records in a schema.
 
         Args:

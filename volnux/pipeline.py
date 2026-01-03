@@ -382,7 +382,9 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
         """
         return getattr(cls, PIPELINE_STATE)
 
-    def start(self, force_rerun: bool = False) -> typing.Optional["ExecutionContext"]:
+    async def start(
+        self, force_rerun: bool = False
+    ) -> typing.Optional["ExecutionContext"]:
         """
         Initiates the execution of the pipeline.
 
@@ -411,7 +413,7 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
 
         self.execution_context: typing.Optional["ExecutionContext"] = None
 
-        run_workflow(
+        await run_workflow(
             self.get_pipeline_state().start,
             pipeline=self,
         )
@@ -421,14 +423,14 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
             execution_state = latest_context.state
 
             if execution_state.status == ExecutionStatus.CANCELLED:
-                pipeline_stop.emit(
+                await pipeline_stop.emit_async(
                     sender=self.__class__,
                     pipeline=self,
                     execution_context=latest_context,
                 )
                 return self.execution_context
             elif execution_state.status == ExecutionStatus.ABORTED:
-                pipeline_shutdown.emit(
+                await pipeline_shutdown.emit_async(
                     sender=self.__class__,
                     pipeline=self,
                     execution_context=latest_context,
