@@ -3,6 +3,10 @@ import typing
 from datetime import datetime
 from typing import Optional, Dict, Any, List, TypedDict, Union
 
+from volnux.conf import ConfigLoader
+
+conf = ConfigLoader.get_lazily_loaded_config()
+
 
 class DeprecationInfo(TypedDict, total=False):
     reason: str
@@ -28,6 +32,9 @@ class BaseVersioning(abc.ABC):
     default_version: str = "1.0.0"
     allowed_versions: Optional[List[str]] = None
 
+    def __init__(self, config_key: str) -> None:
+        self.config_key = config_key
+
     @abc.abstractmethod
     def get_version_info(self, klass: typing.Type[Any]) -> VersionInfo:
         """
@@ -45,7 +52,10 @@ class BaseVersioning(abc.ABC):
 
     def get_namespace(self, klass: typing.Type[Any]) -> str:
         """Get namespace for the event (default: 'local')."""
-        return getattr(klass, "namespace", "local")
+        namespace = getattr(klass, "namespace", None)
+        if namespace is None:
+            return conf.get(self.config_key, {}).get("DEFAULT_NAMESPACE", "local")
+        return namespace
 
     def get_event_name(self, klass: typing.Type[Any]) -> str:
         """name of class (default: class name)."""

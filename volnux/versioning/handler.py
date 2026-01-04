@@ -19,11 +19,11 @@ class VersionHandler:
 
     scheme: BaseVersioning
     version: str
-    changelog: Optional[str] = (None,)
-    deprecated: bool = (False,)
-    deprecation_info: Optional[DeprecationInfo] = (None,)
-    namespace: str = ("local",)
-    class_name: Optional[str] = (None,)
+    changelog: Optional[str] = None
+    deprecated: bool = False
+    deprecation_info: Optional[DeprecationInfo] = None
+    namespace: str = "local"
+    class_name: Optional[str] = None
 
     @classmethod
     def from_class(cls, klass: Type[Any], config_key: str) -> "VersionHandler":
@@ -46,18 +46,17 @@ class VersionHandler:
                     f"Scheme '{scheme_class}' is not a subclass of BaseVersioning"
                 )
 
-        namespace = getattr(klass, "namespace", None)
-        if namespace is None:
-            namespace = conf.get(config_key, {}).get("NAMESPACE", "local")
+        scheme_class = cast(Type[BaseVersioning], scheme_class)
+        scheme_handler = scheme_class(config_key)
 
         return cls(
-            scheme=scheme_class(),
-            version=getattr(klass, "version", "1.0.0"),
+            scheme=scheme_handler,
+            version=getattr(klass, "version", scheme_handler.default_version),
             changelog=getattr(klass, "changelog", None),
             deprecated=getattr(klass, "deprecated", False),
             deprecation_info=getattr(klass, "deprecation_info", None),
-            namespace=namespace,
-            class_name=getattr(klass, "name", None) or klass.__name__,
+            namespace=scheme_handler.get_namespace(klass),
+            class_name=scheme_handler.get_event_name(klass),
         )
 
     def get_info(self) -> VersionInfo:

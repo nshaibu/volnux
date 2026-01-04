@@ -76,7 +76,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         the backend connection and perform initial save.
 
         Raises:
-            StopProcessingError: If backend initialization fails.
+            ImproperlyConfigured: If backend initialization fails.
         """
         ObjectIdentityMixin.__init__(self)
 
