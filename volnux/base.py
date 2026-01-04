@@ -74,8 +74,6 @@ class EventType(Enum):
 class EventMeta(abc.ABCMeta):
     """
     Metaclass that registers event classes at creation time.
-
-    Similar to Django's ModelBase metaclass which calls apps.register_model().
     """
 
     def __new__(mcs, name, bases, namespace, **kwargs):
@@ -90,10 +88,31 @@ class EventMeta(abc.ABCMeta):
             isinstance(base, EventMeta) for base in bases
         ):
             try:
+                # Get version info using the versioning scheme
+                event_class = typing.cast(typing.Type[EventBase], cls)
+                versioning = event_class.get_version_handler()
+                version_info = versioning.get_info()
+
+                event_name = versioning.scheme.get_event_name(cls)
+
                 _event_registry.register(
-                    cls,
-                    name=getattr(cls, "name", None),
+                    event_class,
+                    name=event_name,
+                    namespace=version_info['namespace'],
+                    version=version_info['version'],
+                    changelog=version_info.get('changelog'),
+                    deprecated=version_info.get('deprecated', False),
+                    deprecation_info=version_info.get('deprecation_info'),
+                    scheme_handler=versioning.scheme,
                     event_type=getattr(cls, "event_type", EventType.OTHER),
+                )
+
+                # Log registration
+                status = "DEPRECATED" if version_info.get('deprecated') else "active"
+                logger.debug(
+                    f"Registered: {cls.__module__}.{name} as "
+                    f"{version_info['namespace']}::{event_name}@{version_info['version']} "
+                    f"[{status}]"
                 )
             except RuntimeError as e:
                 logger.warning(str(e))
@@ -685,22 +704,6 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
             result=res,
             reason=reason,
         )
-
-    @classmethod
-    def register_event(cls, event_klass: typing.Type["EventBase"]) -> None:
-        """
-        Register event
-
-        Args:
-            event_klass: Class to register
-
-        Raises:
-            RuntimeError: if event is already registered
-        """
-        if not issubclass(event_klass, EventBase):
-            raise ValueError(f"Event '{event_klass}' must be a subclass of EventBase")
-
-        _event_registry.register(event_klass, name=getattr(event_klass, "name", None))
 
     @classmethod
     def evaluator(cls) -> EventEvaluator:

@@ -9,6 +9,7 @@ from datetime import datetime
 from packaging.version import Version, parse as parse_version
 
 from volnux.result import ResultSet
+from volnux.versioning import DeprecationInfo, BaseVersioning
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +29,11 @@ class RegistryEntry:
     handler: typing.Any
     handler_name: str
     namespace: str
-    version: str = "1.0.0"  # Semantic version
+    version: str = "1.0.0"
     deprecated: bool = False
-    deprecation_info: typing.Optional[typing.Dict[str, typing.Any]] = None
+    deprecation_info: typing.Optional[DeprecationInfo] = None
     changelog: typing.Optional[str] = None
+    scheme_handler: typing.Optional[BaseVersioning] = None
     registered_at: datetime = field(default_factory=datetime.now)
     extra: typing.Dict[str, typing.Any] = field(default_factory=dict)
 
@@ -106,7 +108,8 @@ class Registry:
         version: str = "1.0.0",
         changelog: typing.Optional[str] = None,
         deprecated: bool = False,
-        deprecation_info: typing.Optional[typing.Dict[str, typing.Any]] = None,
+        deprecation_info: typing.Optional[DeprecationInfo] = None,
+        scheme_handler: typing.Optional[BaseVersioning] = None,
         **extra: typing.Any,
     ) -> None:
         """
@@ -120,18 +123,22 @@ class Registry:
             changelog: Optional description of changes in this version
             deprecated: Whether this version is deprecated
             deprecation_info: Additional deprecation details
+            scheme_handler: Optional schema handler for this version
             extra: Optional extra arguments
 
         Raises:
-            ValueError: If version is invalid
+            ValueError: If a version is invalid
             RuntimeWarning: If event already registered
             RuntimeError: If conflicting event found
         """
         with self._lock:
-            try:
-                parse_version(version)
-            except Exception as e:
-                raise ValueError(f"Invalid version format '{version}': {e}")
+            # try:
+            #     parse_version(version)
+            # except Exception as e:
+            #     raise ValueError(f"Invalid version format '{version}': {e}")
+
+            if scheme_handler is not None and not scheme_handler.validate_version(version):
+                raise ValueError(f"Invalid version format '{version}': {scheme_handler}")
 
             module_label = klass.__module__
             klass_name = klass.__name__
@@ -174,6 +181,7 @@ class Registry:
                 deprecated=deprecated,
                 deprecation_info=deprecation_info,
                 changelog=changelog,
+                scheme_handler=scheme_handler,
                 extra=extra,
             )
 
@@ -420,7 +428,7 @@ class Registry:
         if entry_qs.is_empty():
             raise LookupError(f"Class '{module_label}.{klass_name}' not registered.")
 
-        # Get latest version if multiple exist
+        # Get latest version if multiple exists
         all_entries = typing.cast(typing.List[RegistryEntry], list(entry_qs))
         latest_entry = max(all_entries, key=lambda e: e.version_obj)
 

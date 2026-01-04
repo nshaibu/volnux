@@ -1,6 +1,9 @@
+import logging
 from typing import Dict, Any, Optional, Type
 from packaging.version import parse as parse_version, Version
-from .base import BaseVersioning, VersionInfo
+from .base import BaseVersioning, VersionInfo,DeprecationInfo
+
+logger = logging.getLogger(__name__)
 
 
 class SemanticVersioning(BaseVersioning):
@@ -25,6 +28,7 @@ class SemanticVersioning(BaseVersioning):
         try:
             parse_version(version)
         except Exception as e:
+            logger.exception("Failed to parse semantic version: %s", e)
             raise ValueError(f"Invalid semantic version '{version}': {e}")
 
         return {
@@ -45,14 +49,15 @@ class SemanticVersioning(BaseVersioning):
                 return version in self.allowed_versions
 
             return True
-        except:
+        except Exception as e:
+            logger.warning(f"Invalid semantic version '{version}': {e}")
             return False
 
     def is_deprecated(self, klass: Type[Any]) -> bool:
         """Check if an event version is deprecated."""
         return getattr(klass, "deprecated", False)
 
-    def get_deprecation_info(self, klass: Type[Any]) -> Optional[Dict[str, Any]]:
+    def get_deprecation_info(self, klass: Type[Any]) -> Optional[DeprecationInfo]:
         """Get deprecation information."""
         if self.is_deprecated(klass):
             return getattr(klass, "deprecation_info", None)
