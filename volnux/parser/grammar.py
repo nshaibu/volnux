@@ -214,7 +214,7 @@ def p_map_entries(p):
     """
     map_entries : empty
                 | map_entry
-                | map_entries COMMA map_entry
+                | map_entries SEPARATOR map_entry
     """
     if p[1] is None:
         p[0] = {}
@@ -239,7 +239,7 @@ def p_list(p):
 def p_list_elements(p):
     """
     list_elements : value
-                  | list_elements COMMA value
+                  | list_elements SEPARATOR value
                   | empty
     """
     is_empty = p[1] is None
