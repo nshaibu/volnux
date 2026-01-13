@@ -1,4 +1,5 @@
 import sys
+import asyncio
 import code
 from typing import Optional
 
@@ -20,9 +21,11 @@ class ShellCommand(BaseCommand):
             project_config.__name__: project_config,
         }
 
-        workflow_registry = self._initialise_workflows(project_dir)
+        engine = self.initialise_workflows(project_dir)
 
-        for workflow in workflow_registry.get_workflow_configs():
+        workflows_registry = engine.get_workflows_registry()
+
+        for workflow in workflows_registry.get_workflow_configs():
             local_vars[workflow.name] = workflow
 
         shell_version = f"Python {sys.version} on {sys.platform}"

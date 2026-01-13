@@ -35,7 +35,8 @@ class RunWorkflowCommand(BaseCommand):
         self.success(f"\nRunning workflow: {workflow_name}\n")
         self.stdout.write(f"\nParameters: {params}\n")
 
-        workflow_registry = self._initialise_workflows(project_dir, workflow_name)
+        engine = self.initialise_workflows(project_dir, workflow_name)
+        workflow_registry = engine.get_workflows_registry()
 
         workflow = workflow_registry.get_workflow_config(workflow_name)
         if not workflow:

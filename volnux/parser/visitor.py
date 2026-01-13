@@ -12,6 +12,12 @@ if typing.TYPE_CHECKING:
         LiteralNode,
         ProgramNode,
         TaskNode,
+        DirectiveNode,
+        VariableAccessNode,
+        MetaEventNode,
+        EnvironmentVariableAccessNode,
+        ListNode,
+        MapNode,
     )
 
 
@@ -50,4 +56,28 @@ class ASTVisitorInterface(ABC):
 
     @abstractmethod
     def visit_expression_grouping(self, node: "ExpressionGroupingNode"):
+        pass
+
+    @abstractmethod
+    def visit_directive(self, node: "DirectiveNode"):
+        pass
+
+    @abstractmethod
+    def visit_variable_access(self, node: "VariableAccessNode"):
+        pass
+
+    @abstractmethod
+    def visit_access_environment_variable(self, node: "EnvironmentVariableAccessNode"):
+        pass
+
+    @abstractmethod
+    def visit_meta_event(self, node: "MetaEventNode"):
+        pass
+
+    @abstractmethod
+    def visit_list(self, node: "ListNode"):
+        pass
+
+    @abstractmethod
+    def visit_map(self, node: "MapNode"):
         pass

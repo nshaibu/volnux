@@ -10,7 +10,7 @@ from volnux import Event
 from volnux.base import EventType
 from volnux.exceptions import PointyNotExecutable
 
-from .utils import get_workflow_config_name
+from .utils import initialize_and_register_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,6 @@ class LoadFromGit(Event):
 
             # Find WorkflowConfig subclass
             for attr_name in dir(module):
-                attr_name = get_workflow_config_name(attr_name)
                 attr = getattr(module, attr_name)
                 if (
                     isinstance(attr, type)
@@ -66,13 +65,7 @@ class LoadFromGit(Event):
                     and attr != WorkflowConfig
                 ):
                     # Instantiate the workflow config
-                    workflow_config: WorkflowConfig = attr(workflow_path=workflow_dir)
-                    try:
-                        workflow_config.discover_workflow_submodules()
-                        workflow_config.is_executable = True
-                    except PointyNotExecutable:
-                        workflow_config.is_executable = False
-                    registry.register(workflow_config)
+                    initialize_and_register_workflow(attr, workflow_dir, registry)
                     logger.info(f"  ✓ Loaded workflow from GitHub: {workflow_name}")
                     loading_status = True
                     break

@@ -2,38 +2,80 @@ import logging
 
 from ply.lex import lex
 
-from volnux.utils import _extend_recursion_depth
-
 logger = logging.getLogger(__name__)
 
 
 class PointyLexer(object):
-    directives = ("recursive-depth",)
+    directives = ("recursive-depth", "mode")
 
-    reserved = {"true": "BOOLEAN", "false": "BOOLEAN"}
+    reserved = {
+        "true": "BOOLEAN",
+        "false": "BOOLEAN",
+        "RETRY": "RETRY",
+        "MAP": "MAP",
+        "FILTER": "FILTER",
+        "REDUCE": "REDUCE",
+        "FOREACH": "FOREACH",
+        "FLATMAP": "FLATMAP",
+        "FANOUT": "FANOUT",
+        "env": "env",
+        "null": "NULL",
+    }
 
-    tokens = (
-        "SEPARATOR",
-        "POINTER",
-        "PPOINTER",
-        "PARALLEL",
-        "RETRY",
-        "ASSIGN",
-        "IDENTIFIER",
-        "COMMENT",
-        "LPAREN",
-        "RPAREN",
-        "LBRACKET",
-        "RBRACKET",
-        "LCURLY_BRACKET",
-        "RCURLY_BRACKET",
-        "DIRECTIVE",
-        "STRING_LITERAL",
-        "INT",
-        "FLOAT",
-        "BOOLEAN",
+    builtin_event_token = (
+        # Meta events
+        "MAP",
+        "FILTER",
+        "REDUCE",
+        "FOREACH",
+        "FLATMAP",
+        "FANOUT",
     )
 
+    builtins = ("NULL",)
+
+    tokens = (
+        (
+            "LANGLE",  # <
+            "RANGLE",  # >
+            "SEPARATOR",
+            "COLON",
+            "DOT",
+            "DOUBLE_COLON",
+            "POINTER",
+            "PPOINTER",
+            "PARALLEL",
+            "RETRY",
+            "ASSIGN",
+            "IDENTIFIER",
+            "VAR_DECL",  # @ prefix for declaration
+            "VAR_ACCESS",  # $ prefix for variable value access
+            "COMMENT",
+            "LPAREN",
+            "RPAREN",
+            "LBRACKET",
+            "RBRACKET",
+            "LCURLY_BRACKET",
+            "RCURLY_BRACKET",
+            "STRING_LITERAL",
+            "INT",
+            "FLOAT",
+            "BOOLEAN",
+            # Operators
+            "NULLCOALESCE",  # ??
+            "EQ",  # ==
+            "NE",  # !=
+            "LT",  #
+            "GT",  # >
+            "LE",  # <=
+            "GE",  # >=
+            "QUESTION",  # ?
+        )
+        + builtin_event_token
+        + builtins
+    )
+
+    t_QUESTION = r"\?"
     t_ignore = " \t"
     t_LPAREN = r"\("
     t_RPAREN = r"\)"
@@ -41,14 +83,42 @@ class PointyLexer(object):
     t_RBRACKET = r"\]"
     t_LCURLY_BRACKET = r"\{"
     t_RCURLY_BRACKET = r"\}"
-    t_IDENTIFIER = r"[a-zA-Z_][a-zA-Z0-9_]*"
     t_POINTER = r"\-\>"
     t_PPOINTER = r"\|\-\>"
     t_RETRY = r"\*"
     t_PARALLEL = r"\|\|"
     t_ASSIGN = r"\="
     t_SEPARATOR = r","
+    t_DOT = r"\."
+    t_COLON = r":"
+    t_DOUBLE_COLON = r"::"
+    t_LANGLE = r"<"
+    t_RANGLE = r">"
     t_ignore_COMMENT = r"\#.*"
+
+    def t_LE(self, t):
+        r"<="
+        return t
+
+    def t_GE(self, t):
+        r">="
+        return t
+
+    def t_EQ(self, t):
+        r"=="
+        return t
+
+    def t_NE(self, t):
+        r"!="
+        return t
+
+    def t_LT(self, t):
+        r"<"
+        return t
+
+    def t_GT(self, t):
+        r">"
+        return t
 
     def t_FLOAT(self, t):
         r"[+-]?([0-9]+\.[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?"
@@ -72,20 +142,27 @@ class PointyLexer(object):
         t.value = t.value == "true"
         return t
 
-    def t_DIRECTIVE(self, t):
-        r"\@[a-zA-Z0-9-]+:{1}[a-zA-Z0-9]+"
-        from volnux.utils import _extend_recursion_depth
+    def t_VAR_DECL(self, t):
+        r"@[a-zA-Z_*][a-zA-Z0-9_*]*"
+        t.value = t.value[1:]  # Remove @ prefix
+        return t
 
-        value = str(t.value).lstrip("@")
-        directive, value = value.split(":")
-        if directive in self.directives:
-            if value.isnumeric():
-                if directive == "recursive-depth":
-                    limit = int(value)
-                    ret = _extend_recursion_depth(limit)
-                    if isinstance(ret, Exception):
-                        logger.warning(str(ret))
-        t.lexer.skip(1)
+    def t_VAR_ACCESS(self, t):
+        r"\$[a-zA-Z_*][a-zA-Z0-9_*]*"
+        t.value = t.value[1:]  # Remove $ prefix
+        return t
+
+    def t_IDENTIFIER(self, t):
+        r"[a-zA-Z_][a-zA-Z0-9_]*"
+        # Check for reserved keywords
+        t.type = self.reserved.get(t.value, "IDENTIFIER")  # type: ignore
+        if t.type == "BOOLEAN":
+            t.value = t.value == "true"
+        return t
+
+    def t_NULLCOALESCE(self, t):
+        r"\?\?"
+        return t
 
     def t_newline(self, t):
         r"\n+"

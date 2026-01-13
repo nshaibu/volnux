@@ -26,7 +26,7 @@ async def to_thread(
         The result of the function call
 
     Raises:
-        RuntimeError: If called outside of an async context
+        RuntimeError: If called outside an async context
     """
     if sys.version_info >= (3, 9):
         return await asyncio.to_thread(func, *args, **kwargs)

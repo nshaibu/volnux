@@ -110,6 +110,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
 
         event_init_args["execution_context"] = self.context
         event_init_args["task_id"] = task_profile.get_id()
+        event_init_args["sequence_number"] = task_profile.sequence_number
 
         # Let's pass the options given in the pointy script to the event
         if task_profile.options:

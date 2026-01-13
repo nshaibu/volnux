@@ -155,3 +155,22 @@ class ExecutorNotFound(IndexError):
 
 class PointyNotExecutable(Exception):
     """Exception raised when a pointy script is not executable."""
+
+
+## Meta Event Errors
+class NestedMetaEventError(Exception):
+    """Raised when nested meta events are detected"""
+
+    pass
+
+
+class MetaEventConfigurationError(Exception):
+    """Raised when meta event is misconfigured"""
+
+    pass
+
+
+class MetaEventExecutionError(Exception):
+    """Raised when meta event execution fails"""
+
+    pass

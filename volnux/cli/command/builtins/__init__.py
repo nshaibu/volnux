@@ -6,6 +6,8 @@ from .start_project import StartProjectCommand
 from .start_workflow import StartWorkflowCommand
 from .validate_workflow import ValidateWorkflowCommand
 from .version import VersionCommand
+from .workflow_trigger_start import StartTriggersCommand
+from .workflow_trigger_stop import StopTriggersCommand
 
 __all__ = [
     "ListWorkflowsCommand",
@@ -16,4 +18,6 @@ __all__ = [
     "StartWorkflowCommand",
     "RunWorkflowCommand",
     "ValidateWorkflowCommand",
+    "StartTriggersCommand",
+    "StopTriggersCommand",
 ]

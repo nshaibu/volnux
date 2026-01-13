@@ -1,8 +1,10 @@
 import abc
 import logging
+import inspect
 import multiprocessing as mp
 import time
 import typing
+from asgiref.sync import async_to_sync
 from concurrent.futures import Executor, ProcessPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
@@ -53,6 +55,7 @@ _event_registry = Registry()
 
 if typing.TYPE_CHECKING:
     from volnux.execution.context import ExecutionContext
+    from volnux.signal.handlers.event_initialiser import ExtraEventInitKwargs
 
 
 def get_event_registry():
@@ -61,7 +64,8 @@ def get_event_registry():
 
 
 class EventType(Enum):
-    SYSTEM = "system"
+    SYSTEM = "system"  # internal system events
+    META = "meta"  # meta events
     OTHER = "other"
 
 
@@ -80,9 +84,15 @@ class EventMeta(abc.ABCMeta):
         cls = super().__new__(mcs, name, bases, namespace)
 
         # Register it if it's not the base EventBase class
-        if name != "EventBase" and any(isinstance(base, EventMeta) for base in bases):
+        if name not in ["EventBase", "ControlFlowEvent"] and any(
+            isinstance(base, EventMeta) for base in bases
+        ):
             try:
-                _event_registry.register(cls)
+                _event_registry.register(
+                    cls,
+                    name=getattr(cls, "name", None),
+                    event_type=getattr(cls, "event_type", EventType.OTHER),
+                )
             except RuntimeError as e:
                 logger.warning(str(e))
 
@@ -238,7 +248,10 @@ class _RetryMixin:
 
             try:
                 self._retry_count += 1
-                return func(*args, **kwargs)
+                if inspect.iscoroutinefunction(func):
+                    return async_to_sync(func)(*args, **kwargs)
+                else:
+                    return func(*args, **kwargs)
             except MaxRetryError:
                 # ignore this
                 break
@@ -491,10 +504,15 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
         ResultEvaluationStrategies.ALL_MUST_SUCCEED
     )
 
+    # The event types
     event_type: EventType = EventType.OTHER
 
+    # The schema for adding extra event initialization arguments without modify the __init__
+    # It uses event signal 'event_init' to hook an initializer function.
+    # That will handle the setting and validation of the extra event init args
+    EXTRA_INIT_PARAMS_SCHEMA: typing.Dict[str, "ExtraEventInitKwargs"] = {}
+
     def __init_subclass__(cls, **kwargs: typing.Dict[str, typing.Any]) -> None:
-        """Automatically register subclasses when they're defined"""
         # prevent the overriding of __init__
         if cls.__name__ != "EventBase":
             for attr_name in ["__init__"]:
@@ -502,8 +520,9 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
                     raise PermissionError(
                         f"Model '{cls.__name__}' cannot override {attr_name!r}. "
                         f"Consider registering a 'listener' function for the signal 'event_init' "
-                        f"for all your custom initialization. "
-                        f"You can also do your initialisation within the 'process' method"
+                        f"for all your custom initialization. Also, you can configure the EXTRA_INIT_PARAMS_SCHEMA "
+                        f"class variable and the runtime will take care of the initialisation of your custom arguments"
+                        f"You can also handle initialisation within the 'process' method"
                     )
 
         super().__init_subclass__(**kwargs)
@@ -517,6 +536,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
         stop_condition: StopCondition = StopCondition.NEVER,
         run_bypass_event_checks: bool = False,
         options: typing.Optional["Options"] = None,
+        sequence_number: typing.Optional[int] = None,
         **kwargs: typing.Dict[str, typing.Any],
     ) -> None:
         """
@@ -530,7 +550,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
                                                       providing access to execution-related data.
             task_id (str): The PipelineTask for this event.
             previous_result (Any, optional): The result of the previous event execution.
-                                              Defaults to `EMPTY` if not provided.
+                                              Default to `EMPTY` if not provided.
             stop_on_exception (bool, optional): Flag to indicate whether the event should stop execution
                                                  if an exception occurs. Defaults to `False`.
             stop_on_success (bool, optional): Flag to indicate whether the event should stop execution
@@ -539,12 +559,14 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
                                         if an error occurs. Defaults to `False`.
             options (Options, optional): Additional options to pass to the event constructor.
                                         This is automatically assigned at run time
+            sequence_number (int, optional): Sequence number of the event. Defaults to `None`.
 
         """
         super().__init__(*args, **kwargs)
 
         self._execution_context = execution_context
         self._task_id = task_id
+        self._sequence_number = sequence_number
         self.options = options
         self.previous_result = previous_result
         self.stop_condition = StopConditionProcessor(
@@ -698,9 +720,10 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
         self, error: bool, content: typing.Dict[str, typing.Any]
     ) -> EventResult:
         return EventResult(
-            error=error,
-            task_id=self._task_id,
-            event_name=self.__class__.__name__,
+            error=error,  # type: ignore
+            task_id=self._task_id,  # type: ignore
+            order=self._sequence_number,  # type: ignore
+            event_name=self.__class__.__name__,  # type: ignore
             content=content,
             call_params=self.get_call_args(),
             init_params=self.get_init_args(),
@@ -726,6 +749,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
                 params={
                     "init_args": self._init_args,
                     "call_args": self._call_args,
+                    "sequence_number": self._sequence_number,
                     "event_name": self.__class__.__name__,
                     "task_id": self._task_id,
                 },
@@ -764,7 +788,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
             message=f"Error occurred while processing event '{self.__class__.__name__}'",
         ):
             raise StopProcessingError(
-                message=self.stop_condition.message,
+                message=self.stop_condition.message,  # type: ignore
                 exception=execution_result,
                 params={
                     "init_args": self._init_args,
