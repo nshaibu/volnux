@@ -257,6 +257,21 @@ class LiteralNode(ASTNode):
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_literal(self)
 
+@dataclass
+class ListNode(ASTNode):
+    __slots__ = ("value",)
+    value: typing.List[typing.Any]
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_list(self)
+
+@dataclass
+class MapNode(ASTNode):
+    __slots__ = ("value",)
+    value: typing.Dict[str, typing.Any]
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_map(self)
 
 @dataclass
 class ExpressionGroupingNode(ASTNode):

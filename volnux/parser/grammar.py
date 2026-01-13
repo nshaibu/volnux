@@ -21,6 +21,8 @@ from .ast import (
     EnvironmentVariableAccessNode,
     DirectiveNode,
     MetaEventNode,
+    ListNode,
+    MapNode,
 )
 from .dag_visitor import CycleDetectionVisitor, DAGValidationError, format_cycle_error
 
@@ -196,10 +198,65 @@ def p_value(p):
     """
     value : scalar_value
             | variable_reference
+            | list
+            | map
             | null_value
     """
     p[0] = p[1]
 
+def p_map(p):
+    """
+    map : LCURLY_BRACKET map_entries RCURLY_BRACKET
+    """
+    p[0] = MapNode(p[2])
+
+def p_map_entries(p):
+    """
+    map_entries : empty
+                | map_entry
+                | map_entries SEPARATOR map_entry
+    """
+    if p[1] is None:
+        p[0] = {}
+    elif len(p) == 2:
+        p[0] = p[1]
+    elif len(p) == 4:
+        p[1].update(p[3])
+        p[0] = p[1]
+
+def p_map_entry(p):
+    """
+    map_entry : STRING_LITERAL COLON value
+    """
+    p[0] = {p[1]: p[3]}
+
+def p_list(p):
+    """
+    list : LBRACKET list_elements RBRACKET
+    """
+    p[0] = ListNode(p[2])
+
+def p_list_elements(p):
+    """
+    list_elements : value
+                  | list_elements SEPARATOR value
+                  | empty
+    """
+    is_empty = p[1] is None
+    is_single_item = len(p) == 2
+    is_multi_items = len(p) == 4
+
+    if is_empty:
+        p[0] = []
+    elif is_single_item:
+        p[0] = [p[1]]
+    elif is_multi_items:
+        p[0] = p[1] + [p[3]]
+
+
+def p_empty(p):
+    'empty :'
+    pass
 
 def p_scalar_value(p):
     """
