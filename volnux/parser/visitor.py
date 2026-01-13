@@ -16,6 +16,8 @@ if typing.TYPE_CHECKING:
         VariableAccessNode,
         MetaEventNode,
         EnvironmentVariableAccessNode,
+        ListNode,
+        MapNode,
     )
 
 
@@ -70,4 +72,12 @@ class ASTVisitorInterface(ABC):
 
     @abstractmethod
     def visit_meta_event(self, node: "MetaEventNode"):
+        pass
+
+    @abstractmethod
+    def visit_list(self, node: "ListNode"):
+        pass
+
+    @abstractmethod
+    def visit_map(self, node: "MapNode"):
         pass

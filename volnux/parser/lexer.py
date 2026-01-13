@@ -61,6 +61,7 @@ class PointyLexer(object):
             "INT",
             "FLOAT",
             "BOOLEAN",
+            "COMMA",
             # Operators
             "NULLCOALESCE",  # ??
             "EQ",  # ==
@@ -94,6 +95,7 @@ class PointyLexer(object):
     t_DOUBLE_COLON = r"::"
     t_LANGLE = r"<"
     t_RANGLE = r">"
+    t_COMMA = r","
     t_ignore_COMMENT = r"\#.*"
 
     def t_LE(self, t):
