@@ -155,3 +155,37 @@ class ExecutorNotFound(IndexError):
 
 class PointyNotExecutable(Exception):
     """Exception raised when a pointy script is not executable."""
+
+class RemoteExecutionError(Exception):
+    """Exception raised when a remote execution fails."""
+    pass
+
+
+class SSLConfigurationError(Exception):
+    """Raised when SSL/TLS configuration is invalid or incomplete."""
+    pass
+
+
+class CertificateVerificationError(Exception):
+    """Raised when certificate verification fails."""
+    pass
+
+
+class CertificateExpiredError(Exception):
+    """Raised when a certificate has expired or is about to expire."""
+    pass
+
+
+class HostnameVerificationError(Exception):
+    """Raised when hostname verification fails (potential MITM attack)."""
+    pass
+
+
+class HandshakeError(Exception):
+    """Raised when SSL/TLS handshake fails."""
+    pass
+
+
+class CertificatePinningError(Exception):
+    """Raised when certificate pinning validation fails."""
+    pass

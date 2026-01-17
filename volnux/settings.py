@@ -54,3 +54,39 @@ LOGGING_CONFIG = {
         },
     },
 }
+
+REMOTE_EVENT_TIMEOUT = None
+
+# Secret key for HMAC authentication (should be set in production)
+SECRET_KEY = None
+
+# SSL/TLS Configuration
+# These settings control secure communication for remote executors and managers.
+# Certificate paths can also be set via environment variables:
+#   VOLNUX_SSL_CERT_PATH, VOLNUX_SSL_KEY_PATH, VOLNUX_SSL_CA_CERT_PATH, etc.
+SSL_CONFIG = {
+    # Certificate paths (None means not configured)
+    "CERT_PATH": None,           # Path to client/server certificate (PEM format)
+    "KEY_PATH": None,            # Path to private key (PEM format)
+    "KEY_PASSWORD": None,        # Password for encrypted private keys
+    "CA_CERT_PATH": None,        # Path to CA certificate bundle for verification
+
+    # TLS version settings
+    "MIN_TLS_VERSION": "TLSv1_2",  # Minimum TLS version (TLSv1_2 or TLSv1_3)
+    "MAX_TLS_VERSION": "TLSv1_3",  # Maximum TLS version
+
+    # Verification settings
+    "VERIFY_HOSTNAME": True,       # Enable hostname verification (MITM protection)
+    "VERIFY_CERTIFICATES": True,   # Enable certificate verification
+    "ALLOW_SELF_SIGNED": False,    # Allow self-signed certs (INSECURE, dev only)
+
+    # Mutual TLS (mTLS) settings
+    "REQUIRE_CLIENT_CERT": False,  # Require client certificates (for servers)
+
+    # Advanced security settings
+    "CIPHER_SUITES": None,         # Custom cipher string (None = secure defaults)
+    "PINNED_CERTIFICATES": [],     # List of SHA-256 fingerprints for pinning
+
+    # Certificate monitoring
+    "EXPIRATION_WARNING_DAYS": 30,  # Days before expiry to warn
+}
