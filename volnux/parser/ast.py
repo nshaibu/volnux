@@ -91,6 +91,8 @@ class ASTNode(ABC):
     def accept(self, visitor: "ASTVisitor"):
         pass
 
+class ExpressionNode(ASTNode, ABC):
+    pass
 
 @dataclass
 class ProgramNode(ASTNode):
@@ -124,15 +126,23 @@ class BlockNode(ASTNode):
 
 
 @dataclass
-class BinOpNode(ASTNode):
+class BinOpNode(ExpressionNode):
     __slots__ = ("left", "right", "op")
-    left: ASTNode
+    left: ExpressionNode
     op: str
-    right: ASTNode
+    right: ExpressionNode
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_binop(self)
 
+@dataclass
+class UnaryOpNode(ExpressionNode):
+    __slots__ = ("op", "right")
+    op: str
+    right: ExpressionNode
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_unaryop(self)
 
 @dataclass
 class DirectiveNode(ASTNode):
@@ -144,7 +154,7 @@ class DirectiveNode(ASTNode):
 
 
 @dataclass
-class VariableAccessNode(ASTNode):
+class VariableAccessNode(ExpressionNode):
     __slots__ = ("name", "value")
     name: str
     value: "LiteralNode"
@@ -245,7 +255,7 @@ class DescriptorNode(ASTNode):
 
 
 @dataclass
-class LiteralNode(ASTNode):
+class LiteralNode(ExpressionNode):
     __slots__ = ("value",)
     value: typing.Any
     type: typing.Optional[LiteralType] = None
