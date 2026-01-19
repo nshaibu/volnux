@@ -28,6 +28,8 @@ from .ast import (
     TernaryExprNode,
     ComparisonExprNode,
     NullCoalesceExprNode,
+    UnaryOpNode,
+    ExpressionNode,
 )
 from .parser_mode import ParserMode
 from .dag_visitor import CycleDetectionVisitor, DAGValidationError, format_cycle_error
@@ -50,6 +52,7 @@ precedence = (
     ('left', 'BITWISE_AND'),
     ("nonassoc", "EQ", "NE"),  # == !=
     ('nonassoc', 'LANGLE', 'LE', 'RANGLE', 'GE'),              # relational operators
+    ('nonassoc', 'LANGLE', 'LE', 'RANGLE', 'GE'),                  # relational operators
     ('left', 'LSHL', 'LSHR', 'ASHR'),                              # shift operators
     ('left', 'PLUS', 'MINUS'),                                     # additive operators
     ('left', 'MULT', 'DIV', 'MOD'),                                # multiplicative operators

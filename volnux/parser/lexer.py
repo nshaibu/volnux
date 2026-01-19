@@ -73,11 +73,13 @@ class PointyLexer(object):
             "RBRACKET",
             "LCURLY_BRACKET",
             "RCURLY_BRACKET",
+
             # Type
             "STRING_LITERAL",
             "INT",
             "FLOAT",
             "BOOLEAN",
+
             # Operators
             "NULLCOALESCE",  # ??
             "EQ",  # ==
