@@ -138,6 +138,8 @@ If you don't specify an executor, events use the DefaultExecutor which runs task
 
 .. code-block:: python
 
+    from nexus import EventBase
+
     class SimpleEvent(EventBase):
         # Uses DefaultExecutor (sequential execution)
         def process(self, data):
@@ -151,6 +153,7 @@ For concurrent execution using threads:
 .. code-block:: python
 
     from concurrent.futures import ThreadPoolExecutor
+    from nexus import EventBase
 
     class ConcurrentEvent(EventBase):
         executor = ThreadPoolExecutor  # Run in thread pool
@@ -168,6 +171,7 @@ For CPU-intensive tasks using separate processes:
 .. code-block:: python
 
     from concurrent.futures import ProcessPoolExecutor
+    from nexus import EventBase
 
     class CPUIntensiveEvent(EventBase):
         executor = ProcessPoolExecutor  # Run in separate processes
@@ -217,6 +221,9 @@ Alternatively, you can provide configuration as a dictionary:
 
 .. code-block:: python
 
+    from nexus import EventBase
+    from concurrent.futures import ThreadPoolExecutor
+
     class ConfiguredEvent(EventBase):
         executor = ThreadPoolExecutor
 
@@ -243,9 +250,11 @@ The ``@event`` decorator allows you to also configure the executor for the event
     # Define a function-based event with configuration
     @event(
         executor=ThreadPoolExecutor,               # Define the executor to use
-        max_workers=4,                             # Specify max workers
-        max_tasks_per_child=10,                    # Limit tasks per worker
-        thread_name_prefix="my_event_executor",    # Prefix for thread names
+        executor_config={
+            "max_workers": 4,                             # Specify max workers
+            "max_tasks_per_child": 10,                    # Limit tasks per worker
+            "thread_name_prefix": "my_event_executor",    # Prefix for thread names
+        }
     )
     def my_event(*args, **kwargs):
         # Event processing logic here
@@ -281,7 +290,7 @@ Here's an example of how to use the ``ExecutorInitializerConfig`` class:
 .. code-block:: python
 
     from nexus import ExecutorInitializerConfig, EventBase
-    from nexus.executors import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor
 
     # Configuring an executor with specific settings
     config = ExecutorInitializerConfig(
@@ -303,6 +312,9 @@ Here's an example of how to use the ``ExecutorInitializerConfig`` class:
 Alternatively, you can provide configuration as a dictionary:
 
 .. code-block:: python
+
+    from nexus import EventBase
+    from concurrent.futures import ThreadPoolExecutor
 
     class MyEvent(EventBase):
         executor = ThreadPoolExecutor
@@ -330,6 +342,8 @@ If no fields are specified or left as ``EMPTY``, the executor will use the follo
 For example:
 
 .. code-block:: python
+
+    from nexus import ExecutorInitializerConfig
 
     config = ExecutorInitializerConfig()  # Default configuration
 ..
@@ -363,15 +377,22 @@ The ``event`` decorator allows you to configure the executor for the event's exe
 .. code-block:: python
 
     from nexus.decorators import event
-    from nexus.executors import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor
+    from requests.exceptions import ConnectionError
 
     # Define a function-based event with configuration
     @event(
-        executor=ThreadPoolExecutor,               # Define the executor to use
-        max_workers=4,                             # Specify max workers
-        max_tasks_per_child=10,                    # Limit tasks per worker
-        thread_name_prefix="my_event_executor",    # Prefix for thread names
-        stop_on_exception=True                     # Stop execution on exception
+        executor=ThreadPoolExecutor,
+        executor_config={
+            "max_workers": 4,
+            "max_tasks_per_child": 10,
+            "thread_name_prefix": "my_event_executor",
+        },
+        retry_policy={
+            "max_attempts": 3,
+            "backoff_factor": 0.5,
+            "retry_on_exceptions": [ConnectionError]
+        }
     )
     def my_event(*args, **kwargs):
         # Event processing logic here
@@ -415,6 +436,10 @@ The ``RetryPolicy`` class has the following parameters:
 
 .. code-block:: python
 
+    from nexus import RetryPolicy
+    import typing
+    from dataclasses import dataclass
+
     @dataclass
     class RetryPolicy(object):
         max_attempts: int   # Maximum retry attempts
@@ -431,7 +456,7 @@ You can create an instance of ``RetryPolicy`` or define it as a dictionary:
 .. code-block:: python
 
     from nexus import EventBase
-    from requests.exceptions import ConnectionError, TimeoutError
+    from requests.exceptions import ConnectionError, Timeout
 
     class NetworkEvent(EventBase):
         # Retry on network errors
@@ -439,7 +464,7 @@ You can create an instance of ``RetryPolicy`` or define it as a dictionary:
             "max_attempts": 3,  # Try up to 3 times
             "backoff_factor": 1.0,  # Wait 1, 2, 4 seconds between retries
             "max_backoff": 10.0,  # Never wait more than 10 seconds
-            "retry_on_exceptions": [ConnectionError, TimeoutError]
+            "retry_on_exceptions": [ConnectionError, Timeout]
         }
         
         def process(self, url):
@@ -452,13 +477,13 @@ OR
 .. code-block:: python
 
     from nexus import EventBase, RetryPolicy
-    from requests.exceptions import ConnectionError, TimeoutError
+    from requests.exceptions import ConnectionError, Timeout
 
     _retry_policy = RetryPolicy(
         max_attempts=3,  # Try up to 3 times
         backoff_factor=1.0,  # Wait 1, 2, 4 seconds between retries
         max_backoff=10.0,  # Never wait more than 10 seconds
-        retry_on_exceptions=[ConnectionError, TimeoutError]
+        retry_on_exceptions=[ConnectionError, Timeout]
     )
 
     class NetworkEvent(EventBase):
@@ -547,39 +572,27 @@ The ``EventExecutionEvaluationState`` class defines the criteria for evaluating 
             return True, "obrafour"
 ..
 
-
 **Stopping Conditions**
 
 Events can control whether the pipeline should stop early after their execution.
 This is useful for cases where certain outcomes (such as success, error, or exception) should halt further event processing.
-
-The stop condition for an event is defined using the ``StopCondition`` enum, which can be imported from ``nexus.parser.options``.
+The stop condition for an event is defined using the `stop_on_exception`, `stop_on_success`, and `stop_on_error` boolean flags in the `EventBase` constructor.
 
 **Available stop conditions:**
 
-.. code-block:: python
-
-    class StopCondition(Enum):
-        """Defines when task execution should stop."""
-
-        NEVER = "never"               # The pipeline never stops early (default)
-        ON_ERROR = "on_error"         # Stop if the event fails
-        ON_SUCCESS = "on_success"     # Stop if the event succeeds
-        ON_EXCEPTION = "on_exception" # Stop if an exception occurs
-        ON_ANY = "on_any"             # Stop on either success, failure, or exception
-..
-
+- `stop_on_exception`: Stop if an exception occurs.
+- `stop_on_success`: Stop if the event succeeds.
+- `stop_on_error`: Stop if the event fails.
 
 **Example Usage**
 
 .. code-block:: python
 
     from nexus import EventBase
-    from nexus.parser.options import StopCondition
 
     class MyCustomEvent(EventBase):
-        # Stop the pipeline if this event encounters an error
-        stop_condition = StopCondition.ON_ERROR
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, stop_on_error=True, **kwargs)
 
         def process(self, *args, **kwargs):
             if kwargs.get("fail", False):
@@ -589,31 +602,33 @@ The stop condition for an event is defined using the ``StopCondition`` enum, whi
 
 In this example:
 
-    - If MyCustomEvent fails (process returns False), the pipeline will stop immediately.
-    - If it succeeds, the pipeline continues to the next event.
+- If `MyCustomEvent` fails (process returns `False`), the pipeline will stop immediately.
+- If it succeeds, the pipeline continues to the next event.
 
 
 **Task Transitions (Goto)**
 
-Jump to different tasks based on results.
+Jump to different tasks based on results. The `goto` method allows you to dynamically change the flow of your pipeline by jumping to a different task. This is useful for implementing conditional logic in your pipeline.
 
 **Example Usage**
 
 .. code-block:: python
 
+    from nexus import EventBase
+
     class ConditionalEvent(EventBase):
-    def process(self, data, *args, **kwargs):
-        if data.get('type') == 'premium':
-            # Jump to premium processing task (task ID 101)
-            self.goto(
-                descriptor=101,                 # The identifier of the next task to switch to.
-                result_status=True,             # Indicates if the current task succeeded or failed.
-                result=data,                    # The result data to pass to the next task.
-                reason="Premium user detected"  # Reason for the task switch. Defaults to "manual".
-            )
-        
-        # Normal processing for regular users
-        return True, self._process_regular_user(data)
+        def process(self, data, *args, **kwargs):
+            if data.get('type') == 'premium':
+                # Jump to premium processing task (task ID 101)
+                self.goto(
+                    descriptor=101,                 # The identifier of the next task to switch to.
+                    result_status=True,             # Indicates if the current task succeeded or failed.
+                    result=data,                    # The result data to pass to the next task.
+                    reason="Premium user detected"  # Reason for the task switch. Defaults to "manual".
+                )
+            
+            # Normal processing for regular users
+            return True, self._process_regular_user(data)
 ..
 
 
@@ -628,6 +643,8 @@ If bypass conditions are met, the event is skipped entirely, and processing cont
 **Example Usage**
 
 .. code-block:: python
+
+    from nexus import EventBase
 
     class UserValidationEvent(EventBase):
         def can_bypass_current_event(self):
@@ -708,6 +725,9 @@ Examples of real world application
 
 .. code-block:: python
 
+    from nexus import EventBase
+    from concurrent.futures import ProcessPoolExecutor
+
     class DataExtractionEvent(EventBase):
         def process(self, source):
             data = extract_from_source(source)
@@ -771,6 +791,8 @@ Best Practices
 **Keep Events Focused**
 
 .. code-block:: python
+
+    from nexus import EventBase
 
     # Good: Single responsibility
     class ValidateEmailEvent(EventBase):
