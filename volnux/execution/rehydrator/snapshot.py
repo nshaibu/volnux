@@ -69,7 +69,6 @@ class ContextSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
     status: str
     errors: typing.List[str]  # Serialized exception messages
     results: typing.List[dict]  # Serialized EventResult objects
-    # aggregated_result: typing.Optional[dict]
 
     # Metrics
     metrics: typing.Dict[str, typing.Any]
@@ -83,8 +82,6 @@ class ContextSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
 
     @classmethod
     def from_dict(cls, data: typing.Dict[str, typing.Any]) -> "ContextSnapshot":
-        """Reconstruct from dict"""
-        # Handle nested TraversalSnapshot
         data["traversal"] = TraversalSnapshot(**data["traversal"])
         return cls(**data)
 

@@ -6,6 +6,13 @@ import typing
 import weakref
 from collections import deque
 
+from .snapshot import ContextSnapshot
+
+if typing.TYPE_CHECKING:
+    from volnux.pipeline import Pipeline
+    from volnux.engine.base import WorkflowEngine
+    from volnux.execution.context import ExecutionContext
+
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +23,7 @@ class RehydrationManager:
 
     This implements the "Recursive Grafting" strategy:
     1. Reconstruct contexts in depth-order (parents before children)
-    2. Rebuild horizontal links (doubly-linked list)
+    2. Rebuild horizontal links (doubly linked list)
     3. Rebuild vertical links (tree structure)
     4. Reconnect engines to contexts
     5. Resume execution from checkpoints
@@ -32,7 +39,7 @@ class RehydrationManager:
     async def resume_workflow(
         self, workflow_id: str, engine_class: typing.Optional[typing.Type] = None
     ) -> typing.Optional[
-        typing.Tuple["ExecutionContext", "CheckpointedWorkflowEngine"]
+        typing.Tuple["ExecutionContext", "WorkflowEngine"]
     ]:
         """
         Main entry point: Reconstruct and resume a workflow.
@@ -115,7 +122,7 @@ class RehydrationManager:
 
         Note: Links (horizontal/vertical) are set separately.
         """
-        from volnux.execution_context import ExecutionContext
+        from volnux.execution.context import ExecutionContext
 
         # Reconstruct pipeline instance
         pipeline = self._reconstruct_pipeline(
@@ -199,7 +206,7 @@ class RehydrationManager:
         """
         Restore the ExecutionState from snapshot.
         """
-        from .state_manager import ExecutionState, ExecutionStatus
+        from volnux.execution.state_manager import ExecutionState, ExecutionStatus
 
         # Deserialize errors
         # Note: We can't reconstruct full Exception objects, so we store as strings
@@ -241,7 +248,7 @@ class RehydrationManager:
         self, snapshots: typing.List[ContextSnapshot]
     ) -> None:
         """
-        Reconstruct the doubly-linked list (previous_context <-> next_context).
+        Reconstruct the doubly linked list (previous_context <-> next_context).
         """
         for snapshot in snapshots:
             context = self._context_cache[snapshot.state_id]
@@ -356,7 +363,6 @@ class RehydrationManager:
 
         Sink nodes are deferred for execution after the main workflow.
         """
-        from collections import deque
 
         sink_queue = deque()
 
@@ -382,7 +388,7 @@ class RehydrationManager:
         This should be called periodically during execution.
         """
         for context in self._iterate_tree(root_context):
-            await context.persist(self.state_store)
+            await context.persist()
 
     def _iterate_tree(
         self, root: "ExecutionContext"

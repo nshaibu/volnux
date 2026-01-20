@@ -11,6 +11,7 @@ from volnux.exceptions import ObjectExistError, ObjectDoesNotExist, ImproperlyCo
 from volnux.import_utils import import_string
 from volnux.mixins.identity import ObjectIdentityMixin
 from volnux.utils import get_obj_klass_import_str
+from volnux.concurrency.async_utils import to_thread
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +209,12 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         except Exception as e:
             logger.error(f"Failed to save {self.__class__.__name__}:{self.id}: {e}")
             raise
+
+    async def save_async(
+            self, force_insert: bool = False, ttl: typing.Optional[int] = None
+    ) -> None:
+        """Save this object to the backend store."""
+        await to_thread(self.save, force_insert=force_insert, ttl=ttl)
 
     def update(self) -> None:
         """Update this object in the backend store.

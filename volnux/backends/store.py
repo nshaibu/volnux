@@ -259,11 +259,12 @@ class KeyValueStoreBackendBase(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def count(self, schema_name: str, **filter_kwargs: Any) -> int:
+    def count(self, schema_name: str, record_klass: Type["KeyValueStoreIntegrationMixin"], **filter_kwargs: Any) -> int:
         """Count records in a schema, optionally filtered.
 
         Args:
             schema_name: The schema/namespace to count within.
+            record_klass: The class to instantiate records with.
             **filter_kwargs: Optional attribute-value pairs to filter by.
 
         Returns:
@@ -271,22 +272,22 @@ class KeyValueStoreBackendBase(abc.ABC):
         """
         raise NotImplementedError
 
-    @staticmethod
-    @abc.abstractmethod
-    def load_record(
-        record_state: Dict[str, Any],
-        record_klass: Type["KeyValueStoreIntegrationMixin"],
-    ) -> "KeyValueStoreIntegrationMixin":
-        """Load a record from its serialized state.
-
-        Args:
-            record_state: The serialized record data.
-            record_klass: The class to instantiate the record with.
-
-        Returns:
-            The instantiated record object.
-        """
-        raise NotImplementedError
+    # @staticmethod
+    # @abc.abstractmethod
+    # def load_record(
+    #     record_state: Dict[str, Any],
+    #     record_klass: Type["KeyValueStoreIntegrationMixin"],
+    # ) -> "KeyValueStoreIntegrationMixin":
+    #     """Load a record from its serialized state.
+    #
+    #     Args:
+    #         record_state: The serialized record data.
+    #         record_klass: The class to instantiate the record with.
+    #
+    #     Returns:
+    #         The instantiated record object.
+    #     """
+    #     raise NotImplementedError
 
     @abc.abstractmethod
     def reload(

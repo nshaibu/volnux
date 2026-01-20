@@ -22,10 +22,8 @@ class AutoCheckpointer:
 
     def __init__(
         self,
-        state_store: PersistentStateStore,
         checkpoint_interval: float = 5.0,  # seconds
     ):
-        self.state_store = state_store
         self.checkpoint_interval = checkpoint_interval
         self._checkpoint_task: typing.Optional[asyncio.Task] = None
         self._contexts: typing.Set["ExecutionContext"] = set()
@@ -66,7 +64,7 @@ class AutoCheckpointer:
         """Checkpoint all registered contexts"""
         for context in list(self._contexts):
             try:
-                await context.persist(self.state_store)
+                await context.persist()
             except Exception as e:
                 logger.error(f"Failed to checkpoint {context.state_id}: {e}")
 
@@ -81,4 +79,4 @@ class AutoCheckpointer:
             event_name: Event that triggered the checkpoint
         """
         logger.debug(f"Checkpointing {context.state_id} on event: {event_name}")
-        await context.persist(self.state_store)
+        await context.persist()

@@ -23,11 +23,13 @@ from volnux.signal.signals import (
     event_execution_failed,
 )
 from volnux.task import PipelineTask, PipelineTaskGrouping
+from volnux.concurrency.async_utils import to_thread
 
 from .state_manager import ExecutionState, ExecutionStatus, StateManager
 
 if typing.TYPE_CHECKING:
     from volnux.engine.base import WorkflowEngine
+    from volnux.execution.rehydrator.snapshot import ContextSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +52,7 @@ def preformat_task_profile(
     ],
 ) -> typing.Deque[TaskType]:
     if isinstance(task_profiles, (PipelineTask, PipelineTaskGrouping)):
-        return deque([task_profiles])
+        return deque([task_profiles]) # type: ignore
     elif isinstance(task_profiles, (list, tuple)):
         return deque(task_profiles)
     elif isinstance(task_profiles, deque):
@@ -161,11 +163,11 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         Factory method to create a nested context (a branch in the tree).
         Ensures the parent remains 'alive' by holding a reference.
         """
+        # Child inherit the same StateManager but get a unique state_id
         child = ExecutionContext(
-            task_profiles=task_profiles,
-            pipeline=self.pipeline,
-            parent_context=self,  # Link Up
-            # Children inherit the same StateManager but get a unique state_id
+            task_profiles=task_profiles, # type: ignore
+            pipeline=self.pipeline, # type: ignore
+            parent_context=self,  # type: ignore
         )
         self.child_contexts.append(child)  # Link Down
         return child
@@ -186,7 +188,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         return current
 
     def get_depth(self) -> int:
-        """Calculates nesting level for directive validation (@recursive-depth)."""
+        """Calculates nesting level for directive validation."""
         depth = 0
         current = self
         while current.parent_context:
@@ -196,7 +198,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
     async def _evaluate_group_finality(self):
         """
-        Internal check: Is every child context in this sub-tree finished?
+        Internal check: Is every child context in this subtree finished?
         """
         all_done = True
         for child in self.child_contexts:
@@ -387,7 +389,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
     def __hash__(self) -> int:
         return hash(self.id)
 
-    def dispatch(
+    async def dispatch(
         self, timeout: typing.Optional[float] = None
     ) -> typing.Tuple[typing.Any, typing.Any]:
         """
@@ -405,7 +407,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         coordinator = ExecutionCoordinator(execution_context=self, timeout=timeout)
 
         try:
-            return coordinator.execute()
+            return await coordinator.execute_async()
         except Exception as e:
             logger.error(
                 f"{self.pipeline.__class__.__name__} : {str(self.task_profiles)} : {str(e)}"
@@ -543,19 +545,19 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         """Clean up shared memory resources"""
         self.get_state_manager().release_state(self.state_id)
 
-    def set_engine(self, engine: "DefaultIterativeEngine") -> None:
+    def set_engine(self, engine: "WorkflowEngine") -> None:
         """Associate this context with its execution engine"""
         self._engine_ref = weakref.ref(engine)
 
-    def get_engine(self) -> typing.Optional["DefaultIterativeEngine"]:
+    def get_engine(self) -> typing.Optional["WorkflowEngine"]:
         """Get the associated engine if still alive"""
         if self._engine_ref:
             return self._engine_ref()
         return None
 
-    def create_snapshot(self) -> "ContextSnapshot":
+    async def create_snapshot(self) -> "ContextSnapshot":
         """
-        Create a serializable snapshot of current state.
+        Create a serializable snapshot of the current state.
         This is the core method for persistence.
 
         This should be called by the engine at strategic checkpoints:
@@ -564,8 +566,10 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         - On status changes
         """
         from .state_manager import ExecutionStatus
+        from volnux.execution.rehydrator.snapshot import TraversalSnapshot, ContextSnapshot
+        from volnux.execution.rehydrator.serializer import StateSerializer
 
-        state = self.state
+        state = await self.state_async
 
         # Get the engine to capture its queue state
         engine = self.get_engine()
@@ -574,7 +578,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         current_task_info = (None, None, None)
 
         if engine:
-            # Capture current task being processed
+            # Capture the current task being processed
             # The engine should expose this via a getter
             current_task_info = self._extract_current_task_from_engine(engine)
 
@@ -585,8 +589,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
                 ]
 
             # Get task counter
-            if hasattr(engine, "_tasks_processed"):
-                tasks_processed = engine._tasks_processed
+            tasks_processed = engine.tasks_processed
 
         current_task_id, current_event_name, _ = current_task_info
 
@@ -613,11 +616,6 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         # Serialize errors and results
         errors = [StateSerializer.serialize_exception(e) for e in state.errors]
         results = [StateSerializer.serialize_result(r) for r in state.results]
-        aggregated = (
-            StateSerializer.serialize_result(state.aggregated_result)
-            if state.aggregated_result
-            else None
-        )
 
         snapshot = ContextSnapshot(
             state_id=self.state_id,
@@ -635,13 +633,12 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             status=state.status.value,
             errors=errors,
             results=results,
-            aggregated_result=aggregated,
             metrics={
                 "start_time": self.metrics.start_time,
                 "end_time": self.metrics.end_time,
                 "duration": self.metrics.duration,
             },
-            snapshot_timestamp=datetime.utcnow().timestamp(),
+            snapshot_timestamp=datetime.datetime.now().timestamp(),
         )
 
         return snapshot
@@ -661,9 +658,8 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         # We need to peek at what's currently being processed
 
         # If engine tracks the current task explicitly
-        if hasattr(engine, "_current_task_node"):
-            node = engine._current_task_node
-            if node and node.task:
+        node = engine.current_task_node
+        if node and node.task:
                 return (
                     getattr(node.task, "id", None),
                     node.task.event,
@@ -671,22 +667,22 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
                 )
 
         # Peek at the front of the queue
-        if hasattr(engine, "queue") and engine.queue:
-            node = engine.queue[0]  # Peek without removing
-            if node and node.task:
-                return (
-                    getattr(node.task, "id", None),
-                    node.task.event,
-                    self._task_checkpoint,
-                )
+        # if hasattr(engine, "queue") and engine.queue:
+        #     node = engine.queue[0]  # Peek without removing
+        #     if node and node.task:
+        #         return (
+        #             getattr(node.task, "id", None),
+        #             node.task.event,
+        #             self._task_checkpoint,
+        #         )
 
-        return (None, None, None)
+        return None, None, None
 
-    async def persist(self, store: "PersistentStateStore") -> None:
-        """Persist current state to Redis"""
-        snapshot = self.create_snapshot()
-        await store.save_snapshot(snapshot)
-        logger.debug(f"Persisted context {self.state_id} to Redis")
+    async def persist(self) -> None:
+        """Persist current state"""
+        snapshot = await self.create_snapshot()
+        await snapshot.save_async()
+        logger.debug(f"Persisted context {self.state_id}")
 
     def set_task_checkpoint(self, checkpoint_data: dict) -> None:
         """
