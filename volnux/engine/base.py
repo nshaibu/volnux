@@ -1,5 +1,6 @@
 import typing
 import logging
+from collections import deque
 from enum import Enum
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -57,11 +58,14 @@ class WorkflowEngine(ObjectIdentityMixin, ABC):
     ) -> None:
         ObjectIdentityMixin.__init__(self)
 
-        self._tasks_processed: int = 0
+        self.tasks_processed: int = 0
 
         # task queue
         self.queue: typing.Optional[typing.Deque[TaskNode]] = None
-        self._current_task_node: typing.Optional[TaskNode] = None
+        self.sink_queue: typing.Optional[typing.Deque[TaskNode]] = None
+        self.current_task_node: typing.Optional[TaskNode] = None
+
+        self.final_context: typing.Optional[ExecutionContext] = None
 
         # Auto checking
         self._checkpointer: typing.Optional[AutoCheckpointer] = None
@@ -129,7 +133,7 @@ class WorkflowEngine(ObjectIdentityMixin, ABC):
 
         # Create checkpoint
         if self._checkpoint_frequency == "per_task":
-            await context.persist(self._checkpointer.state_store)
+            await context.persist()
             logger.debug(f"Checkpointed before task: {task_node.task.event}")
 
     async def _checkpoint_after_task(self, context: "ExecutionContext", success: bool):
@@ -143,7 +147,7 @@ class WorkflowEngine(ObjectIdentityMixin, ABC):
         if not self._checkpointer:
             return
 
-        self._tasks_processed += 1
+        self.tasks_processed += 1
 
         # Clear current task
         self._current_task_node = None
@@ -153,4 +157,4 @@ class WorkflowEngine(ObjectIdentityMixin, ABC):
             CheckPointFrequency.PER_TASK,
             CheckPointFrequency.ON_STATE_CHANGE,
         ]:
-            await context.persist(self._checkpointer.state_store)
+            await context.persist()

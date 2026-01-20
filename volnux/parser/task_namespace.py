@@ -21,7 +21,7 @@ class TaskNamespace(Enum):
 
     @classmethod
     def is_valid(cls, namespace: str) -> bool:
-        """Check if namespace is valid"""
+        """Check if the namespace is valid"""
         return namespace.upper() in cls.__members__
 
 

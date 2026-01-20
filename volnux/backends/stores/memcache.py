@@ -1,6 +1,6 @@
 import logging
 import json
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, List, Optional, Type, Union, TYPE_CHECKING
 
 from pydantic_mini import BaseModel
 from pymemcache.exceptions import MemcacheError
@@ -8,6 +8,10 @@ from pymemcache.exceptions import MemcacheError
 from volnux.backends.connectors.memcache import MemcacheConnector
 from volnux.backends.store import KeyValueStoreBackendBase
 from volnux.exceptions import ObjectDoesNotExist, ObjectExistError, SerializationError
+
+if TYPE_CHECKING:
+    from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
+
 
 logger = logging.getLogger(__name__)
 
@@ -86,49 +90,6 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         parts.append(schema_name + self.INDEX_SUFFIX)
         return self.NAMESPACE_SEPARATOR.join(parts)
 
-    # def _serialize_record(self, record: BaseModel) -> bytes:
-    #     """Serialize a record to bytes.
-    #
-    #     Args:
-    #         record: The record to serialize.
-    #
-    #     Returns:
-    #         Serialized record as bytes.
-    #
-    #     Raises:
-    #         SerializationError: If serialization fails.
-    #     """
-    #     try:
-    #         state = record.__getstate__()
-    #         return pickle.dumps(state, protocol=self.PICKLE_PROTOCOL)
-    #     except Exception as e:
-    #         logger.error(f"Failed to serialize record: {e}")
-    #         raise SerializationError(f"Serialization failed: {e}")
-    #
-    # def _deserialize_record(
-    #     self, data: bytes, record_klass: Type[BaseModel]
-    # ) -> BaseModel:
-    #     """Deserialize bytes to a record object.
-    #
-    #     Args:
-    #         data: Serialized record data.
-    #         record_klass: The class to instantiate.
-    #
-    #     Returns:
-    #         Deserialized record instance.
-    #
-    #     Raises:
-    #         SerializationError: If deserialization fails.
-    #     """
-    #     try:
-    #         state = pickle.loads(data)
-    #         record = record_klass.__new__(record_klass)
-    #         record.__setstate__(state)
-    #         return record
-    #     except Exception as e:
-    #         logger.error(f"Failed to deserialize record: {e}")
-    #         raise SerializationError(f"Deserialization failed: {e}")
-
     def _get_schema_index(self, schema_name: str) -> set:
         """Get the set of record keys in a schema.
 
@@ -187,8 +148,6 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         except Exception as e:
             logger.warning(f"Failed to update schema index: {e}")
 
-    # Core CRUD Operations
-
     def exists(self, schema_name: str, record_key: str) -> bool:
         """Check if a record exists in the store.
 
@@ -212,7 +171,7 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         self,
         schema_name: str,
         record_key: str,
-        record: BaseModel,
+        record: "KeyValueStoreIntegrationMixin",
         ttl: Optional[int] = None,
     ) -> None:
         """Insert a new record into the store.
@@ -266,7 +225,7 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         self,
         schema_name: str,
         record_key: str,
-        record: BaseModel,
+        record: "KeyValueStoreIntegrationMixin",
         ttl: Optional[int] = None,
     ) -> None:
         """Update an existing record in the store.
@@ -317,7 +276,7 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         self,
         schema_name: str,
         record_key: str,
-        record: BaseModel,
+        record: "KeyValueStoreIntegrationMixin",
         ttl: Optional[int] = None,
     ) -> None:
         """Insert or update a record (upsert operation).
@@ -396,8 +355,8 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         self,
         schema_name: str,
         record_key: Union[str, int],
-        record_klass: Type[BaseModel],
-    ) -> Optional[BaseModel]:
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+    ) -> Optional["KeyValueStoreIntegrationMixin"]:
         """Retrieve a single record from the store.
 
         Args:
@@ -439,11 +398,9 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Memcache error during get: {e}")
             raise ConnectionError(f"Failed to get record: {e}")
 
-    # Query Operations
-
     def filter(
-        self, schema_name: str, record_klass: Type[BaseModel], **filter_kwargs: Any
-    ) -> List[BaseModel]:
+        self, schema_name: str, record_klass: Type["KeyValueStoreIntegrationMixin"], **filter_kwargs: Any
+    ) -> List["KeyValueStoreIntegrationMixin"]:
         """Filter records matching the specified criteria.
 
         Note: Filtering in Memcache requires fetching all records in the schema
@@ -538,31 +495,29 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         matching_records = self.filter(schema_name, BaseModel, **filter_kwargs)
         return len(matching_records)
 
-    # Record Lifecycle Operations
+    # @staticmethod
+    # def load_record(record_state: bytes, record_klass: Type["KeyValueStoreIntegrationMixin"]) -> "KeyValueStoreIntegrationMixin":
+    #     """Load a record from its serialized state.
+    #
+    #     Args:
+    #         record_state: The serialized record data.
+    #         record_klass: The class to instantiate the record with.
+    #
+    #     Returns:
+    #         The instantiated record object.
+    #
+    #     Raises:
+    #         SerializationError: If deserialization fails.
+    #     """
+    #     try:
+    #         state = json.loads(record_state)
+    #         record = record_klass.__new__(record_klass)
+    #         record.__setstate__(state)
+    #         return record
+    #     except Exception as e:
+    #         raise SerializationError(f"Failed to load record: {e}")
 
-    @staticmethod
-    def load_record(record_state: bytes, record_klass: Type[BaseModel]) -> BaseModel:
-        """Load a record from its serialized state.
-
-        Args:
-            record_state: The serialized record data.
-            record_klass: The class to instantiate the record with.
-
-        Returns:
-            The instantiated record object.
-
-        Raises:
-            SerializationError: If deserialization fails.
-        """
-        try:
-            state = pickle.loads(record_state)
-            record = record_klass.__new__(record_klass)
-            record.__setstate__(state)
-            return record
-        except Exception as e:
-            raise SerializationError(f"Failed to load record: {e}")
-
-    def reload(self, schema_name: str, record: BaseModel) -> BaseModel:
+    def reload(self, schema_name: str, record: "KeyValueStoreIntegrationMixin") -> "KeyValueStoreIntegrationMixin":
         """Reload a record's data from the backend.
 
         Args:
@@ -592,7 +547,7 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
                     f"Record '{record_key}' no longer exists in schema '{schema_name}'"
                 )
 
-            state = pickle.loads(serialized)
+            state = json.loads(serialized)
             record.__setstate__(state)
 
             logger.debug(f"Reloaded record '{record_key}' from schema '{schema_name}'")
@@ -606,10 +561,8 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Memcache error during reload: {e}")
             raise ConnectionError(f"Failed to reload record: {e}")
 
-    # Batch Operations
-
     def bulk_insert(
-        self, schema_name: str, records: Dict[str, BaseModel], ttl: Optional[int] = None
+        self, schema_name: str, records: Dict[str, "KeyValueStoreIntegrationMixin"], ttl: Optional[int] = None
     ) -> None:
         """Insert multiple records in a single operation.
 
@@ -675,7 +628,6 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         try:
             self._ensure_connected()
 
-            # Build full keys
             full_keys = [self._build_key(schema_name, key) for key in record_keys]
 
             # Bulk delete
@@ -694,8 +646,6 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Memcache error during bulk delete: {e}")
             raise ConnectionError(f"Failed to bulk delete records: {e}")
 
-    # Schema Management
-
     def clear_schema(self, schema_name: str) -> None:
         """Delete all records in a schema.
 
@@ -710,17 +660,13 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
             return
 
         try:
-            # Get all keys
             index = self._get_schema_index(schema_name)
-
             if not index:
                 logger.debug(f"Schema '{schema_name}' is already empty")
                 return
 
-            # Delete all records
             self.bulk_delete(schema_name, list(index))
 
-            # Clear the index
             index_key = self._build_index_key(schema_name)
             self.connector.cursor.delete(index_key)
 
@@ -731,8 +677,8 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
             raise ConnectionError(f"Failed to clear schema: {e}")
 
     def list_all(
-        self, schema_name: str, record_klass: Type[BaseModel]
-    ) -> List[BaseModel]:
+        self, schema_name: str, record_klass: Type["KeyValueStoreIntegrationMixin"]
+    ) -> List["KeyValueStoreIntegrationMixin"]:
         """List all records in a schema.
 
         Args:

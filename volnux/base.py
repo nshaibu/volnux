@@ -691,13 +691,13 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
                 res = self.on_failure(result)
         else:
             res = EventResult(
-                error=not result_success,
-                content=result,
-                task_id=self._task_id,
-                event_name=self.__class__.__name__,
-                call_params=self._call_args,
+                error=not result_success, # type: ignore
+                content=result, # type: ignore
+                task_id=self._task_id, # type: ignore
+                event_name=self.__class__.__name__, # type: ignore
+                call_params=self._call_args, # type: ignore
                 init_params=self._init_args,
-            )  # type: ignore
+            )
         raise SwitchTask(
             current_task_id=self._task_id,
             next_task_descriptor=descriptor,

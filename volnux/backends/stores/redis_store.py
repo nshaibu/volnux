@@ -1,12 +1,16 @@
+import json
 import logging
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, List, Optional, Type, Union, TYPE_CHECKING
 
-from pydantic_mini import BaseModel
 from redis.exceptions import RedisError
 
 from volnux.backends.connectors.redis import RedisConnector
 from volnux.backends.store import KeyValueStoreBackendBase
 from volnux.exceptions import ObjectDoesNotExist, ObjectExistError, SerializationError
+
+if TYPE_CHECKING:
+    from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
+
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,9 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
 
         Returns:
             True if the record exists, False otherwise.
+
+        Raises:
+            ConnectionError: If connection cannot be established.
         """
         try:
             self._ensure_connected()
@@ -75,7 +82,7 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
         self,
         schema_name: str,
         record_key: str,
-        record: BaseModel,
+        record: "KeyValueStoreIntegrationMixin",
         ttl: Optional[int] = None,
     ) -> None:
         """Insert a new record into the store.
@@ -114,7 +121,7 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Redis error during insert: {e}")
             raise ConnectionError(f"Failed to insert record: {e}")
 
-    def update(self, schema_name: str, record_key: str, record: BaseModel) -> None:
+    def update(self, schema_name: str, record_key: str, record: "KeyValueStoreIntegrationMixin") -> None:
         """Update an existing record in the store.
 
         Args:
@@ -136,7 +143,6 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             self._ensure_connected()
             serialized = self._serialize_record(record)
 
-            # Use pipeline for atomic operation
             with self.connector.get_pipeline(transaction=True) as pipe:
                 pipe.hset(schema_name, record_key, serialized)
                 pipe.execute()
@@ -180,8 +186,8 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
         self,
         schema_name: str,
         record_key: Union[str, int],
-        record_klass: Type[BaseModel],
-    ) -> Optional[BaseModel]:
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+    ) -> Optional["KeyValueStoreIntegrationMixin"]:
         """Retrieve a single record from the store.
 
         Args:
@@ -225,8 +231,8 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             raise ConnectionError(f"Failed to get record: {e}")
 
     def filter(
-        self, schema_name: str, record_klass: Type[BaseModel], **filter_kwargs: Any
-    ) -> List[BaseModel]:
+        self, schema_name: str, record_klass: Type["KeyValueStoreIntegrationMixin"], **filter_kwargs: Any
+    ) -> List["KeyValueStoreIntegrationMixin"]:
         """Filter records matching the specified criteria.
 
         Args:
@@ -244,7 +250,7 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             self._ensure_connected()
 
             predicate = self._create_filter_predicate(**filter_kwargs)
-            matching_records: List[BaseModel] = []
+            matching_records: List["KeyValueStoreIntegrationMixin"] = []
 
             # Use HSCAN for efficient iteration over large datasets
             cursor = 0
@@ -275,11 +281,12 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Redis error during filter: {e}")
             raise ConnectionError(f"Failed to filter records: {e}")
 
-    def count(self, schema_name: str, **filter_kwargs: Any) -> int:
+    def count(self, schema_name: str, record_klass: Type["KeyValueStoreIntegrationMixin"], **filter_kwargs: Any) -> int:
         """Count records in a schema, optionally filtered.
 
         Args:
             schema_name: The schema to count within.
+            record_klass: The class to instantiate records with.
             **filter_kwargs: Optional attribute-value pairs to filter by.
 
         Returns:
@@ -291,42 +298,38 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
         try:
             self._ensure_connected()
 
-            # If no filters, use efficient HLEN
             if not filter_kwargs:
                 return self.connector.cursor.hlen(schema_name)
 
-            # Otherwise, filter and count
-            matching_records = self.filter(schema_name, BaseModel, **filter_kwargs)
+            matching_records = self.filter(schema_name, record_klass, **filter_kwargs)
             return len(matching_records)
         except RedisError as e:
             logger.error(f"Redis error during count: {e}")
             raise ConnectionError(f"Failed to count records: {e}")
 
-    # Record Lifecycle Operations
+    # @staticmethod
+    # def load_record(record_state: bytes, record_klass: Type[BaseModel]) -> BaseModel:
+    #     """Load a record from its serialized state.
+    #
+    #     Args:
+    #         record_state: The serialized record data.
+    #         record_klass: The class to instantiate the record with.
+    #
+    #     Returns:
+    #         The instantiated record object.
+    #
+    #     Raises:
+    #         SerializationError: If deserialization fails.
+    #     """
+    #     try:
+    #         state = pickle.loads(record_state)
+    #         record = record_klass.__new__(record_klass)
+    #         record.__setstate__(state)
+    #         return record
+    #     except Exception as e:
+    #         raise SerializationError(f"Failed to load record: {e}")
 
-    @staticmethod
-    def load_record(record_state: bytes, record_klass: Type[BaseModel]) -> BaseModel:
-        """Load a record from its serialized state.
-
-        Args:
-            record_state: The serialized record data.
-            record_klass: The class to instantiate the record with.
-
-        Returns:
-            The instantiated record object.
-
-        Raises:
-            SerializationError: If deserialization fails.
-        """
-        try:
-            state = pickle.loads(record_state)
-            record = record_klass.__new__(record_klass)
-            record.__setstate__(state)
-            return record
-        except Exception as e:
-            raise SerializationError(f"Failed to load record: {e}")
-
-    def reload(self, schema_name: str, record: BaseModel) -> BaseModel:
+    def reload(self, schema_name: str, record: "KeyValueStoreIntegrationMixin") -> "KeyValueStoreIntegrationMixin":
         """Reload a record's data from the backend.
 
         Args:
@@ -360,7 +363,7 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
                     f"Record '{record_key}' not found in schema '{schema_name}'"
                 )
 
-            state = pickle.loads(serialized)
+            state = json.loads(serialized)
             record.__setstate__(state)
 
             logger.debug(f"Reloaded record '{record_key}' from schema '{schema_name}'")
@@ -371,9 +374,7 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Redis error during reload: {e}")
             raise ConnectionError(f"Failed to reload record: {e}")
 
-    # Batch Operations
-
-    def bulk_insert(self, schema_name: str, records: Dict[str, BaseModel]) -> None:
+    def bulk_insert(self, schema_name: str, records: Dict[str, "KeyValueStoreIntegrationMixin"]) -> None:
         """Insert multiple records in a single operation.
 
         Args:
@@ -387,7 +388,6 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
         try:
             self._ensure_connected()
 
-            # Serialize all records first
             serialized_data = {}
             for key, record in records.items():
                 serialized_data[key] = self._serialize_record(record)
@@ -396,6 +396,7 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             with self.connector.get_pipeline(transaction=True) as pipe:
                 for key, data in serialized_data.items():
                     pipe.hset(schema_name, key, data)
+
                 pipe.execute()
 
             logger.info(
@@ -423,6 +424,7 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             with self.connector.get_pipeline(transaction=True) as pipe:
                 for key in record_keys:
                     pipe.hdel(schema_name, key)
+
                 pipe.execute()
 
             logger.info(
@@ -431,8 +433,6 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
         except RedisError as e:
             logger.error(f"Redis error during bulk delete: {e}")
             raise ConnectionError(f"Failed to bulk delete records: {e}")
-
-    # Schema Management
 
     def clear_schema(self, schema_name: str) -> None:
         """Delete all records in a schema.
@@ -462,7 +462,7 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
         """
         try:
             self._ensure_connected()
-            # Get all keys that are hashes
+
             all_keys = self.connector.cursor.keys("*")
 
             schemas = []
