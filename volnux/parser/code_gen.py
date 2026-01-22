@@ -251,6 +251,18 @@ class ExecutableASTGenerator(ASTVisitorInterface):
     def visit_meta_event(self, node: ast.MetaEventNode):
         pass
 
+    def visit_unaryop(self, node: "UnaryOpNode"):
+        pass
+
+    def visit_access_environment_variable(self, node: "EnvironmentVariableAccessNode"):
+        pass
+
+    def visit_list(self, node: "ListNode"):
+        pass
+
+    def visit_map(self, node: "MapNode"):
+        pass
+
     def generate(self) -> typing.Optional[TaskProtocol]:
         if self._current_task is None:
             return None
