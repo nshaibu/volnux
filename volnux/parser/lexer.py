@@ -73,20 +73,34 @@ class PointyLexer(object):
             "RBRACKET",
             "LCURLY_BRACKET",
             "RCURLY_BRACKET",
+
             # Type
             "STRING_LITERAL",
             "INT",
             "FLOAT",
             "BOOLEAN",
+
             # Operators
             "NULLCOALESCE",  # ??
             "EQ",  # ==
             "NE",  # !=
-            # "LT",  #
-            # "GT",  # >
             "LE",  # <=
             "GE",  # >=
             "QUESTION",  # ?
+            "PLUS",
+            "MINUS",
+            "MULT",
+            "DIV",
+            "MOD",
+            "LOGICAL_NOT",
+            "LOGICAL_AND",
+            "BITWISE_NOT",
+            "LSHL", # Logical shift left
+            "LSHR", # Logical shift right
+            "ASHR", # Arithmetic shift right
+            "BITWISE_AND",
+            "BITWISE_OR",
+            "BITWISE_XOR",
         )
         + builtin_event_token
         + builtins
@@ -112,6 +126,19 @@ class PointyLexer(object):
     t_DOUBLE_COLON = r"::"
     t_LANGLE = r"<"
     t_RANGLE = r">"
+    t_PLUS = r"\+"
+    t_MINUS = r"-"
+    t_DIV = r"/"
+    t_MOD = r"%"
+    t_LOGICAL_NOT = r"!"
+    t_LOGICAL_AND = r"&&"
+    t_BITWISE_AND = r"&"
+    t_BITWISE_OR = r"\|"
+    t_BITWISE_XOR = r"\^"
+    t_BITWISE_NOT = r"~"
+    t_LSHL = r"<<"
+    t_LSHR = r">>"
+    t_ASHR = r">>>"
     t_ignore_COMMENT = r"\#.*"
 
     def t_LE(self, t):
@@ -130,21 +157,13 @@ class PointyLexer(object):
         r"!="
         return t
 
-    # def t_LT(self, t):
-    #     r"<"
-    #     return t
-    #
-    # def t_GT(self, t):
-    #     r">"
-    #     return t
-
     def t_FLOAT(self, t):
-        r"[+-]?([0-9]+\.[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?"
+        r"([0-9]+\.[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?"
         t.value = float(t.value)
         return t
 
     def t_INT(self, t):
-        r"[+-]?[0-9]+"
+        r"[0-9]+"
         t.value = int(t.value)
         return t
 

@@ -3,6 +3,14 @@ Created by PLY version 3.11 (http://www.dabeaz.com/ply)
 Unused terminals:
 
     COMMENT
+    EQ
+    GE
+    GT
+    LE
+    LT
+    NE
+    NULLCOALESCE
+    QUESTION
     DEFAULT_EXECUTOR
     GRPC_EXECUTOR
     PROCESSPOOL_EXECUTOR
@@ -90,6 +98,29 @@ ASSIGN               : 41 66
 BOOLEAN              : 50
 COLON                : 17 40
 COMMENT              : 
+DOT                  : 41
+DOUBLE_COLON         : 23 47
+EQ                   : 
+FANOUT               : 29
+FILTER               : 25
+FLATMAP              : 28
+FLOAT                : 36 44 55
+FOREACH              : 27
+GE                   : 
+GT                   : 
+IDENTIFIER           : 22 23 23 41 47 48 49 53 54 55 56 57
+INT                  : 35 42 43 54
+LANGLE               : 22 23
+LBRACKET             : 21 49 62
+LCURLY_BRACKET       : 61 62
+LE                   : 
+LPAREN               : 52
+LT                   : 
+MAP                  : 24
+NE                   : 
+NULL                 : 39
+NULLCOALESCE         : 
+=======
 DEFAULT_EXECUTOR     : 
 DOT                  : 54
 DOUBLE_COLON         : 33 60

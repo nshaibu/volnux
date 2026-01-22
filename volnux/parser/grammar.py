@@ -23,6 +23,13 @@ from .ast import (
     MetaEventNode,
     ListNode,
     MapNode,
+    UnaryOpNode,
+    ExpressionNode,
+    TernaryExprNode,
+    ComparisonExprNode,
+    NullCoalesceExprNode,
+    UnaryOpNode,
+    ExpressionNode,
     TernaryExprNode,
     ComparisonExprNode,
     NullCoalesceExprNode,
@@ -39,10 +46,21 @@ variables = {}
 
 precedence = (
     ("left", "RETRY", "POINTER", "PPOINTER", "PARALLEL"),
+
     ("right", "TERNARY"),
     ("left", "NULLCOALESCE"),  # ??
-    ("left", "EQ", "NE"),  # == !=
-    ("left", "LANGLE", "RANGLE", "LE", "GE"),
+    ('left', 'LOGICAL_AND'),
+    ('left', 'BITWISE_OR'),
+    ('left', 'BITWISE_XOR'),
+    ('left', 'BITWISE_AND'),
+    ("nonassoc", "EQ", "NE"),  # == !=
+    ('nonassoc', 'LANGLE', 'LE', 'RANGLE', 'GE'),              # relational operators
+    ('nonassoc', 'LANGLE', 'LE', 'RANGLE', 'GE'),                  # relational operators
+    ('left', 'LSHL', 'LSHR', 'ASHR'),                              # shift operators
+    ('left', 'PLUS', 'MINUS'),                                     # additive operators
+    ('left', 'MULT', 'DIV', 'MOD'),                                # multiplicative operators
+    ('right', 'UMINUS', 'UPLUS', 'LOGICAL_NOT', 'BITWISE_NOT'),    # Unary operators
+    ('left', 'LPAREN'),
 )
 
 
@@ -235,6 +253,7 @@ def p_value(p):
             | variable_reference
             | list
             | map
+            | arithmetic_expression
             | null_value
             | comparison_expression
             | ternary_expression
@@ -242,11 +261,13 @@ def p_value(p):
     """
     p[0] = p[1]
 
+
 def p_map(p):
     """
     map : LCURLY_BRACKET map_entries RCURLY_BRACKET
     """
     p[0] = MapNode(p[2])
+
 
 def p_map_entries(p):
     """
@@ -262,17 +283,20 @@ def p_map_entries(p):
         p[1].update(p[3])
         p[0] = p[1]
 
+
 def p_map_entry(p):
     """
     map_entry : STRING_LITERAL COLON value
     """
     p[0] = {p[1]: p[3]}
 
+
 def p_list(p):
     """
     list : LBRACKET list_elements RBRACKET
     """
     p[0] = ListNode(p[2])
+
 
 def p_list_elements(p):
     """
@@ -295,6 +319,7 @@ def p_list_elements(p):
 def p_empty(p):
     'empty :'
     pass
+
 
 def p_scalar_value(p):
     """
@@ -454,6 +479,51 @@ def p_expression_groupings(p):
     else:
         p[0] = ExpressionGroupingNode([p[2]], options=p[5])
 
+def p_arithmetic_expression(p):
+    """
+    arithmetic_expression : arithmetic_expression PARALLEL arithmetic_expression
+                     | arithmetic_expression LOGICAL_AND arithmetic_expression
+                     | arithmetic_expression BITWISE_OR arithmetic_expression
+                     | arithmetic_expression BITWISE_XOR arithmetic_expression
+                     | arithmetic_expression BITWISE_AND arithmetic_expression
+                     | arithmetic_expression EQ arithmetic_expression
+                     | arithmetic_expression NE arithmetic_expression
+                     | arithmetic_expression LANGLE arithmetic_expression
+                     | arithmetic_expression LE arithmetic_expression
+                     | arithmetic_expression RANGLE arithmetic_expression
+                     | arithmetic_expression GE arithmetic_expression
+                     | arithmetic_expression LSHL arithmetic_expression
+                     | arithmetic_expression LSHR arithmetic_expression
+                     | arithmetic_expression ASHR arithmetic_expression
+                     | arithmetic_expression PLUS arithmetic_expression
+                     | arithmetic_expression MINUS arithmetic_expression
+                     | arithmetic_expression RETRY arithmetic_expression %prec MULT
+                     | arithmetic_expression DIV arithmetic_expression
+                     | arithmetic_expression MOD arithmetic_expression
+                     | LOGICAL_NOT arithmetic_expression
+                     | BITWISE_NOT arithmetic_expression
+                     | PLUS arithmetic_expression %prec UPLUS
+                     | MINUS arithmetic_expression %prec UMINUS
+                     | LPAREN arithmetic_expression RPAREN
+                     | arithmetic_factor
+    """
+    if len(p) == 4 and isinstance(p[1], ExpressionNode):
+        p[0] = BinOpNode(p[1], p[2], p[3])
+    elif len(p) == 3:
+        p[0] = UnaryOpNode(p[1], p[2])
+    elif len(p) == 2:
+        p[0] = p[1]
+    else:
+        p[0] = p[2]
+
+def p_arithmetic_factor(p):
+    """
+    arithmetic_factor : INT
+                      | FLOAT
+                      | variable_reference
+    """
+    factor = p[1]
+    p[0] = LiteralNode(factor, type=LiteralType.determine_literal_type(factor))
 
 def p_error(p):
     """

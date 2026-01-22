@@ -5,6 +5,7 @@ if typing.TYPE_CHECKING:
     from .ast import (
         AssignmentNode,
         BinOpNode,
+        UnaryOpNode,
         BlockNode,
         ConditionalNode,
         DescriptorNode,
@@ -147,6 +148,10 @@ class ASTVisitorInterface(ABC):
 
     @abstractmethod
     def visit_binop(self, node: "BinOpNode"):
+        pass
+
+    @abstractmethod
+    def visit_unaryop(self, node: "UnaryOpNode"):
         pass
 
     @abstractmethod
