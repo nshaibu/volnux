@@ -24,7 +24,9 @@ if typing.TYPE_CHECKING:
 
 class ASTVisitorInterface(ABC):
 
-    def _safe_index(self, target: typing.Any, index: typing.Any) -> typing.Optional[typing.Any]:
+    def _safe_index(
+        self, target: typing.Any, index: typing.Any
+    ) -> typing.Optional[typing.Any]:
         """
         Safely index into a collection, returning None on error.
 

@@ -1,8 +1,14 @@
 import typing
+import logging
 from dataclasses import dataclass, asdict
 from pydantic_mini import BaseModel
 
 from volnux import __version__ as volnux_version
+from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
+
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class TraversalSnapshot:
@@ -33,8 +39,7 @@ class TraversalSnapshot:
     is_multitask_context: bool  # Was this a parallel execution group?
 
 
-@dataclass
-class ContextSnapshot(BaseModel):
+class ContextSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
     """
     Serializable snapshot of ExecutionContext state.
     This is the canonical data structure for rehydration.
@@ -73,12 +78,21 @@ class ContextSnapshot(BaseModel):
     snapshot_timestamp: float
     snapshot_version: str = volnux_version
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> typing.Dict[str, typing.Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ContextSnapshot":
+    def from_dict(cls, data: typing.Dict[str, typing.Any]) -> "ContextSnapshot":
         """Reconstruct from dict"""
         # Handle nested TraversalSnapshot
         data["traversal"] = TraversalSnapshot(**data["traversal"])
         return cls(**data)
+
+    def set_state(self, state: typing.Dict[str, typing.Any]) -> None:
+        self.from_dict(state)
+
+    def get_state(self) -> typing.Dict[str, typing.Any]:
+        state = self.__dict__.copy()
+        traversal_state = state["traversal"].__dict__.copy()
+        state["traversal"] = traversal_state
+        return state

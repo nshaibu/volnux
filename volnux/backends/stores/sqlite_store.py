@@ -12,11 +12,10 @@ from volnux.exceptions import (
     ObjectDoesNotExist,
     ObjectExistError,
     SqlOperationError,
-    SerializationError
+    SerializationError,
 )
 
 logger = logging.getLogger(__name__)
-
 
 
 class SqliteStoreBackend(KeyValueStoreBackendBase):

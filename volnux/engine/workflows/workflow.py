@@ -1,5 +1,5 @@
 """
-Workflow Configuration System - Pure Registry Pattern
+Workflow Configuration System
 
 WorkflowConfig is ONLY for infrastructure/registry configuration (like Django's AppConfig).
 User business logic (steps, pipelines, events) lives in workflow files.

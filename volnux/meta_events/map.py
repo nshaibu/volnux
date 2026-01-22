@@ -41,7 +41,6 @@ class MapEvent(ControlFlowEvent):
        - batch_size: Number of items to process per batch (default: 1)
        - concurrent: Execute tasks in parallel (default: True)
        - concurrency_mode: Mode of concurrent execution (thread, process)
-       - max_workers: Maximum number of concurrent executions (thread, process)
        - max_workers: Maximum parallel executions (default: 4)
        - partial_success: Continue if some tasks fail (default: False)
        - skip_errors: Skip failed items in output (default: False)

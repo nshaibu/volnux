@@ -26,6 +26,9 @@ from volnux.task import PipelineTask, PipelineTaskGrouping
 
 from .state_manager import ExecutionState, ExecutionStatus, StateManager
 
+if typing.TYPE_CHECKING:
+    from volnux.engine.base import WorkflowEngine
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,7 +67,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
     executing an event, such as the task being processed and the pipeline
     it belongs to.
 
-    Individual events executing concurrently must acquire the "conditional_variable"
+    Individual events executed concurrently must acquire the "conditional_variable"
     before they can make any changes to the execution context. This ensures that only one
     event can modify the context at a time, preventing race conditions and ensuring thread safety.
 
@@ -550,7 +553,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             return self._engine_ref()
         return None
 
-    def create_snapshot(self) -> ContextSnapshot:
+    def create_snapshot(self) -> "ContextSnapshot":
         """
         Create a serializable snapshot of current state.
         This is the core method for persistence.
@@ -644,7 +647,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         return snapshot
 
     def _extract_current_task_from_engine(
-        self, engine: "DefaultIterativeEngine"
+        self, engine: "WorkflowEngine"
     ) -> typing.Tuple[
         typing.Optional[str], typing.Optional[str], typing.Optional[dict]
     ]:
@@ -679,7 +682,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
         return (None, None, None)
 
-    async def persist(self, store: PersistentStateStore) -> None:
+    async def persist(self, store: "PersistentStateStore") -> None:
         """Persist current state to Redis"""
         snapshot = self.create_snapshot()
         await store.save_snapshot(snapshot)
