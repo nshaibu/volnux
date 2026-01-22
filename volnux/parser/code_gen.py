@@ -197,8 +197,8 @@ class ExecutableASTGenerator(ASTVisitorInterface):
         """Visit individual directive node"""
         return self._visit_node(node.value)
 
-    def visit_variable_access(self, node: ast.VariableAccessNode):
-        return self._visit_node(node.value)
+    # def visit_variable_access(self, node: ast.VariableAccessNode):
+    #     return self._visit_node(node.value)
 
     def visit_conditional(self, node: ast.ConditionalNode):
         parent = self.visit_task(node.task)
@@ -251,16 +251,16 @@ class ExecutableASTGenerator(ASTVisitorInterface):
     def visit_meta_event(self, node: ast.MetaEventNode):
         pass
 
-    def visit_unaryop(self, node: "UnaryOpNode"):
+    def visit_unaryop(self, node: ast.UnaryOpNode):
         pass
 
-    def visit_access_environment_variable(self, node: "EnvironmentVariableAccessNode"):
+    def visit_access_environment_variable(self, node: ast.EnvironmentVariableAccessNode):
         pass
 
-    def visit_list(self, node: "ListNode"):
+    def visit_list(self, node: ast.ListNode):
         pass
 
-    def visit_map(self, node: "MapNode"):
+    def visit_map(self, node: ast.MapNode):
         pass
 
     def generate(self) -> typing.Optional[TaskProtocol]:
