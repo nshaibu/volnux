@@ -30,6 +30,9 @@ from .ast import (
     NullCoalesceExprNode,
     UnaryOpNode,
     ExpressionNode,
+    TernaryExprNode,
+    ComparisonExprNode,
+    NullCoalesceExprNode,
 )
 from .parser_mode import ParserMode
 from .dag_visitor import CycleDetectionVisitor, DAGValidationError, format_cycle_error
