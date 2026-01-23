@@ -2,38 +2,112 @@ import logging
 
 from ply.lex import lex
 
-from volnux.utils import _extend_recursion_depth
-
 logger = logging.getLogger(__name__)
 
 
 class PointyLexer(object):
-    directives = ("recursive-depth",)
+    directives = ("recursive-depth", "mode")
 
-    reserved = {"true": "BOOLEAN", "false": "BOOLEAN"}
+    reserved = {
+        "true": "BOOLEAN",
+        "false": "BOOLEAN",
+        "RETRY": "RETRY",
+        # Meta event
+        "MAP": "MAP",
+        "FILTER": "FILTER",
+        "REDUCE": "REDUCE",
+        "FOREACH": "FOREACH",
+        "FLATMAP": "FLATMAP",
+        "FANOUT": "FANOUT",
+        # Other
+        "env": "env",
+        "null": "NULL",
+        # Executor
+        "THREADPOOL_EXECUTOR": "EXECUTOR",
+        "PROCESSPOOL_EXECUTOR": "EXECUTOR",
+        "DEFAULT_EXECUTOR": "EXECUTOR",
+        "GRPC_EXECUTOR": "EXECUTOR",
+        "TCP_EXECUTOR": "EXECUTOR",
+    }
 
-    tokens = (
-        "SEPARATOR",
-        "POINTER",
-        "PPOINTER",
-        "PARALLEL",
-        "RETRY",
-        "ASSIGN",
-        "IDENTIFIER",
-        "COMMENT",
-        "LPAREN",
-        "RPAREN",
-        "LBRACKET",
-        "RBRACKET",
-        "LCURLY_BRACKET",
-        "RCURLY_BRACKET",
-        "DIRECTIVE",
-        "STRING_LITERAL",
-        "INT",
-        "FLOAT",
-        "BOOLEAN",
+    builtin_event_token = (
+        # Meta events
+        "MAP",
+        "FILTER",
+        "REDUCE",
+        "FOREACH",
+        "FLATMAP",
+        "FANOUT",
     )
 
+    builtin_executors_token = (
+        "THREADPOOL_EXECUTOR",
+        "PROCESSPOOL_EXECUTOR",
+        "DEFAULT_EXECUTOR",
+        "GRPC_EXECUTOR",
+        "TCP_EXECUTOR",
+    )
+
+    builtins = ("NULL",)
+
+    tokens = (
+        (
+            "LANGLE",  # < will be used for comparison as well
+            "RANGLE",  # > will be used for comparison
+            "SEPARATOR",
+            "COLON",
+            "DOT",
+            "DOUBLE_COLON",
+            "POINTER",
+            "PPOINTER",
+            "PARALLEL",
+            "RETRY",
+            "ASSIGN",
+            "IDENTIFIER",
+            "VAR_DECL",  # @ prefix for declaration
+            "VAR_ACCESS",  # $ prefix for variable value access
+            "COMMENT",
+            "LPAREN",
+            "RPAREN",
+            "LBRACKET",
+            "RBRACKET",
+            "LCURLY_BRACKET",
+            "RCURLY_BRACKET",
+
+            # Type
+            "STRING_LITERAL",
+            "INT",
+            "FLOAT",
+            "BOOLEAN",
+
+            # Operators
+            "NULLCOALESCE",  # ??
+            "EQ",  # ==
+            "NE",  # !=
+            "LE",  # <=
+            "GE",  # >=
+            "QUESTION",  # ?
+            "PLUS",
+            "MINUS",
+            "MULT",
+            "DIV",
+            "MOD",
+            "LOGICAL_NOT",
+            "LOGICAL_AND",
+            "BITWISE_NOT",
+            "LSHL", # Logical shift left
+            "LSHR", # Logical shift right
+            "ASHR", # Arithmetic shift right
+            "BITWISE_AND",
+            "BITWISE_OR",
+            "BITWISE_XOR",
+        )
+        + builtin_event_token
+        + builtins
+        + builtin_executors_token
+    )
+
+    t_QUESTION = r"\?"
     t_ignore = " \t"
     t_LPAREN = r"\("
     t_RPAREN = r"\)"
@@ -41,22 +115,55 @@ class PointyLexer(object):
     t_RBRACKET = r"\]"
     t_LCURLY_BRACKET = r"\{"
     t_RCURLY_BRACKET = r"\}"
-    t_IDENTIFIER = r"[a-zA-Z_][a-zA-Z0-9_]*"
     t_POINTER = r"\-\>"
     t_PPOINTER = r"\|\-\>"
     t_RETRY = r"\*"
     t_PARALLEL = r"\|\|"
     t_ASSIGN = r"\="
     t_SEPARATOR = r","
+    t_DOT = r"\."
+    t_COLON = r":"
+    t_DOUBLE_COLON = r"::"
+    t_LANGLE = r"<"
+    t_RANGLE = r">"
+    t_PLUS = r"\+"
+    t_MINUS = r"-"
+    t_DIV = r"/"
+    t_MOD = r"%"
+    t_LOGICAL_NOT = r"!"
+    t_LOGICAL_AND = r"&&"
+    t_BITWISE_AND = r"&"
+    t_BITWISE_OR = r"\|"
+    t_BITWISE_XOR = r"\^"
+    t_BITWISE_NOT = r"~"
+    t_LSHL = r"<<"
+    t_LSHR = r">>"
+    t_ASHR = r">>>"
     t_ignore_COMMENT = r"\#.*"
 
+    def t_LE(self, t):
+        r"<="
+        return t
+
+    def t_GE(self, t):
+        r">="
+        return t
+
+    def t_EQ(self, t):
+        r"=="
+        return t
+
+    def t_NE(self, t):
+        r"!="
+        return t
+
     def t_FLOAT(self, t):
-        r"[+-]?([0-9]+\.[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?"
+        r"([0-9]+\.[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?"
         t.value = float(t.value)
         return t
 
     def t_INT(self, t):
-        r"[+-]?[0-9]+"
+        r"[0-9]+"
         t.value = int(t.value)
         return t
 
@@ -72,20 +179,27 @@ class PointyLexer(object):
         t.value = t.value == "true"
         return t
 
-    def t_DIRECTIVE(self, t):
-        r"\@[a-zA-Z0-9-]+:{1}[a-zA-Z0-9]+"
-        from volnux.utils import _extend_recursion_depth
+    def t_VAR_DECL(self, t):
+        r"@[a-zA-Z_*][a-zA-Z0-9_*]*"
+        t.value = t.value[1:]  # Remove @ prefix
+        return t
 
-        value = str(t.value).lstrip("@")
-        directive, value = value.split(":")
-        if directive in self.directives:
-            if value.isnumeric():
-                if directive == "recursive-depth":
-                    limit = int(value)
-                    ret = _extend_recursion_depth(limit)
-                    if isinstance(ret, Exception):
-                        logger.warning(str(ret))
-        t.lexer.skip(1)
+    def t_VAR_ACCESS(self, t):
+        r"\$[a-zA-Z_*][a-zA-Z0-9_*]*"
+        t.value = t.value[1:]  # Remove $ prefix
+        return t
+
+    def t_IDENTIFIER(self, t):
+        r"[a-zA-Z_][a-zA-Z0-9_]*"
+        # Check for reserved keywords
+        t.type = self.reserved.get(t.value, "IDENTIFIER")  # type: ignore
+        if t.type == "BOOLEAN":
+            t.value = t.value == "true"
+        return t
+
+    def t_NULLCOALESCE(self, t):
+        r"\?\?"
+        return t
 
     def t_newline(self, t):
         r"\n+"

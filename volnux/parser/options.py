@@ -188,3 +188,6 @@ class Options(BaseModel):
             True if the field is configured, False otherwise
         """
         return getattr(self, field_name, None) is not None
+
+    def to_dict(self):
+        return dataclasses.asdict(self)

@@ -5,9 +5,8 @@ from pathlib import Path
 
 from volnux import Event
 from volnux.base import EventType
-from volnux.exceptions import PointyNotExecutable
 from volnux.import_utils import load_module_from_path
-from .utils import get_workflow_config_name
+from .utils import initialize_and_register_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +38,7 @@ class LoadFromLocal(Event):
                     and issubclass(attr, WorkflowConfig)
                     and attr != WorkflowConfig
                 ):
-                    # Instantiate the workflow config
-                    workflow_config = attr(workflow_path=workflow_dir)
-                    try:
-                        workflow_config.discover_workflow_submodules()
-                        workflow_config.is_executable = True
-                    except PointyNotExecutable:
-                        workflow_config.is_executable = False
-                    registry.register(workflow_config)
+                    initialize_and_register_workflow(attr, workflow_dir, registry)
                     logger.info(f"  ✓ Loaded local workflow: {workflow_file.name}")
                     loading_status = True
                     break

@@ -55,7 +55,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
     def get_name(self) -> str:
         return "DefaultIterativeEngine"
 
-    def execute(
+    async def execute(
         self,
         root_task: TaskType,
         pipeline: Pipeline,
@@ -72,7 +72,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         6. Evaluate execution state for early termination
         7. Handle dynamic task switching
         8. Evaluate conditionals and determine next task
-        9. Schedule next task in queue
+        9. Schedule the next task in queue
         10. Process deferred sink nodes
 
         Args:
@@ -90,19 +90,18 @@ class DefaultWorkflowEngine(WorkflowEngine):
             )
 
         # Work queue: (task, previous_context)
-        queue: typing.Deque[TaskNode] = deque()
-        queue.append(TaskNode(root_task, None))
+        self.queue: typing.Deque[TaskNode] = deque()
+        self.queue.append(TaskNode(root_task, None))
 
         # Deferred sink nodes
         sink_queue: typing.Deque[TaskType] = deque()
 
-        final_context: typing.Optional[ExecutionContext] = None
         tasks_processed = 0
         execution_error: typing.Optional[Exception] = None
 
         try:
-            while queue:
-                executable_node = queue.popleft()
+            while self.queue:
+                executable_node = self.queue.popleft()
                 tasks_processed += 1
 
                 if self.enable_debug_logging:
@@ -120,17 +119,19 @@ class DefaultWorkflowEngine(WorkflowEngine):
                         sink_queue=sink_queue,
                     )
 
-                    final_context = execution_context
+                    self.final_context = execution_context
 
-                    # Display task for execution
-                    execution_context.dispatch()
-                    execution_state = execution_context.state
+                    # Dispatch task profiles for execution
+                    await execution_context.dispatch()
+
+                    # Get execution state
+                    execution_state = await execution_context.state_async
 
                     if self._should_terminate(execution_state):
                         status = self._map_termination_status(execution_state.status)
                         return EngineResult(
                             status=status,
-                            final_context=final_context,
+                            final_context=self.final_context,
                             tasks_processed=tasks_processed,
                         )
 
@@ -139,7 +140,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
                         task=executable_node.task,
                         execution_state=execution_state,
                         previous_context=executable_node.previous_context,
-                        queue=queue,
+                        queue=self.queue,
                     )
                     if switched:
                         continue
@@ -151,7 +152,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
                     # Schedule next task
                     if next_task:
-                        queue.appendleft(TaskNode(next_task, execution_context))
+                        self.queue.appendleft(TaskNode(next_task, execution_context))
 
                 except Exception as e:
                     logger.error(
@@ -312,7 +313,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
             task: Current task
             execution_state: State with potential switch request
             previous_context: Context to reuse for switched task
-            queue: Work queue to prepend switched task
+            queue: Work queue to prepend a switched task
 
         Returns:
             True if switch occurred, False otherwise
@@ -334,7 +335,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
                 code="task-switching-failed",
             )
 
-        # Schedule switched task
+        # Schedule switched a task
         queue.appendleft(TaskNode(next_task, previous_context))
 
         if self.enable_debug_logging:
@@ -346,10 +347,10 @@ class DefaultWorkflowEngine(WorkflowEngine):
         self, task: TaskType, execution_context: ExecutionContext
     ) -> typing.Optional[TaskType]:
         """
-        Determine next task based on conditional or sequential flow.
+        Determine the next task based on conditional or sequential flow.
 
-        For conditional tasks, evaluates the condition and follows
-        success/failure branch. For normal tasks, follows success path.
+        For conditional tasks, evaluate the condition and follow
+        success/failure branch. For normal tasks, follow a success path.
 
         Args:
             task: Current task

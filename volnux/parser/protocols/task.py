@@ -3,7 +3,7 @@ import typing
 from .mixin import TaskProtocolMixin
 
 if typing.TYPE_CHECKING:
-    from event_pipeline.base import EventBase
+    from volnux.base import EventBase
 
 
 @typing.runtime_checkable

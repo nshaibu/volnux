@@ -8,6 +8,12 @@ class ImproperlyConfigured(Exception):
     pass
 
 
+class SerializationError(Exception):
+    """Raised when serialization or deserialization fails."""
+
+    pass
+
+
 class PipelineError(Exception):
     def __init__(
         self, message: str, code: typing.Any = None, params: typing.Any = None
@@ -155,3 +161,22 @@ class ExecutorNotFound(IndexError):
 
 class PointyNotExecutable(Exception):
     """Exception raised when a pointy script is not executable."""
+
+
+## Meta Event Errors
+class NestedMetaEventError(Exception):
+    """Raised when nested meta events are detected"""
+
+    pass
+
+
+class MetaEventConfigurationError(Exception):
+    """Raised when meta event is misconfigured"""
+
+    pass
+
+
+class MetaEventExecutionError(Exception):
+    """Raised when meta event execution fails"""
+
+    pass

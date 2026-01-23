@@ -179,42 +179,6 @@ class ExecutionCoordinator:
             await self.execution_context.failed_async()
             raise
 
-    def execute(self) -> Tuple[Any, Any]:
-        """
-        Execute the tasks based on the execution context.
-
-        Handles event loop management and ensures proper cleanup.
-
-        Returns:
-            Tuple of (results, errors) from task execution
-
-        Raises:
-            RuntimeError: If called from within an existing event loop
-            Exception: If execution fails
-        """
-        try:
-            # Check if we're already in an async context
-            try:
-                asyncio.get_running_loop()
-                # If we get here, there IS a running loop
-                raise RuntimeError(
-                    "execute() cannot be called from within an async context. "
-                    "Use execute_async() instead."
-                )
-            except RuntimeError as e:
-                # Check if this is our error or the "no running loop" error
-                if "async context" in str(e):
-                    raise
-                # Otherwise, no running loop exists - we can proceed
-
-            # Execute with asyncio.run() - handles loop creation and cleanup
-            return asyncio.run(self._execute_async())
-
-        except Exception as e:
-            logger.error(f"Execution coordinator failed: {e}", exc_info=True)
-            self.execution_context.update_status(ExecutionStatus.FAILED)
-            raise
-
     async def execute_async(self) -> Tuple[Any, Any]:
         """
         Execute tasks asynchronously when already in an async context.
@@ -223,6 +187,10 @@ class ExecutionCoordinator:
 
         Returns:
             Tuple of (results, errors) from task execution
+
+        Raises:
+            RuntimeError: If called from within an existing event loop
+            Exception: If execution fails
         """
         return await self._execute_async()
 

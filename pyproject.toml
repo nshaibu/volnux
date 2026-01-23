@@ -21,6 +21,7 @@ dependencies = [
     "pydantic_mini>=1.1.6",
     "apscheduler<=3.11.0",
     "typing-extensions==4.12.2",
+    "asgiref>=3.11.0",
     "cloudpickle>=3.0.0",
     "redis==5.2.1",
     "cryptography>=41.0.0",

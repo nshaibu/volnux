@@ -382,7 +382,9 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
         """
         return getattr(cls, PIPELINE_STATE)
 
-    def start(self, force_rerun: bool = False) -> typing.Optional["ExecutionContext"]:
+    async def start(
+        self, force_rerun: bool = False
+    ) -> typing.Optional["ExecutionContext"]:
         """
         Initiates the execution of the pipeline.
 
@@ -404,38 +406,40 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
         """
         from .engine import run_workflow
 
-        pipeline_execution_start.emit(sender=self.__class__, pipeline=self)
+        await pipeline_execution_start.emit_async(sender=self.__class__, pipeline=self)
 
         if self.execution_context and not force_rerun:
             raise EventDone("Done executing pipeline")
 
         self.execution_context: typing.Optional["ExecutionContext"] = None
 
-        run_workflow(
-            self.get_pipeline_state().start,
+        pipeline_state = self.get_pipeline_state()
+
+        await run_workflow(
+            pipeline_state.start,
             pipeline=self,
         )
 
         if self.execution_context:
             latest_context = self.execution_context.get_latest_context()
-            execution_state = latest_context.state
+            execution_state = await latest_context.state_async
 
             if execution_state.status == ExecutionStatus.CANCELLED:
-                pipeline_stop.emit(
+                await pipeline_stop.emit_async(
                     sender=self.__class__,
                     pipeline=self,
                     execution_context=latest_context,
                 )
                 return self.execution_context
             elif execution_state.status == ExecutionStatus.ABORTED:
-                pipeline_shutdown.emit(
+                await pipeline_shutdown.emit_async(
                     sender=self.__class__,
                     pipeline=self,
                     execution_context=latest_context,
                 )
                 return self.execution_context
 
-        pipeline_execution_end.emit(
+        await pipeline_execution_end.emit_async(
             sender=self.__class__, execution_context=self.execution_context
         )
         return self.execution_context

@@ -1,5 +1,3 @@
-import typing
-from pathlib import Path
 from typing import Optional
 
 from ..base import BaseCommand, CommandCategory, CommandError
@@ -21,7 +19,9 @@ class ListWorkflowsCommand(BaseCommand):
 
         project_dir, _ = self.get_project_root_and_config_module()
 
-        workflows_registry = self._initialise_workflows(project_dir)
+        engine = self.initialise_workflows(project_dir)
+
+        workflows_registry = engine.get_workflows_registry()
 
         num_of_workflows = 0
         for workflow in workflows_registry.get_workflow_configs():

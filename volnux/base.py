@@ -1,8 +1,10 @@
 import abc
 import logging
+import inspect
 import multiprocessing as mp
 import time
 import typing
+from asgiref.sync import async_to_sync
 from concurrent.futures import Executor, ProcessPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
@@ -20,6 +22,8 @@ from volnux.signal.signals import (
     event_execution_retry_done,
     event_init,
 )
+from volnux.versioning.handler import VersionHandler
+from volnux.versioning import BaseVersioning, NoVersioning, DeprecationInfo, VersionInfo
 
 from .conf import ConfigLoader
 from .constants import EMPTY, MAX_BACKOFF, MAX_BACKOFF_FACTOR, MAX_RETRIES
@@ -53,6 +57,7 @@ _event_registry = Registry()
 
 if typing.TYPE_CHECKING:
     from volnux.execution.context import ExecutionContext
+    from volnux.signal.handlers.event_initialiser import ExtraEventInitKwargs
 
 
 def get_event_registry():
@@ -61,15 +66,14 @@ def get_event_registry():
 
 
 class EventType(Enum):
-    SYSTEM = "system"
+    SYSTEM = "system"  # internal system events
+    META = "meta"  # meta events
     OTHER = "other"
 
 
 class EventMeta(abc.ABCMeta):
     """
     Metaclass that registers event classes at creation time.
-
-    Similar to Django's ModelBase metaclass which calls apps.register_model().
     """
 
     def __new__(mcs, name, bases, namespace, **kwargs):
@@ -80,9 +84,36 @@ class EventMeta(abc.ABCMeta):
         cls = super().__new__(mcs, name, bases, namespace)
 
         # Register it if it's not the base EventBase class
-        if name != "EventBase" and any(isinstance(base, EventMeta) for base in bases):
+        if name not in ["EventBase", "ControlFlowEvent"] and any(
+            isinstance(base, EventMeta) for base in bases
+        ):
             try:
-                _event_registry.register(cls)
+                # Get version info using the versioning scheme
+                event_class = typing.cast(typing.Type[EventBase], cls)
+                versioning = event_class.get_version_handler()
+                version_info = versioning.get_info()
+
+                event_name = versioning.scheme.get_event_name(cls)
+
+                _event_registry.register(
+                    event_class,
+                    name=event_name,
+                    namespace=version_info['namespace'],
+                    version=version_info['version'],
+                    changelog=version_info.get('changelog'),
+                    deprecated=version_info.get('deprecated', False),
+                    deprecation_info=version_info.get('deprecation_info'),
+                    scheme_handler=versioning.scheme,
+                    event_type=getattr(cls, "event_type", EventType.OTHER),
+                )
+
+                # Log registration
+                status = "DEPRECATED" if version_info.get('deprecated') else "active"
+                logger.debug(
+                    f"Registered: {cls.__module__}.{name} as "
+                    f"{version_info['namespace']}::{event_name}@{version_info['version']} "
+                    f"[{status}]"
+                )
             except RuntimeError as e:
                 logger.warning(str(e))
 
@@ -238,7 +269,10 @@ class _RetryMixin:
 
             try:
                 self._retry_count += 1
-                return func(*args, **kwargs)
+                if inspect.iscoroutinefunction(func):
+                    return async_to_sync(func)(*args, **kwargs)
+                else:
+                    return func(*args, **kwargs)
             except MaxRetryError:
                 # ignore this
                 break
@@ -486,15 +520,33 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
     processing pipeline data.
     """
 
+    # Version configuration
+    versioning_class: typing.Type[BaseVersioning] = NoVersioning
+    version: str = "1.0.0"
+    changelog: typing.Optional[str] = None
+    deprecated: bool = False
+    deprecation_info: typing.Optional[DeprecationInfo] = None
+
+    _version_handler: typing.Optional[VersionHandler] = None
+
+    # Custom name and namespace
+    namespace: str = "local"
+    name: typing.Optional[str] = None
+
+    # The event types
+    event_type: EventType = EventType.OTHER
+
     # how we want the execution results of this event to be evaluated by the pipeline
     result_evaluation_strategy: ExecutionResultEvaluationStrategyBase = (
         ResultEvaluationStrategies.ALL_MUST_SUCCEED
     )
 
-    event_type: EventType = EventType.OTHER
+    # The schema for adding extra event initialization arguments without modify the __init__
+    # It uses event signal 'event_init' to hook an initializer function.
+    # That will handle the setting and validation of the extra event init args
+    EXTRA_INIT_PARAMS_SCHEMA: typing.Dict[str, "ExtraEventInitKwargs"] = {}
 
     def __init_subclass__(cls, **kwargs: typing.Dict[str, typing.Any]) -> None:
-        """Automatically register subclasses when they're defined"""
         # prevent the overriding of __init__
         if cls.__name__ != "EventBase":
             for attr_name in ["__init__"]:
@@ -502,8 +554,9 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
                     raise PermissionError(
                         f"Model '{cls.__name__}' cannot override {attr_name!r}. "
                         f"Consider registering a 'listener' function for the signal 'event_init' "
-                        f"for all your custom initialization. "
-                        f"You can also do your initialisation within the 'process' method"
+                        f"for all your custom initialization. Also, you can configure the EXTRA_INIT_PARAMS_SCHEMA "
+                        f"class variable and the runtime will take care of the initialisation of your custom arguments"
+                        f"You can also handle initialisation within the 'process' method"
                     )
 
         super().__init_subclass__(**kwargs)
@@ -517,6 +570,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
         stop_condition: StopCondition = StopCondition.NEVER,
         run_bypass_event_checks: bool = False,
         options: typing.Optional["Options"] = None,
+        sequence_number: typing.Optional[int] = None,
         **kwargs: typing.Dict[str, typing.Any],
     ) -> None:
         """
@@ -530,7 +584,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
                                                       providing access to execution-related data.
             task_id (str): The PipelineTask for this event.
             previous_result (Any, optional): The result of the previous event execution.
-                                              Defaults to `EMPTY` if not provided.
+                                              Default to `EMPTY` if not provided.
             stop_on_exception (bool, optional): Flag to indicate whether the event should stop execution
                                                  if an exception occurs. Defaults to `False`.
             stop_on_success (bool, optional): Flag to indicate whether the event should stop execution
@@ -539,12 +593,14 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
                                         if an error occurs. Defaults to `False`.
             options (Options, optional): Additional options to pass to the event constructor.
                                         This is automatically assigned at run time
+            sequence_number (int, optional): Sequence number of the event. Defaults to `None`.
 
         """
         super().__init__(*args, **kwargs)
 
         self._execution_context = execution_context
         self._task_id = task_id
+        self._sequence_number = sequence_number
         self.options = options
         self.previous_result = previous_result
         self.stop_condition = StopConditionProcessor(
@@ -554,7 +610,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
 
         self.get_retry_policy()  # config retry if error
 
-        self._init_args = get_function_call_args(self.__class__.__init__, locals())
+        self._init_args = get_function_call_args(self.__class__.__init__, locals())  # type: ignore
         self._call_args = EMPTY
 
         event_init.emit(sender=self.__class__, event=self, init_kwargs=self._init_args)
@@ -568,6 +624,41 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
     def get_call_args(self) -> typing.Dict[str, typing.Any]:
         return self._call_args  # type: ignore
 
+    @classmethod
+    def get_version_handler(cls) -> VersionHandler:
+        """Get version handler for this class"""
+        if cls._version_handler is None:
+            cls._version_handler = VersionHandler.from_class(
+                cls, config_key="DEFAULT_EVENT_VERSIONING"
+            )
+        return cls._version_handler
+
+    @classmethod
+    def get_version_info(cls) -> VersionInfo:
+        """Get version information by delegating to handler."""
+        return cls.get_version_handler().get_info()
+
+    @classmethod
+    def is_deprecated(cls) -> bool:
+        """Check if deprecated by delegating to handler."""
+        return cls.get_version_handler().is_deprecated()
+
+    @classmethod
+    def get_all_versions(cls, name: typing.Optional[str] = None) -> typing.List[str]:
+        """Get all versions from registry."""
+        handler = cls.get_version_handler()
+        event_name = name or handler.class_name
+        return _event_registry.list_versions(event_name, handler.namespace)
+
+    @classmethod
+    def get_latest_version(
+        cls, name: typing.Optional[str] = None
+    ) -> typing.Optional[str]:
+        """Get the latest version from registry."""
+        handler = cls.get_version_handler()
+        event_name = name or handler.class_name
+        return _event_registry.get_latest_version(event_name, handler.namespace)
+
     def goto(
         self,
         descriptor: int,
@@ -577,7 +668,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
         execute_on_event_method: bool = True,
     ) -> None:
         """
-        Transitions to the new sub-child of parent task with the given descriptor
+        Transitions to the new sub-child of a parent task with the given descriptor
         while optionally processing the result.
         Args:
             descriptor (int): The identifier of the next task to switch to.
@@ -587,7 +678,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
             execute_on_event_method (bool, optional): If True, processes the result via
                 success/failure handlers; otherwise, wraps it in `EventResult`.
         Raises:
-            ValueError: If the descriptor is not an integer between 0 to 9.
+            ValueError: If the descriptor is not an integer between 0 and 9.
             SwitchTask: Always raised to signal the task switch.
         """
         if not isinstance(descriptor, int):
@@ -600,36 +691,19 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
                 res = self.on_failure(result)
         else:
             res = EventResult(
-                error=not result_success,
-                content=result,
-                task_id=self._task_id,
-                event_name=self.__class__.__name__,
-                call_params=self._call_args,
+                error=not result_success, # type: ignore
+                content=result, # type: ignore
+                task_id=self._task_id, # type: ignore
+                event_name=self.__class__.__name__, # type: ignore
+                call_params=self._call_args, # type: ignore
                 init_params=self._init_args,
-            )  # type: ignore
+            )
         raise SwitchTask(
             current_task_id=self._task_id,
             next_task_descriptor=descriptor,
             result=res,
             reason=reason,
         )
-
-    @classmethod
-    def register_event(cls, event_klass: typing.Type["EventBase"]) -> None:
-        """
-        Register event
-
-        Args:
-            event_klass: Class to register
-
-        Raises:
-            RuntimeError: if event is already registered
-        """
-        if not issubclass(event_klass, EventBase):
-            raise ValueError(f"Event '{event_klass}' must be a subclass of EventBase")
-
-        # Register this class in the global registry
-        _event_registry.register(event_klass)
 
     @classmethod
     def evaluator(cls) -> EventEvaluator:
@@ -698,9 +772,10 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
         self, error: bool, content: typing.Dict[str, typing.Any]
     ) -> EventResult:
         return EventResult(
-            error=error,
-            task_id=self._task_id,
-            event_name=self.__class__.__name__,
+            error=error,  # type: ignore
+            task_id=self._task_id,  # type: ignore
+            order=self._sequence_number,  # type: ignore
+            event_name=self.__class__.__name__,  # type: ignore
             content=content,
             call_params=self.get_call_args(),
             init_params=self.get_init_args(),
@@ -726,6 +801,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
                 params={
                     "init_args": self._init_args,
                     "call_args": self._call_args,
+                    "sequence_number": self._sequence_number,
                     "event_name": self.__class__.__name__,
                     "task_id": self._task_id,
                 },
@@ -764,7 +840,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
             message=f"Error occurred while processing event '{self.__class__.__name__}'",
         ):
             raise StopProcessingError(
-                message=self.stop_condition.message,
+                message=self.stop_condition.message,  # type: ignore
                 exception=execution_result,
                 params={
                     "init_args": self._init_args,
