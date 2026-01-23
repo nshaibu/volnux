@@ -13,6 +13,7 @@ class DeprecationInfo(TypedDict, total=False):
     end_of_life: Union[str, datetime]
     migration_guide: str
     replacement: str
+    deprecated_at: str
 
 
 class VersionInfo(TypedDict, total=False):
