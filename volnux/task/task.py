@@ -1,14 +1,15 @@
 import typing
 from functools import lru_cache
 
-from volnux.base import EventBase
 from volnux.exceptions import EventDoesNotExist
-
 from .base import TaskBase
+
+if typing.TYPE_CHECKING:
+    from volnux.event import EventBase
 
 
 class PipelineTask(TaskBase):
-    def __init__(self, event: typing.Union[typing.Type[EventBase], str]) -> None:
+    def __init__(self, event: typing.Union[typing.Type["EventBase"], str]) -> None:
         super().__init__()
 
         self.event = event
@@ -27,8 +28,8 @@ class PipelineTask(TaskBase):
     @classmethod
     @lru_cache()
     def resolve_event_name(
-        cls, event_name: typing.Union[str, typing.Type[EventBase]]
-    ) -> typing.Type[EventBase]:
+        cls, event_name: typing.Union[str, typing.Type["EventBase"]]
+    ) -> typing.Type["EventBase"]:
         """Resolve event class"""
         if not isinstance(event_name, str):
             return event_name
@@ -41,8 +42,10 @@ class PipelineTask(TaskBase):
 
     @staticmethod
     def get_event_klasses() -> (
-        typing.Generator[typing.Type[EventBase], typing.Any, None]
+        typing.Generator[typing.Type["EventBase"], typing.Any, None]
     ):
+        from volnux.event import EventBase
+
         yield from EventBase.get_all_event_classes()
 
     def get_dot_node_data(self) -> str:

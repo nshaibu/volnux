@@ -1,4 +1,4 @@
-from pydantic_mini import Attrib, BaseModel, MiniAnnotated
+from formax import Attrib, BaseModel, MiniAnnotated
 
 
 class ScalingConfig(BaseModel):

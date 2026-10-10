@@ -2,18 +2,43 @@ import asyncio
 import logging
 import time
 import typing
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
-from volnux.exceptions import SwitchTask
-from volnux.execution.context import ExecutionContext
+from volnux.exceptions import (
+    SwitchTask,
+    # ExternalCommunicationSuspensionRequest,
+    StopProcessingError,
+    SuspendTask,
+)
+from volnux.execution.context import ExecutionContext, ExecutionStatus
 from volnux.execution.result import ResultProcessor
-from volnux.execution.state_manager import ExecutionStatus
 from volnux.flows import setup_execution_flow
+from volnux.mixins.event.communication.datastructures import (
+    ExternalCommunicationQueueEntry,
+)
+
+# NEW: Import the sub-phase suspension signal
+# from volnux.mixins.event.checkpointing import SubPhaseSuspension
 
 if typing.TYPE_CHECKING:
     from volnux.flows.base import BaseFlow
 
 logger = logging.getLogger(__name__)
+
+
+# @dataclass
+# class ExternalCommunicationQueueEntry:
+#     request_id: str
+#     workflow_name: str
+#     workflow_id: str
+#     task_id: str
+#     sub_phase_name: Optional[str] = None  # NEW: None for legacy communicate()
+#     checkpoint_key: Optional[str] = None
+#     request_title: Optional[str] = None
+#     request_payload: Any = None
+#     options: Optional[Dict[str, Any]] = None
+#     timeout_at: Optional[str] = None
 
 
 class ExecutionError(Exception):
@@ -33,7 +58,7 @@ class ExecutionCoordinator:
     Coordinates execution of tasks based on task hierarchy.
 
     Manages the lifecycle of task execution including setup, running,
-    error handling, and cleanup operations.
+    error handling, suspension (HITL + sub_phase), and cleanup operations.
     """
 
     def __init__(
@@ -42,29 +67,12 @@ class ExecutionCoordinator:
         result_processor: Optional[ResultProcessor] = None,
         timeout: Optional[float] = None,
     ):
-        """
-        Initialize the ExecutionCoordinator.
-
-        Args:
-            execution_context: The execution context containing task configuration
-            result_processor: Custom result processor (creates default if None)
-            timeout: Optional timeout in seconds for execution
-        """
         self.execution_context = execution_context
         self._result_processor = result_processor or ResultProcessor()
         self._timeout = timeout
         self._flow = None
 
     def _setup_execution_flow(self) -> "BaseFlow":
-        """
-        Setup the execution flow based on task dependencies.
-
-        Returns:
-            Configured execution flow ready for running
-
-        Raises:
-            ValueError: If execution context is invalid
-        """
         try:
             logger.info("Setting up execution flow")
             flow = setup_execution_flow(self.execution_context)
@@ -74,26 +82,34 @@ class ExecutionCoordinator:
             logger.error(f"Failed to setup execution flow: {e}", exc_info=True)
             raise ValueError(f"Invalid execution context: {e}") from e
 
+    async def _process_suspension_request(self, request: SuspendTask):
+        if request.suspension_type == SuspendTask.SuspensionType.PREEMPTION:
+            # goes to waiting queue
+            pass
+        elif request.suspension_type == SuspendTask.SuspensionType.CANCELLATION:
+            # Goes to dead letter queue
+            pass
+        elif request.suspension_type in [
+            SuspendTask.SuspensionType.HITL,
+            SuspendTask.SuspensionType.EXTERNAL_EVENT,
+            SuspendTask.SuspensionType.CONDITION,
+        ]:
+            # Goes to external event waiting queue. When the event is received, the tasks is place in the waiting queue baased on piroity
+            pass
+        else:
+            raise ValueError(f"Invalid suspension type: {request.suspension_type}")
+
     async def _execute_async(self) -> Tuple[Any, Any]:
-        """
-        Execute the tasks asynchronously.
-
-        Returns:
-            Tuple of (results, errors) from task execution
-
-        Raises:
-            ExecutionTimeoutError: If execution exceeds timeout
-            ExecutionError: If execution fails due to runtime errors
-            Exception: If execution fails critically
-        """
         flow = self._setup_execution_flow()
         self._flow = flow
+
+        results = None
+        errors = None
 
         try:
             await self.execution_context.update_status_async(ExecutionStatus.RUNNING)
             logger.info("Starting task execution")
 
-            # Run with optional timeout - if timeout set
             run_coro = flow.run()
             future = (
                 await asyncio.wait_for(run_coro, timeout=self._timeout)
@@ -111,7 +127,6 @@ class ExecutionCoordinator:
                 logger.info("Execution completed successfully")
 
             error_results = await self._result_processor.process_errors(errors)
-
             results.extend(error_results)
 
             await self.execution_context.bulk_update_async(
@@ -119,45 +134,54 @@ class ExecutionCoordinator:
             )
             self.execution_context.metrics.end_time = time.time()
 
-            # check if stop processing request was raised
-            execution_state = await self.execution_context.state_async
-            stop_processing_requested = execution_state.get_stop_processing_request()
+            stop_processing_requested = (
+                self.execution_context.get_stop_processing_request()
+            )
             if stop_processing_requested:
-                logger.info(
-                    f"Execution stopped due to stop condition: {stop_processing_requested}"
+                raise stop_processing_requested
+
+            suspension_request = self.execution_context.get_suspension_request()
+            if suspension_request:
+                raise suspension_request
+
+            switch_request = typing.cast(
+                SwitchTask, self.execution_context.get_switch_request()
+            )
+            if switch_request is not None:
+                results.add(switch_request.result)
+                current_task_profile = (
+                    self.execution_context.get_decision_task_profile()
                 )
-                await self.execution_context.cancel_async()
-
-            if stop_processing_requested is None:
-                # check for switch task request
-                switch_request = execution_state.get_switch_request()
-
-                if typing.TYPE_CHECKING:
-                    switch_request = typing.cast(SwitchTask, switch_request)
-
-                if switch_request is not None:
-                    results.add(switch_request.result)
-
-                    current_task_profile = (
-                        self.execution_context.get_decision_task_profile()
+                if current_task_profile is not None:
+                    if not current_task_profile.get_descriptor(
+                        switch_request.next_task_descriptor
+                    ):
+                        logger.error(
+                            f"Task profile has no configured descriptor "
+                            f"{switch_request.next_task_descriptor}"
+                        )
+                        await self.execution_context.cancel_async()
+                        switch_request.descriptor_configured = False
+                    else:
+                        switch_request.descriptor_configured = True
+                else:
+                    logger.warning(
+                        "No decision task profile found for switch task handling"
                     )
 
-                    if current_task_profile is not None:
-                        if not current_task_profile.get_descriptor(
-                            switch_request.next_task_descriptor
-                        ):
-                            logger.error(
-                                f"Task profile has no configured descriptor {switch_request.next_task_descriptor}"
-                            )
-                            await self.execution_context.cancel_async()
-                            switch_request.descriptor_configured = False
-                        else:
-                            switch_request.descriptor_configured = True
-                    else:
-                        logger.warning(
-                            "No decision task profile found for switch task handling"
-                        )
+            return results, errors
 
+        except SuspendTask as sps:
+            logger.info(
+                "Coordinator: workflow '%s' task '%s' suspended at sub_phase '%s'",
+                self.execution_context.workflow_name,
+                sps.get_phase(),
+                sps.get_phase(),
+            )
+
+            await self._process_suspension_request(sps)
+
+            await self.execution_context.paused_async()
             return results, errors
 
         except asyncio.TimeoutError as e:
@@ -174,64 +198,45 @@ class ExecutionCoordinator:
             await self.execution_context.failed_async()
             raise ExecutionError(f"Task execution failed: {e}") from e
 
+        except StopProcessingError as e:
+            logger.info(f"Execution stopped due to stop condition: {e}")
+            await self.execution_context.cancel_async()
+            return results, errors
+
         except Exception as e:
             logger.error(f"Unexpected execution error: {e}", exc_info=True)
             await self.execution_context.failed_async()
             raise
 
-    def execute(self) -> Tuple[Any, Any]:
-        """
-        Execute the tasks based on the execution context.
+        finally:
+            if self._flow:
+                await self._flow.close()
 
-        Handles event loop management and ensures proper cleanup.
+        return results, errors
 
-        Returns:
-            Tuple of (results, errors) from task execution
+    async def _get_latest_checkpoint_key(self, task_id: str) -> typing.Optional[str]:
+        logger.debug(
+            "Persisting checkpoint for suspended task '%s' before suspension wait",
+            task_id,
+        )
+        await self.execution_context.persist()
+        return self.execution_context.state_id
 
-        Raises:
-            RuntimeError: If called from within an existing event loop
-            Exception: If execution fails
-        """
-        try:
-            # Check if we're already in an async context
-            try:
-                asyncio.get_running_loop()
-                # If we get here, there IS a running loop
-                raise RuntimeError(
-                    "execute() cannot be called from within an async context. "
-                    "Use execute_async() instead."
-                )
-            except RuntimeError as e:
-                # Check if this is our error or the "no running loop" error
-                if "async context" in str(e):
-                    raise
-                # Otherwise, no running loop exists - we can proceed
-
-            # Execute with asyncio.run() - handles loop creation and cleanup
-            return asyncio.run(self._execute_async())
-
-        except Exception as e:
-            logger.error(f"Execution coordinator failed: {e}", exc_info=True)
-            self.execution_context.update_status(ExecutionStatus.FAILED)
-            raise
+    def _compute_timeout(
+        self, timeout_hours: typing.Optional[float]
+    ) -> typing.Optional[str]:
+        if not timeout_hours:
+            return None
+        return (datetime.now(timezone.utc) + timedelta(hours=timeout_hours)).isoformat()
 
     async def execute_async(self) -> Tuple[Any, Any]:
-        """
-        Execute tasks asynchronously when already in an async context.
-
-        Use this method when calling from async code instead of execute().
-
-        Returns:
-            Tuple of (results, errors) from task execution
-        """
         return await self._execute_async()
 
     async def cancel(self) -> None:
-        """Cancel the currently running execution."""
         if self._flow:
             logger.warning("Cancelling execution flow")
             await self._flow.cancel()
-            self.execution_context.update_status(ExecutionStatus.CANCELLED)
+            await self.execution_context.update_status_async(ExecutionStatus.CANCELLED)
 
     def __repr__(self) -> str:
         return (

@@ -31,7 +31,7 @@ if __name__ == "__main__":
     execution_type = args.type
     stats_prof_file = args.output_file
     run_in_web_browser = args.run_in_web_browser
-    
+
     if stats_prof_file is None:
         stats_prof_file = "profile_results.prof"
 
@@ -50,14 +50,14 @@ if __name__ == "__main__":
     pipeline = pipeline_constructors.get(
         execution_type, lambda: LinearPipeline([name], age)
     )()
-    
+
     cProfile.run("pipeline.start()", stats_prof_file)
 
     p = pstats.Stats(stats_prof_file)
 
-    p.sort_stats(SortKey.CUMULATIVE).print_stats(
-        "nuxes"
-    ).strip_dirs().dump_stats(stats_prof_file)
+    p.sort_stats(SortKey.CUMULATIVE).print_stats("nuxes").strip_dirs().dump_stats(
+        stats_prof_file
+    )
 
     if run_in_web_browser:
         os.system("snakeviz " + stats_prof_file)

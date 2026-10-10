@@ -1,10 +1,10 @@
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from concurrent.futures._base import Executor as BaseExecutor
+from concurrent.futures import Executor as BaseExecutor
 
-from .default_executor import DefaultExecutor
-from .grpc_executor import GRPCExecutor
-from .remote_executor import RemoteExecutor
-from .rpc_executor import XMLRPCExecutor
+from .default import DefaultExecutor
+from .grpc import GRPCExecutor
+from .tcp import RemoteExecutor
+from .rpc import XMLRPCExecutor
 
 __all__ = [
     "BaseExecutor",

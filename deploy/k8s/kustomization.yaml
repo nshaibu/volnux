@@ -1,0 +1,51 @@
+#
+# Kustomize base configuration.
+# Apply all manifests in order:
+#   kubectl apply -k deploy/kubernetes/
+#
+# Or use individual overlays for environment-specific configuration:
+#   deploy/kubernetes/overlays/
+#     staging/ kustomization.yaml (patches for staging)
+#     production/ kustomization.yaml (patches for production)
+#
+# To generate all manifests without applying:
+#   kubectl kustomize deploy/kubernetes/
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: volnux
+
+resources:
+  # Apply in numeric order — dependencies must exist before consumers
+  - 00-namespace.yaml
+  - 01-secrets.example.yaml  # Rename to secrets.yaml with real values first
+  - 02-configmap.yaml
+  - 03-pvc.yaml
+  - 04-postgres.yaml
+  - 05-redis.yaml
+  - 06-rbac.yaml
+  - 07-api-deployment.yaml
+  - 08-worker-deployment.yaml
+  - 09-otel-collector.yaml
+  - 10-hpa-pdb-quota.yaml
+  - 11-network-policy.yaml
+  - 12-ingress.yaml
+  - 13-postgres-backup-cronjob.yaml
+
+# Common labels applied to all resources
+commonLabels:
+  app.kubernetes.io/managed-by: kustomize
+  app.kubernetes.io/part-of:    volnux
+
+# Image tag management — override image tags per environment
+# in overlays/production/kustomization.yaml
+images:
+  - name: your-registry/volnux-engine
+    newTag: "2.0.0"
+  - name: postgres
+    newTag: "16-alpine"
+  - name: redis
+    newTag: "7.2-alpine"
+  - name: otel/opentelemetry-collector-contrib
+    newTag: "0.96.0"

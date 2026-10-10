@@ -1,0 +1,126 @@
+---
+#
+# Ingress for Volnux REST API and Web Dashboard.
+# Requires:
+#   - nginx-ingress controller installed in the cluster
+#   - cert-manager installed with a ClusterIssuer named "letsencrypt-prod"
+#
+# Install cert-manager:
+#   helm install cert-manager jetstack/cert-manager \
+#     --namespace cert-manager --create-namespace \
+#     --set installCRDs=true
+#
+# Install nginx-ingress:
+#   helm install ingress-nginx ingress-nginx/ingress-nginx \
+#     --namespace ingress-nginx --create-namespace
+#
+# Update the host values below to match your domain.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: volnux-api
+  namespace: volnux
+  labels:
+    app: volnux-api
+  annotations:
+    # TLS certificate — automatically provisioned by cert-manager
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+
+    # Always redirect HTTP → HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # Request body size — must match API_MAX_REQUEST_SIZE in config.py
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+    # Timeouts — long-running HITL webhook responses need extended timeouts
+    nginx.ingress.kubernetes.io/proxy-read-timeout:  "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout:  "300"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+
+    # Rate limiting — protect the API from abuse
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+
+    # Security headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-XSS-Protection: 1; mode=block";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+
+    # CORS — restrict to known origins in production
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin:  "https://dashboard.volnux.example.com"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
+
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.volnux.example.com       # REST API
+        - dashboard.volnux.example.com # Web dashboard
+      secretName: volnux-tls           # cert-manager writes the cert here
+
+  rules:
+    # REST API endpoint
+    - host: api.volnux.example.com
+      http:
+        paths:
+          - path:     /
+            pathType: Prefix
+            backend:
+              service:
+                name: volnux-api
+                port:
+                  number: 8080
+
+    # Web dashboard (served by the same API pod at /dashboard)
+    - host: dashboard.volnux.example.com
+      http:
+        paths:
+          - path:     /
+            pathType: Prefix
+            backend:
+              service:
+                name: volnux-api
+                port:
+                  number: 8080
+
+---
+# Webhook ingress — separate host for HITL webhook callbacks.
+# Slack, email, and external HITL adapters POST responses here.
+# Isolated from the main API to allow independent rate limiting.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: volnux-webhooks
+  namespace: volnux
+  labels:
+    app: volnux-api
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Webhooks must complete within 30s or the provider will retry
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+    # Higher rate limit for webhooks — HITL providers may retry on failure
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - webhooks.volnux.example.com
+      secretName: volnux-webhooks-tls
+  rules:
+    - host: webhooks.volnux.example.com
+      http:
+        paths:
+          - path:     /webhooks
+            pathType: Prefix
+            backend:
+              service:
+                name: volnux-api
+                port:
+                  number: 8080

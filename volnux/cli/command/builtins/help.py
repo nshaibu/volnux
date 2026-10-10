@@ -19,19 +19,35 @@ class HelpCommand(BaseCommand):
         parser.add_argument(
             "command", nargs="?", help="Command to show help for (optional)"
         )
+        parser.add_argument(
+            "subcommand", nargs="?", help="Subcommand to show help for (optional)"
+        )
 
     def handle(self, *args, **options) -> Optional[str]:
         command_name = options.get("command")
+        subcommand_name = options.get("subcommand")
 
         if command_name:
-            # Show help for specific command
+            # Show help for a specific command
             loader = get_command_registry()
             command_class = loader.get_by_name(command_name)
 
             if not command_class:
                 raise CommandError(f"Unknown command: '{command_name}'")
+
             command = command_class()
-            command.print_help("volnux", command_name)
+            subcommand_dict = getattr(command, "subcommands", None)
+            if subcommand_dict and subcommand_name:
+                subcommand_class = subcommand_dict.get(subcommand_name)
+                if not subcommand_class:
+                    raise CommandError(
+                        f"Unknown subcommand '{subcommand_name}' for command '{command_name}'\n"
+                        f"Available: {', '.join(subcommand_dict.keys())}"
+                    )
+                subcommand = subcommand_class()
+                subcommand.print_help("volnux", command_name, subcommand_name)
+            else:
+                command.print_help("volnux", command_name)
             return None
 
         # Show general help and list all commands
@@ -72,9 +88,9 @@ class HelpCommand(BaseCommand):
 
         self.stdout.write(self.style.NOTICE("\nEXAMPLES:\n"))
         self.stdout.write("  # Create a new project\n")
-        self.stdout.write("  \t$ volnux startproject data_pipeline\n")
+        self.stdout.write("  \t$ volnux init data_pipeline\n")
         self.stdout.write("  # Create a new workflow with DAG template\n")
-        self.stdout.write("  \t$ volnux startworkflow etl_process --template=dag\n")
+        self.stdout.write("  \t$ volnux workflow init etl_process --template=dag\n")
         self.stdout.write("  # Run workflow with parameters\n")
         self.stdout.write(
             '  \t$ volnux run etl_process --params \'{"source": "db", "target": "s3"}\'\n'
@@ -105,51 +121,5 @@ class HelpCommand(BaseCommand):
                 command = command_class()
                 help_text = command.help if command else ""
                 self.stdout.write(f"   • {command.name:<6}: {help_text}\n")
-
-        self.stdout.write("")
-
-    def _print_commands_by_category1(self) -> None:
-        """Print commands organized by category."""
-        loader = get_command_registry()
-        all_commands = loader.list_classes_names()
-
-        # Categorize commands
-        categories = {
-            "Project Management": ["startproject", "version"],
-            "Workflow Management": ["startworkflow", "list", "validate"],
-            "Execution": ["run"],
-            "Development": ["shell"],
-            "Help": ["help"],
-        }
-
-        self.stdout.write(self.style.NOTICE("\nAVAILABLE COMMANDS:\n"))
-
-        # Track which commands have been categorized
-        categorized = set()
-
-        for category, commands in categories.items():
-            # Only show category if it has commands
-            category_commands = [cmd for cmd in commands if cmd in all_commands]
-            if not category_commands:
-                continue
-
-            self.stdout.write(f"\n  {self.style.BOLD(category)}:")
-
-            for cmd_name in category_commands:
-                command_class = loader.get_by_name(cmd_name)
-                command = command_class()
-                help_text = command.help if command else ""
-                self.stdout.write(f"    {cmd_name:<18} {help_text}")
-                categorized.add(cmd_name)
-
-        # Show uncategorized commands (custom commands)
-        uncategorized = [cmd for cmd in all_commands if cmd not in categorized]
-        if uncategorized:
-            self.stdout.write(f'\n  {self.style.BOLD("Custom Commands")}:')
-            for cmd_name in uncategorized:
-                command_class = loader.get_by_name(cmd_name)
-                command = command_class()
-                help_text = command.help if command else ""
-                self.stdout.write(f"    {cmd_name:<18} {help_text}")
 
         self.stdout.write("")

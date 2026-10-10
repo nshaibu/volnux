@@ -1,0 +1,172 @@
+---
+#
+# Nightly PostgreSQL backup CronJob.
+#
+# Fixes vs original:
+#   - Uses pg_dump --format=custom (-Fc) instead of plain SQL.
+#     Custom format supports: parallel restore, selective table restore,
+#     partial restore from a corrupted backup (plain SQL cannot do this).
+#   - Restore command documented below.
+#   - PGPASSWORD moved to env — avoids exposing it in shell history.
+#   - securityContext added.
+#   - Backup retention: 30 daily backups, 4 weekly backups.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postgres-backup
+  namespace: volnux
+  labels:
+    app: postgres-backup
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: volnux
+  labels:
+    app:                         postgres-backup
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/part-of:   volnux
+spec:
+  # Run at 02:00 UTC every day
+  schedule: "0 2 * * *"
+
+  # Prevent overlapping backup jobs
+  concurrencyPolicy: Forbid
+
+  # Keep 7 successful job records for review
+  successfulJobsHistoryLimit: 7
+
+  # Keep 3 failed job records for debugging
+  failedJobsHistoryLimit: 3
+
+  jobTemplate:
+    spec:
+      # Fail the job after 1 hour (backup should complete in minutes)
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app: postgres-backup
+        spec:
+          serviceAccountName: postgres-backup
+          restartPolicy: OnFailure
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser:    999   # postgres user
+            fsGroup:      999
+
+          containers:
+            - name: backup
+              image: postgres:16-alpine
+              imagePullPolicy: IfNotPresent
+
+              env:
+                # PGPASSWORD env var — avoids exposing password in shell args
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: volnux-secrets
+                      key:  postgres-password
+                - name: PGHOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: volnux-secrets
+                      key:  postgres-host
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: volnux-secrets
+                      key:  postgres-username
+                - name: PGDATABASE
+                  valueFrom:
+                    secretKeyRef:
+                      name: volnux-secrets
+                      key:  postgres-database
+
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+
+                  TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+                  BACKUP_FILE="/backup/volnux-${TIMESTAMP}.dump"
+                  WEEKLY_FILE="/backup/weekly/volnux-week$(date +%V).dump"
+
+                  echo "Starting backup at ${TIMESTAMP}"
+
+                  # pg_dump custom format:
+                  #   -Fc  = custom format (not plain SQL)
+                  #   -Z9  = maximum compression
+                  #   -v   = verbose output for logging
+                  #   --no-password = use PGPASSWORD env var
+                  pg_dump \
+                    --host="${PGHOST}" \
+                    --username="${PGUSER}" \
+                    --dbname="${PGDATABASE}" \
+                    --format=custom \
+                    --compress=9 \
+                    --verbose \
+                    --file="${BACKUP_FILE}"
+
+                  echo "Backup complete: ${BACKUP_FILE} ($(du -sh ${BACKUP_FILE} | cut -f1))"
+
+                  # Weekly backup — overwrite the same file each week
+                  # Provides a slower-changing recovery point
+                  DAY_OF_WEEK=$(date +%u)
+                  if [ "${DAY_OF_WEEK}" = "7" ]; then
+                    mkdir -p /backup/weekly
+                    cp "${BACKUP_FILE}" "${WEEKLY_FILE}"
+                    echo "Weekly backup saved: ${WEEKLY_FILE}"
+                  fi
+
+                  # Retention: keep 30 daily backups
+                  echo "Pruning backups older than 30 days..."
+                  find /backup -maxdepth 1 -name "volnux-*.dump" -mtime +30 -delete
+
+                  # Retention: keep 12 weekly backups (3 months)
+                  find /backup/weekly -name "volnux-week*.dump" -mtime +84 -delete
+
+                  echo "Backup job complete"
+
+                  # ── Restore instructions ────────────────────────────────
+                  # To restore from a custom format backup:
+                  #
+                  # Full restore:
+                  #   pg_restore --host=HOST --username=USER --dbname=TARGET \
+                  #     --clean --if-exists --verbose volnux-20240619-020000.dump
+                  #
+                  # Selective table restore:
+                  #   pg_restore --host=HOST --username=USER --dbname=TARGET \
+                  #     --table=volnux_AuditEntry volnux-20240619-020000.dump
+                  #
+                  # Parallel restore (faster for large databases):
+                  #   pg_restore --host=HOST --username=USER --dbname=TARGET \
+                  #     --jobs=4 volnux-20240619-020000.dump
+
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+
+              resources:
+                requests:
+                  cpu:    "250m"
+                  memory: "256Mi"
+                limits:
+                  cpu:    "1"
+                  memory: "1Gi"
+
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem:   false  # pg_dump writes temp files
+                capabilities:
+                  drop: ["ALL"]
+
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: postgres-backup-pvc

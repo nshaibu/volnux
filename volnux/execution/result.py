@@ -1,13 +1,19 @@
 import asyncio
+import logging
 import typing
 from contextlib import contextmanager
 
-from volnux.result import EventResult, ResultSet
+from volnux.exceptions import StopProcessingError, SwitchTask
+from volnux.result import EventResult, ResultSet, ResultStream
 from volnux.result_evaluators import (
     EventEvaluationResult,
     EventEvaluator,
     ExecutionResultEvaluationStrategyBase,
 )
+
+logger = logging.getLogger(__name__)
+
+_CONTROL_FLOW_EXCEPTIONS = (StopProcessingError, SwitchTask)
 
 
 class ResultProcessor:
@@ -58,14 +64,33 @@ class ResultProcessor:
         completed = await asyncio.gather(*futures, return_exceptions=True)
 
         for result in completed:
-            if isinstance(result, Exception):
-                errors.add(result)
-            elif isinstance(result, (list, tuple, ResultSet)):
-                pass
-            else:
-                results.add(result)
+            ResultProcessor._route_result(result, results, errors)
 
         return results, errors
+
+    @staticmethod
+    def _route_result(
+        result: typing.Any, results: ResultSet, errors: ResultSet
+    ) -> None:
+        """
+        Route a single resolved future value into results/errors.
+
+        A future can resolve to a collection (e.g. the aggregated output of
+        a multitask/parallel dispatch) rather than a single EventResult —
+        those are flattened here instead of being dropped.
+        """
+        if isinstance(result, Exception):
+            errors.add(result)
+        elif isinstance(result, (list, tuple, ResultSet)):
+            for item in result:
+                ResultProcessor._route_result(item, results, errors)
+        else:
+            if not isinstance(result, EventResult):
+                logger.warning(
+                    "Unexpected future result type %s; adding as-is",
+                    type(result).__name__,
+                )
+            results.add(result)
 
     @contextmanager
     def _temporary_strategy(
@@ -80,7 +105,7 @@ class ResultProcessor:
         Yields:
             None
         """
-        if strategy is None or self._evaluator is None:
+        if strategy is None:
             yield
             return
 
@@ -105,15 +130,7 @@ class ResultProcessor:
 
         Returns:
             EventEvaluationResult containing the evaluation outcome.
-
-        Raises:
-            ValueError: If no evaluator is configured.
         """
-        if self._evaluator is None:
-            raise ValueError(
-                "No evaluation strategy configured. Set an evaluation strategy before calling evaluate_execution."
-            )
-
         with self._temporary_strategy(strategy):
             return self._evaluator.evaluate(results)
 
@@ -133,10 +150,7 @@ class ResultProcessor:
         """
         results = ResultSet()
         for error in errors:
-            if error.__class__.__name__.lower() not in [
-                "stopprocessingerror",
-                "switchtask",
-            ]:
+            if not isinstance(error, _CONTROL_FLOW_EXCEPTIONS):
                 params = getattr(error, "params", {})
                 event_name = params.get("event_name", "unknown")
 
@@ -147,8 +161,6 @@ class ResultProcessor:
                     ),
                     task_id=params.get("task_id"),
                     event_name=event_name,
-                    init_params=params.get("init_args"),
-                    call_params=params.get("call_args"),
                 )
 
                 results.add(result)

@@ -64,10 +64,10 @@ class VolnuxCLI:
         print(f"{self.style.BOLD('Available commands:')}\n")
 
         commands = self.loader.list_all_classes()
-        for cmd_name in commands:
-            cmd = self.loader.get_by_name(cmd_name)
+        for cmd in commands:
+            # cmd = self.loader.get_by_name(cmd_name)
             help_text = cmd.help if cmd else ""
-            print(f"  {cmd_name:<20} {help_text}")
+            print(f"  {cmd.name:<20} {help_text}")
 
         print(
             f"\nUse 'volnux <command> --help' for more information on a specific command.\n"

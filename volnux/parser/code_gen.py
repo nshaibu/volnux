@@ -6,13 +6,14 @@ from .conditional import StandardDescriptor
 from .exceptions import PointyParseError
 from .operator import PipeType
 from .options import Options
-from .protocols import TaskGroupingProtocol, TaskProtocol
+from .protocols import TaskGroupingProtocol, TaskProtocol, TaskType
 from .visitor import ASTVisitorInterface
 
 logger = logging.getLogger(__name__)
 
 
 class ExecutableASTGenerator(ASTVisitorInterface):
+
     def __init__(
         self,
         task_template: typing.Type[TaskProtocol],
@@ -22,6 +23,15 @@ class ExecutableASTGenerator(ASTVisitorInterface):
         self.grouping_template = grouping_template
         self._generated_task_chain: typing.Optional[TaskProtocol] = None
         self._current_task: typing.Optional[TaskProtocol] = None
+
+    def apply_directive(self, name: str, value: typing.Union[str, int]):
+        """Apply configuration directive"""
+        if name == "recursive-depth":
+            from volnux.utils import _extend_recursion_depth
+
+            result = _extend_recursion_depth(value)
+            if isinstance(result, Exception):
+                logger.warning(f"Failed to set recursive-depth: {result}")
 
     def _visit_node(self, node: ast.ASTNode):
         """Generic node visitor dispatcher"""
@@ -33,7 +43,7 @@ class ExecutableASTGenerator(ASTVisitorInterface):
             return self.visit_descriptor(node)
         elif isinstance(node, ast.TaskNode):
             return self.visit_task(node)
-        elif isinstance(node, ast.ExpressionGroupingNode):
+        elif isinstance(node, ast.PipelineGroupingNode):
             return self.visit_expression_grouping(node)
         elif isinstance(node, ast.ConditionalNode):
             return self.visit_conditional(node)
@@ -43,10 +53,19 @@ class ExecutableASTGenerator(ASTVisitorInterface):
             return self.visit_block(node)
         elif isinstance(node, ast.LiteralNode):
             return self.visit_literal(node)
+        elif isinstance(node, ast.EnvironmentVariableAccessNode):
+            return self.visit_environment_variable_access(node)
+        elif isinstance(node, ast.VariableAccessNode):
+            return self.visit_variable_access(node)
+        elif isinstance(node, ast.MetaTaskNode):
+            return self.visit_meta_event(node)
         else:
             raise PointyParseError(f"Unknown node type: {type(node)}")
 
     def visit_program(self, node: ast.ProgramNode):
+        for directive_name, directive_value in node.directives.items():
+            self.apply_directive(directive_name, self._visit_node(directive_value))
+
         chain = node.chain
         if chain is None:
             return
@@ -130,40 +149,26 @@ class ExecutableASTGenerator(ASTVisitorInterface):
             )
         return instance
 
-    def visit_block(self, node: ast.BlockNode):
-        if node.type == ast.BlockType.ASSIGNMENT:
-            return self.visit_assignment_block(node)
-        elif node.type == ast.BlockType.CONDITIONAL:
-            if typing.TYPE_CHECKING:
-                node = typing.cast(ast.ConditionalNode, typing.cast(ast.ASTNode, node))
-
-            return self.visit_conditional(node)
-        elif node.type == ast.BlockType.GROUP:
-            return self.visit_group_block(node)
-        else:
-            raise ValueError(f"Unknown block type: {type(node)}")
-
-    def visit_group_block(self, node: ast.BlockNode):
-        raise NotImplementedError("Not Supported yet")
+    # def visit_group_block(self, node: ast.BlockNode):
+    #     raise NotImplementedError("Not Supported yet")
 
     def visit_literal(self, node: ast.LiteralNode) -> typing.Union[int, str, float]:
         return node.value
 
-    def visit_assignment(self, node: ast.AssignmentNode):
-        return {node.target: self._visit_node(node.value)}
+    # def visit_assignment(self, node: ast.AssignmentNode):
+    #     return {node.target: self._visit_node(node.value)}
 
-    def visit_assignment_block(
-        self, node: ast.BlockNode
-    ) -> typing.Dict[str, typing.Any]:
-        assign = {}
-        for statement in node.statements:
-            if typing.TYPE_CHECKING:
-                statement = typing.cast(ast.AssignmentNode, statement)
-            assign.update(self.visit_assignment(statement))
-        return assign
+    # def visit_assignment_block(
+    #     self, node: ast.BlockNode
+    # ) -> typing.Dict[str, typing.Any]:
+    #     assign = {}
+    #     statements = typing.cast(typing.List[ast.AssignmentNode], node.statements)
+    #     for statement in statements:
+    #         assign.update(self.visit_assignment(statement))
+    #     return assign
 
     def visit_expression_grouping(
-        self, node: ast.ExpressionGroupingNode
+        self, node: ast.PipelineGroupingNode
     ) -> TaskGroupingProtocol:
         expression_chain_groups = [
             self._visit_node(chain) for chain in node.expressions
@@ -177,6 +182,13 @@ class ExecutableASTGenerator(ASTVisitorInterface):
                 self.visit_assignment_block(node.options)
             )
         return instance
+
+    def visit_directive(self, node: ast.DirectiveNode):
+        """Visit individual directive node"""
+        return self._visit_node(node.value)
+
+    # def visit_variable_access(self, node: ast.VariableAccessNode):
+    #     return self._visit_node(node.value)
 
     def visit_conditional(self, node: ast.ConditionalNode):
         parent = self.visit_task(node.task)
@@ -218,7 +230,62 @@ class ExecutableASTGenerator(ASTVisitorInterface):
 
         return parent
 
-    def generate(self) -> typing.Optional[TaskProtocol]:
+    def visit_environment_variable_access(
+        self, node: ast.EnvironmentVariableAccessNode
+    ):
+        return node.resolve()
+
+    def visit_variable_access(self, node: ast.VariableAccessNode):
+        return node.resolve()
+
+    def visit_meta_event(self, node: ast.MetaTaskNode):
+        pass
+
+    def visit_unaryop(self, node: ast.UnaryOpNode):
+        pass
+
+    def visit_access_environment_variable(
+        self, node: ast.EnvironmentVariableAccessNode
+    ):
+        pass
+
+    def visit_list(self, node: ast.ListNode):
+        pass
+
+    def visit_map(self, node: ast.MapNode):
+        pass
+
+    def visit_pipeline_grouping(self, node: "PipelineGroupingNode"):
+        pass
+
+    def visit_meta_task(self, node: "MetaTaskNode"):
+        pass
+
+    def visit_variable_declaration(self, node: "VariableDeclNode"):
+        pass
+
+    def visit_null_coalesce(self, node: "NullCoalesceExprNode"):
+        pass
+
+    def visit_comparison_expr(self, node: "ComparisonExprNode"):
+        pass
+
+    def visit_branch(self, node: "BranchNode"):
+        pass
+
+    def visit_index_expr(self, node: "IndexExprNode"):
+        pass
+
+    def visit_retry(self, node: "RetryNode"):
+        pass
+
+    def visit_attribute(self, node: "AttributeNode"):
+        pass
+
+    def visit_ternary_expr(self, node: "TernaryExprNode"):
+        pass
+
+    def generate(self) -> typing.Optional[TaskType]:
         if self._current_task is None:
             return None
         return self._current_task.get_root()

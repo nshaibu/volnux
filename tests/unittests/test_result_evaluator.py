@@ -4,16 +4,19 @@ from unittest.mock import Mock
 
 import pytest
 
-from volnux.result_evaluators import (AllTasksMustSucceedStrategy,
-                                      AnyTaskMustSucceedStrategy,
-                                      EventEvaluationResult, EventEvaluator,
-                                      EventResult,
-                                      ExecutionResultEvaluationStrategyBase,
-                                      MajorityTasksMustSucceedStrategy,
-                                      MinimumSuccessThresholdStrategy,
-                                      NoFailuresAllowedStrategy,
-                                      PercentageSuccessThresholdStrategy,
-                                      ResultEvaluationStrategies)
+from volnux.result_evaluators import (
+    AllTasksMustSucceedStrategy,
+    AnyTaskMustSucceedStrategy,
+    EventEvaluationResult,
+    EventEvaluator,
+    EventResult,
+    ExecutionResultEvaluationStrategyBase,
+    MajorityTasksMustSucceedStrategy,
+    MinimumSuccessThresholdStrategy,
+    NoFailuresAllowedStrategy,
+    PercentageSuccessThresholdStrategy,
+    ResultEvaluationStrategies,
+)
 
 
 class TestTaskResult(unittest.TestCase):

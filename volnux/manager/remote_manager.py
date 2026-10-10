@@ -9,7 +9,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from .base import BaseManager
-from volnux.conf import ConfigLoader
+from volnux.config import VolnuxConfig
 from volnux.utils import (
     send_data_over_socket,
     receive_data_from_socket,
@@ -19,7 +19,7 @@ from volnux.executors.message import TaskMessage
 
 logger = logging.getLogger(__name__)
 
-CONF = ConfigLoader.get_lazily_loaded_config()
+CONF = VolnuxConfig.get_instance()
 
 DEFAULT_TIMEOUT = CONF.DEFAULT_CONNECTION_TIMEOUT
 CHUNK_SIZE = CONF.DATA_CHUNK_SIZE

@@ -1,5 +1,3 @@
-# from __future__ import annotations
-
 import dataclasses
 import typing
 from enum import Enum
@@ -14,10 +12,18 @@ except ImportError:
         pass
 
 
-from pydantic_mini import Attrib, BaseModel, MiniAnnotated
-from pydantic_mini.exceptions import ValidationError
+from formax import (
+    Attrib,
+    BaseModel,
+    MiniAnnotated,
+    ValidationError,
+    preformat,
+    postformat,
+    InitStrategy,
+)
 
 from .executor_config import ExecutorInitializerConfig
+from volnux.result_evaluators import ResultEvaluationStrategies
 
 
 class StopCondition(Enum):
@@ -49,7 +55,8 @@ def resolve_str_to_enum(
     enum_attr = getattr(enum_klass, attr_name, None)
     if enum_attr is None:
         raise ValidationError(
-            f"Invalid enum value {value} for {enum_klass.__name__}", code="invalid_enum"
+            f"Invalid enum value {value} for {enum_klass.__name__}",
+            params={"code": "invalid_enum"},
         )
     return enum_attr
 
@@ -62,51 +69,52 @@ class Options(BaseModel):
 
     # Core execution options with validation
     retry_attempts: MiniAnnotated[int, Attrib(default=0, ge=0)]
-    executor: MiniAnnotated[typing.Optional[str], Attrib(default=None)]
+    executor: typing.Optional[str]
 
     # Configuration dictionaries
-    executor_config: MiniAnnotated[
-        typing.Union[ExecutorInitializerConfig, dict],
-        Attrib(
-            default_factory=lambda: ExecutorInitializerConfig(),
-            pre_formatter=lambda val: (
-                ExecutorInitializerConfig.from_dict(val)
-                if isinstance(val, dict)
-                else val
-            ),
-        ),
-    ]
+    executor_config: ExecutorInitializerConfig
     extras: MiniAnnotated[dict, Attrib(default_factory=dict)]
 
     # Execution state and control
-    result_evaluation_strategy: MiniAnnotated[
-        ResultEvaluationStrategy,
-        Attrib(
-            default=ResultEvaluationStrategy.ALL_MUST_SUCCEED,
-            pre_formatter=lambda val: resolve_str_to_enum(
-                ResultEvaluationStrategy, val, use_lower_case=False
-            ),
-        ),
-    ]
-    stop_condition: MiniAnnotated[
-        typing.Union[StopCondition, None],
-        Attrib(
-            default=None,
-            pre_formatter=lambda val: val
-            and resolve_str_to_enum(StopCondition, val, use_lower_case=False)
-            or None,
-        ),
-    ]
-    bypass_event_checks: typing.Optional[bool]
+    stop_condition: typing.Optional[StopCondition]
+    bypass_event_checks: bool = False
+    result_evaluation_strategy: ResultEvaluationStrategy = (
+        ResultEvaluationStrategy.ALL_MUST_SUCCEED
+    )
 
     class Config:
-        disable_typecheck = False
-        disable_all_validation = False
+        init_strategy = InitStrategy.DATACLASS
+
+    @preformat(["executor_config"])
+    def preformat_executor_config(self, val: typing.Any) -> ExecutorInitializerConfig:
+        if isinstance(val, dict):
+            return ExecutorInitializerConfig.from_dict(val)
+        return val
+
+    @preformat(["result_evaluation_strategy"])
+    def preformat_result_evaluation_strategy(self, val: typing.Any) -> typing.Any:
+        return (
+            resolve_str_to_enum(ResultEvaluationStrategy, val, use_lower_case=False),
+        )
+
+    @preformat(["stop_condition"])
+    def preformat_stop_condition(self, val: typing.Any) -> typing.Any:
+        return (
+            val
+            and resolve_str_to_enum(StopCondition, val, use_lower_case=False)
+            or None
+        )
+
+    @postformat(["result_evaluation_strategy"])
+    def postformat_result_evaluation_strategy(
+        self, value: ResultEvaluationStrategy
+    ) -> ResultEvaluationStrategies:
+        return getattr(ResultEvaluationStrategies, value.value, None)
 
     @classmethod
     def from_dict(cls, options_dict: typing.Dict[str, typing.Any]) -> "Options":
         """
-        Create Options instance from dictionary, placing unknown fields in extras.
+        Create Options instance from the dictionary, placing unknown fields in extras.
         Args:
             options_dict: Dictionary containing option values
         Returns:
@@ -124,7 +132,7 @@ class Options(BaseModel):
                     option["extras"] = {}
                 option["extras"][field_name] = value
 
-        return cls.loads(option, _format="dict")
+        return cls.loads(option, _format="dict")  # type: ignore
 
     def has_retry_policy(self) -> bool:
         """Check if retry policy is configured."""
@@ -188,3 +196,6 @@ class Options(BaseModel):
             True if the field is configured, False otherwise
         """
         return getattr(self, field_name, None) is not None
+
+    def as_dict(self):
+        return dataclasses.asdict(self)

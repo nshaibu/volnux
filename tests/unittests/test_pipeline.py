@@ -68,26 +68,26 @@ class PipelineTest(unittest.TestCase):
         with pytest.raises(TypeError):
             self.pipeline_klass()
 
-    def test_pipeline_start(self):
+    async def test_pipeline_start(self):
         pipe = self.pipeline_klass(name="test_name")
         try:
-            pipe.start()
+            await pipe.start()
         except EventDone:
             self.fail("Pipeline raised EventDone unexpectedly!")
 
-    def test_pipeline_shutdown(self):
+    async def test_pipeline_shutdown(self):
         pipe = self.pipeline_klass(name="test_name")
-        pipe.start()
+        await pipe.start()
         try:
-            pipe.shutdown()
+            await pipe.shutdown()
         except Exception as e:
             self.fail(f"Pipeline shutdown raised an exception: {e}")
 
-    def test_pipeline_stop(self):
+    async def test_pipeline_stop(self):
         pipe = self.pipeline_klass(name="test_name")
-        pipe.start()
+        await pipe.start()
         try:
-            pipe.stop()
+            await pipe.stop()
         except Exception as e:
             self.fail(f"Pipeline stop raised an exception: {e}")
 
@@ -147,15 +147,15 @@ class PipelineTest(unittest.TestCase):
         self.assertIsNotNone(pipe._state)
         self.assertIsNotNone(pipe._state.pipeline_cache)
 
-    def test_pipeline_rerun(self):
+    async def test_pipeline_rerun(self):
         pipe = self.pipeline_klass(name="test")
-        pipe.start()
+        await pipe.start()
 
         with pytest.raises(EventDone):
-            pipe.start()  # Should raise without force_rerun
+            await pipe.start()  # Should raise without force_rerun
 
         try:
-            pipe.start(force_rerun=True)  # Should work with force_rerun
+            await pipe.start(force_rerun=True)  # Should work with force_rerun
         except EventDone:
             self.fail("Pipeline start with force_rerun raised EventDone!")
 

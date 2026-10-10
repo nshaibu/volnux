@@ -1,4 +1,5 @@
 import logging
+import asyncio
 import threading
 import typing
 import weakref
@@ -12,6 +13,23 @@ logger = logging.getLogger(__name__)
 
 class GenericSender:
     pass
+
+
+def get_signal(
+    signal_name: str, module_path: str = "volnux.signal.signals"
+) -> typing.Optional["SoftSignal"]:
+    """
+    Retrieve a registered soft signal by its fully qualified name.
+
+    Args:
+        signal_name (str): signal name, e.g. "pipeline_pre_init" or "pipeline_post_init".
+        module_path (str, optional): The module path where the signal is expected to be found. Defaults to "volnux.signal.signals".
+
+    Returns:
+        typing.Optional[SoftSignal]: The registered signal if found, otherwise None.
+    """
+
+    return SoftSignal._registered_signal.get(f"{module_path}.{signal_name}")
 
 
 class SoftSignal(ObjectIdentityMixin):
@@ -98,7 +116,12 @@ class SoftSignal(ObjectIdentityMixin):
                 signal=self, sender=sender, **kwargs
             )
             try:
-                response = listener(**bounded_args.kwargs)
+                # listener can be async
+                if asyncio.iscoroutinefunction(listener):
+                    loop = asyncio.get_running_loop()
+                    response = loop.run_until_complete(listener(**bounded_args.kwargs))
+                else:
+                    response = listener(**bounded_args.kwargs)
             except Exception as e:
                 logger.exception(str(e), exc_info=e)
                 response = e
@@ -250,6 +273,7 @@ event_called = SoftSignal(
     "event_called",
     provide_args=["event", "init_kwargs", "call_kwargs", "hook_type", "result"],
 )
+event_phase_changed = SoftSignal("event_phase_changed", provide_args=["event", "phase"])
 
 event_execution_init = SoftSignal(
     "event_execution_init",
@@ -286,6 +310,14 @@ event_execution_aborted = SoftSignal(
 )
 event_execution_failed = SoftSignal(
     "event_execution_failed",
+    provide_args=["task_profiles", "execution_context", "state"],
+)
+event_execution_paused = SoftSignal(
+    "event_execution_paused",
+    provide_args=["task_profiles", "execution_context", "state"],
+)
+event_execution_resumed = SoftSignal(
+    "event_execution_resumed",
     provide_args=["task_profiles", "execution_context", "state"],
 )
 

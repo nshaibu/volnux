@@ -17,6 +17,16 @@ class DescriptorConfig:
     pipe: "PipeType"
     task: "TaskProtocol"
 
+    def as_dict(self) -> typing.Dict[str, typing.Any]:
+        """Serialize descriptor configuration to dictionary."""
+        from volnux.execution.rehydrator.serializer import StateSerializer
+
+        return {
+            "descriptor": self.descriptor,
+            "pipe": self.pipe.value,
+            "task": StateSerializer.serialize_task(self.task),
+        }
+
 
 def _create_descriptor_property(
     descriptor: int, attr_name: str, attr_type: typing.Type
@@ -70,10 +80,19 @@ class ConditionalNode:
         )
         return True
 
+    def as_dict(self) -> typing.Dict[str, typing.Any]:
+        """Serialize conditional node configuration to dictionary."""
+        return {
+            "_descriptors": {
+                descriptor: config.as_dict()
+                for descriptor, config in self._descriptors.items()
+            }
+        }
+
     @staticmethod
     def _is_valid_descriptor(descriptor: int) -> bool:
         """
-        Valid descriptors ranges from 0 to 9. O and 1 are standard descriptors and are used to
+        Valid descriptors range from 0 to 9. O and 1 are standard descriptors and are used to
         denote failure and success conditions respectively.
         However, 2 to 9 descriptors are available for custom and user-defined conditionals.
         """

@@ -1,0 +1,436 @@
+[build-system]
+requires      = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name            = "volnux"
+version         = "2.0.0"
+description     = "Workflow Operating System — governed, durable, agentic execution"
+readme          = "README.md"
+license         = { file = "LICENSE" }
+requires-python = ">=3.8"
+
+authors = [
+    { name = "nshaibu", email = "nafiushaibu1@gmail.com" },
+]
+
+keywords = [
+    "workflow", "orchestration", "governance", "agentic-ai",
+    "durable-execution", "hitl", "checkpointing",
+    "pipeline", "events", "concurrency", "data",
+    "pointy", "pointy-lang", "event-pipeline",
+    "redis", "ETL", "volnux",
+]
+
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Framework :: AsyncIO",
+]
+
+[project.urls]
+"Issue Tracker" = "https://github.com/nshaibu/volnux/issues"
+CI              = "https://github.com/nshaibu/volnux/actions"
+Documentation   = "https://volnux.io/docs"
+
+# Core dependencies
+# These are installed with every `pip install volnux`.
+# Optional backends (postgres, redis, grpc, celery) are extras.
+dependencies = [
+    # Pointy-Lang parser
+    "ply==3.11",                     # Lex/yacc parser for Pointy-Lang DSL
+    "six==1.17.0",                   # Python 2/3 compat shim (ply dependency)
+    "treelib==1.7.0",                # Execution tree visualisation
+    "graphviz>=0.20.3",              # Workflow graph rendering
+
+    # Governance model layer
+    "bson==0.5.10",
+    "formax-py",                     # Volnux governance model layer (formax)
+    "jsonschema>=4.26.0",            # INIT_PARAMS_SCHEMA validation
+    "more-itertools>=8.10.0",        # Extended iteration utilities
+
+    # Serialisation
+    "orjson>=3.11.7",                # Fast JSON — checkpoint and result payloads
+
+    # HTTP and auth
+    "httpx>=0.28.1",                 # Async HTTP — Ollama, WebhookTrigger, LLM adapters
+    "PyJWT>=2.13.0",                 # JWT signing for REST API authentication
+
+    # REST API
+    "fastapi>=0.111",                # REST API framework
+    "uvicorn[standard]>=0.29",       # ASGI server — websockets, lifespan, reload
+    "pydantic>=2.7",                 # Request/response schema validation
+
+    #  CLI
+    # Note: real entry point is volnux.cli:main.main (uses argparse, not click)
+    # click is kept for plugin/extension CLI tooling
+    "click==8.1.8",
+
+    # Concurrency and execution
+    "asgiref>=3.11.0",               # Async-to-sync bridge for ASGI utilities
+    "apscheduler<=3.11.0",           # ScheduleTrigger cron scheduling
+
+    # Persistence base
+    "yoyo-migrations>=9.0.0",        # SQL schema migration engine
+    "cryptography>=41.0.0",          # Encryption for sensitive checkpoint fields
+
+    # System
+    "psutil>=7.1.0",                 # Process/system metrics for HealthMonitor
+    "typing-extensions>=4.12.2",     # Backport of newer typing features (Python <3.11)
+
+    # OpenTelemetry
+    "opentelemetry-api>=1.24",
+    "opentelemetry-sdk>=1.24",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.24",
+    "opentelemetry-instrumentation-fastapi>=0.45b0",
+]
+
+# Optional dependency groups
+[project.optional-dependencies]
+
+# PostgreSQL backend
+# Governance data, audit trail, asset catalog, approval chains, RBAC.
+# Versions pinned to match real project — psycopg 3.x (not asyncpg).
+postgres = [
+    "psycopg==3.2.5",                # Sync PostgreSQL driver (migrations, schema)
+    "psycopg-binary==3.2.5",         # C extension for psycopg3
+    "psycopg-pool==3.2.6",           # Connection pool for psycopg3
+]
+
+# Redis backend
+# Checkpoints, HITL queue, command channel, task location, heartbeats.
+redis = [
+    "redis>=5.2.1",                  # Redis client (includes asyncio support)
+    "hiredis>=2.3",                  # C parser — 5-10× faster response parsing
+]
+
+# gRPC (RemoteExecutor, RemoteManager)
+grpc = [
+    "grpcio>=1.60.0,<=1.70.0",       # gRPC core — upper bound from real file
+    "grpcio-tools<=1.70.0",          # Proto compiler tools
+    "protobuf>=4.25",                # Protobuf runtime
+]
+
+# Celery task broker (ScheduleTrigger, CeleryWorkflowExecutor)
+celery = [
+    "celery>=5.6.2",                 # Distributed task queue
+]
+
+# Kubernetes executor
+kubernetes = [
+    "kubernetes>=29",                # K8s Python client for KubernetesJobExecutor
+]
+
+# LLM providers (install only the ones you use)
+openai = [
+    "openai>=1.30",
+]
+
+anthropic = [
+    "anthropic>=0.28",
+]
+
+gemini = [
+    # google-genai is the new SDK. NOT google-generativeai (deprecated).
+    "google-genai>=0.7",
+]
+
+ollama = [
+    # Ollama uses httpx (already in core deps) — no additional package needed.
+    # This group exists for documentation purposes and future SDK pinning.
+]
+
+# Observability (Prometheus metrics endpoint)
+# From real file's metrics group — renamed to observability for clarity.
+metrics = [
+    "prometheus-client>=0.20.0",     # /metrics endpoint for Prometheus scraping
+    "requests>=2.31.0",              # HTTP client used by some OTel exporters
+    "elasticsearch>=8.0.0",          # Optional: ES metrics sink
+]
+
+# Hot reload (dev server)
+reload = [
+    "watchfiles>=0.21",              # File watcher for volnux dev --reload
+]
+
+# Production bundle (no LLM providers — install per provider as needed)
+all = [
+    "volnux[postgres,redis,grpc,celery,kubernetes,metrics]",
+]
+
+dev = [
+    # Testing
+    "pytest==8.3.4",
+    "pytest-asyncio>=0.23",
+    "iniconfig==2.0.0",
+    "packaging==24.2",
+    "pluggy==1.5.0",
+    "coverage>=7.4.1",
+    "pytest-cov>=5",
+    "pytest-benchmark>=4.0",
+
+    # Test doubles
+    "fakeredis>=2.23",               # In-memory Redis for unit tests
+
+    # Linting and formatting
+    "ruff>=0.4",
+    "pyflakes==3.2.0",
+    "flake8==7.1.1",
+    "pycodestyle==2.12.1",
+    "flake8-black==0.3.6",
+    "black>=22.1.0",
+    "mccabe==0.7.0",
+
+    # Type checking
+    "mypy>=1.10",
+    "mypy-extensions==1.0.0",
+
+    # Pre-commit hooks
+    "pre-commit>=3.7",
+
+    # Load testing
+    "locust>=2.28",
+
+    # Utilities
+    "click==8.1.8",
+    "pathspec==0.12.1",
+    "platformdirs==4.3.6",
+]
+
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.25",
+]
+
+[project.scripts]
+volnux = "volnux.cli:main.main"
+
+# Package discovery
+# Explicit list from real project — avoids accidentally packaging test
+# helpers, native extensions, or deployment scripts.
+[tool.setuptools]
+packages = [
+    "volnux",
+    "volnux.translator",
+    "volnux.protos",
+    "volnux.parser",
+    "volnux.parser.protocols",
+
+    "volnux.executors",
+    "volnux.executors.utils",
+
+    "volnux.manager",
+    "volnux.manager.mesh",
+
+    "volnux.mixins",
+    "volnux.mixins.protocols",
+    "volnux.mixins.event",
+    "volnux.mixins.stream",
+    "volnux.mixins.event.communication",
+    "volnux.mixins.event.communication.hitl",
+    "volnux.mixins.event.communication.providers",
+
+    "volnux.signal",
+    "volnux.signal.handlers",
+
+    "volnux.backends",
+    "volnux.backends.stores",
+    "volnux.backends.fields",
+    "volnux.backends.saga",
+    "volnux.backends.messaging",
+    "volnux.backends.messaging.stores",
+    "volnux.backends.connectors",
+
+    "volnux.asset",
+
+    "volnux.execution",
+    "volnux.execution.common",
+    "volnux.execution.pipeline",
+    "volnux.execution.rehydrator",
+    "volnux.execution.rehydrator.engine",
+    "volnux.execution.rehydrator.event",
+    "volnux.execution.rehydrator.event.resources",
+    "volnux.execution.remote",
+    "volnux.execution.resilience",
+
+    "volnux.engine",
+    "volnux.engine.workflows",
+    "volnux.engine.workflows.loaders",
+    "volnux.engine.workflows.trigger",
+    "volnux.engine.workflows.trigger.event_filters",
+    "volnux.engine.workflows.trigger.eventbus",
+    "volnux.engine.workflows.trigger.executors",
+    "volnux.engine.workflows.trigger.triggers",
+    "volnux.engine.workflows.trigger.triggers.chain",
+    "volnux.engine.workflows.trigger.triggers.manager",
+
+    "volnux.task",
+
+    "volnux.flows",
+    "volnux.flows.bridge",
+    "volnux.flows.bridge.communications",
+    "volnux.flows.bridge.communications.tasks",
+    "volnux.flows.bridge.communications.tasks.channels",
+
+    "volnux.crypto",
+    "volnux.concurrency",
+
+    "volnux.models",
+    "volnux.result",
+    "volnux.versioning",
+
+    "volnux.event",
+    "volnux.event.meta",
+    "volnux.event.agent",
+    "volnux.event.agent.providers",
+
+#    "volnux.checkpointing",
+#    "volnux.distribution",
+#    "volnux.distribution.channels",
+#    "volnux.server",
+#    "volnux.server.routes",
+
+    "volnux.cli",
+    "volnux.cli.command",
+    "volnux.cli.command.builtins",
+    "volnux.cli.command.builtins.manifest",
+    "volnux.cli.command.builtins.manifest.subcommands",
+    "volnux.cli.command.builtins.migrate",
+    "volnux.cli.command.builtins.migrate.subcommands",
+    "volnux.cli.command.builtins.templates",
+    "volnux.cli.command.builtins.triggers",
+    "volnux.cli.command.builtins.triggers.subcommands",
+    "volnux.cli.command.builtins.workflow",
+    "volnux.cli.command.builtins.workflow.subcommands",
+    "volnux.cli.command.mixins",
+    "volnux.cli.command.runtime",
+
+    "volnux.otel",
+    "volnux.otel.instrumentations",
+]
+
+[tool.setuptools.package-data]
+volnux = [
+    "py.typed",
+    "**/*.pyi",
+    "**/*.pty",      # Pointy-Lang workflow files bundled with packages
+    "protos/*.proto",
+]
+
+[tool.ruff]
+target-version = "py38"              # Matches requires-python
+line-length    = 100
+src            = ["volnux", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+    "RUF",  # Ruff-specific rules
+]
+ignore = [
+    "E501",   # Line too long — handled by formatter
+    "B008",   # Function calls in default arguments — common in FastAPI
+    "RUF012", # Mutable class attributes — EventBase uses ClassVar patterns
+    "UP007",  # Use X | Y — requires Python 3.10+, we support 3.8
+    "UP006",  # Use type instead of Type — requires Python 3.9+
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["volnux"]
+
+[tool.ruff.format]
+quote-style               = "double"
+indent-style              = "space"
+skip-magic-trailing-comma = false
+
+[tool.mypy]
+python_version         = "3.8"       # Matches requires-python
+strict                 = false
+disallow_untyped_defs  = true
+warn_return_any        = true
+warn_unused_configs    = true
+ignore_missing_imports = true
+exclude                = ["tests/", "docs/", "volnux/protos/"]
+
+[tool.mypy.overrides]
+module = "volnux.parser.*"
+ignore_errors = true                 # Generated parser code — not type-checked
+
+[tool.pytest.ini_options]
+asyncio_mode   = "auto"
+testpaths      = ["tests"]
+log_cli        = true
+log_cli_level  = "WARNING"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::ImportWarning",         # Celery optional import warning
+]
+markers = [
+    "unit:        Pure unit tests — no infrastructure",
+    "integration: Integration tests — requires running PostgreSQL and Redis",
+    "agent:       Agent tests — requires Ollama or API key",
+    "slow:        Tests that take > 5s",
+    "benchmark:   Performance benchmark tests",
+]
+
+[tool.coverage.run]
+branch      = true
+concurrency = ["multiprocessing"]
+source      = ["volnux"]
+omit = [
+    "volnux/parser/*",               # Generated PLY parser
+    "volnux/protos/*",               # Generated protobuf code
+    "volnux/cli/*",                  # CLI entry points
+    "tests/*",
+    "*/migrations/*",
+]
+data_file = ".coverage"
+
+[tool.coverage.report]
+show_missing  = true
+skip_covered  = false
+skip_empty    = true
+fail_under    = 80
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self\\.debug",
+    "if TYPE_CHECKING:",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "@(abc\\.)?abstractmethod",
+    "\\.\\.\\.\\s*$",
+]
+
+[tool.coverage.html]
+directory = "coverage_html_report"
+
+[tool.coverage.xml]
+output = "coverage.xml"              # For Codecov CI upload
+
+[tool.black]
+line-length    = 100
+target-version = ["py310", "py311", "py312"]
+exclude        = "protos"

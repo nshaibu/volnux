@@ -1,4 +1,5 @@
 import sys
+import asyncio
 import code
 from typing import Optional
 
@@ -11,6 +12,9 @@ class ShellCommand(BaseCommand):
     name = "shell"
     category = CommandCategory.DEVELOPMENT
 
+    def add_arguments(self, parser) -> None:
+        return
+
     def handle(self, *args, **options) -> Optional[str]:
         self.stdout.write("Starting Volnux interactive shell...\n")
 
@@ -20,9 +24,11 @@ class ShellCommand(BaseCommand):
             project_config.__name__: project_config,
         }
 
-        workflow_registry = self._initialise_workflows(project_dir)
+        engine = self.initialise_workflows(project_dir)
 
-        for workflow in workflow_registry.get_workflow_configs():
+        workflows_registry = engine.get_workflow_registry()
+
+        for workflow in workflows_registry.get_workflow_configs():
             local_vars[workflow.name] = workflow
 
         shell_version = f"Python {sys.version} on {sys.platform}"

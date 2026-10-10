@@ -7,8 +7,8 @@ import pytest
 
 from volnux import EventBase
 from volnux.fields import InputDataField
-from volnux.pipeline import Pipeline
-from volnux.pipeline_wrapper import PipelineExecutionState, PipelineWrapper
+from volnux.execution.pipeline import Pipeline
+from volnux.execution.pipeline.wrapper import PipelineExecutionState, PipelineWrapper
 
 
 class Fetch(EventBase):

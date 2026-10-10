@@ -1,0 +1,186 @@
+"""Shared test configuration for volnux.engine.base unit tests.
+
+This conftest un-mocks the real volnux.engine modules (which the rehydrator
+conftest.py force-mocks), then mocks ONLY the external dependencies (formax,
+volnux.pipeline, volnux.parser.protocols, volnux.execution.context,
+volnux.execution.rehydrator.checkpoint) so that the real base.py can be
+imported and tested in isolation.
+"""
+
+import sys
+import typing
+from unittest.mock import MagicMock
+
+import pytest
+
+# ---------------------------------------------------------------------------
+# 1. Remove any previously-force-mocked engine modules (set by rehydrator
+#    conftest.py) so we can import the REAL source files under test.
+# ---------------------------------------------------------------------------
+for _mod in (
+    "volnux.engine",
+    "volnux.engine.base",
+    "volnux.engine.checkpoint_config",
+    "volnux.engine.default_engine",
+    "volnux.execution",
+    "volnux.execution.context",
+    "volnux.execution.rehydrator",
+    "volnux.execution.rehydrator.checkpoint",
+    "volnux.parser",
+    "volnux.parser.protocols",
+    "volnux.pipeline",
+    "formax",
+):
+    sys.modules.pop(_mod, None)
+
+# ---------------------------------------------------------------------------
+# 2. Set up the formax mock (enhanced version supporting defaults & frozen).
+# ---------------------------------------------------------------------------
+
+typing.TYPE_CHECKING = False  # allow guarded imports in source
+
+
+class _FormaxField:
+    """Wraps (type, attrib_kwargs) from MiniAnnotated[type, Attrib(...)]."""
+    __slots__ = ("base_type", "attrib_kwargs")
+
+    def __init__(self, base_type, attrib_kwargs):
+        self.base_type = base_type
+        self.attrib_kwargs = attrib_kwargs
+
+
+class _FakeBaseModel:
+    """Minimal formax.BaseModel stand-in with default/frozen support."""
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        defaults = {}
+        for name, ann in getattr(cls, "__annotations__", {}).items():
+            if isinstance(ann, _FormaxField):
+                attrib = ann.attrib_kwargs
+                if "default" in attrib:
+                    defaults[name] = attrib["default"]
+                elif "default_factory" in attrib:
+                    defaults[name] = attrib["default_factory"]()
+            else:
+                for klass in cls.__mro__:
+                    if name in klass.__dict__:
+                        val = klass.__dict__[name]
+                        if not callable(val) or isinstance(val, type):
+                            defaults[name] = val
+                        break
+        cls._formax_defaults = defaults
+
+    def __init__(self, **kwargs):
+        for name, default_val in getattr(
+            self.__class__, "_formax_defaults", {}
+        ).items():
+            if name not in kwargs:
+                kwargs[name] = default_val
+        for k, v in kwargs.items():
+            object.__setattr__(self, k, v)
+
+    def __setattr__(self, k, v):
+        config_cls = getattr(self.__class__, "Config", None)
+        if config_cls and getattr(config_cls, "frozen", False):
+            raise AttributeError(
+                f"'{self.__class__.__name__}' is frozen and does not allow "
+                f"attribute assignment"
+            )
+        object.__setattr__(self, k, v)
+
+    def change_object_id(self, oid):
+        object.__setattr__(self, "id", oid)
+
+    def asdict(self):
+        from dataclasses import asdict
+        return asdict(self)
+
+
+class _FakeMiniAnnotated:
+    @classmethod
+    def __class_getitem__(cls, item):
+        if isinstance(item, tuple) and len(item) >= 2:
+            return _FormaxField(item[0], item[1])
+        return item
+
+
+_formax = MagicMock()
+_formax.BaseModel = _FakeBaseModel
+_formax.MiniAnnotated = _FakeMiniAnnotated
+_formax.Attrib = lambda **kw: kw
+_vf = MagicMock()
+_vf.NONE = 0
+_formax.ValidationFlags = _vf
+_is = MagicMock()
+_is.DATACLASS = "dataclass"
+_formax.InitStrategy = _is
+sys.modules["formax"] = _formax
+
+# ---------------------------------------------------------------------------
+# 3. Mock the remaining external dependencies that have no real source.
+# ---------------------------------------------------------------------------
+
+# -- volnux.pipeline --------------------------------------------------------
+_pipeline_mod = MagicMock()
+_pipeline_mod.Pipeline = MagicMock
+sys.modules["volnux.pipeline"] = _pipeline_mod
+
+# -- volnux.parser ---------------------------------------------------------
+_parser_mod = MagicMock()
+_parser_mod.__path__ = []  # mark as package for submodule imports
+sys.modules["volnux.parser"] = _parser_mod
+
+_parser_protocols = MagicMock()
+_parser_protocols.TaskType = MagicMock
+sys.modules["volnux.parser.protocols"] = _parser_protocols
+
+# -- volnux.exceptions -----------------------------------------------------
+_ex_mod = MagicMock()
+_ex_mod.TaskSwitchingError = type("TaskSwitchingError", (Exception,), {"__init__": lambda self, *a, **kw: Exception.__init__(self, *a)})
+sys.modules["volnux.exceptions"] = _ex_mod
+
+# -- volnux.execution -------------------------------------------------------
+_execution_mod = MagicMock()
+_execution_mod.__path__ = []  # mark as package for submodule imports
+sys.modules["volnux.execution"] = _execution_mod
+
+_ctx_mod = MagicMock()
+_ctx_mod.ExecutionContext = MagicMock
+sys.modules["volnux.execution.context"] = _ctx_mod
+
+_status_mod = MagicMock()
+_status_mod.ExecutionStatus = MagicMock
+sys.modules["volnux.execution.status"] = _status_mod
+
+_utils_mod = MagicMock()
+_utils_mod.evaluate_context_execution_results = MagicMock()
+sys.modules["volnux.execution.utils"] = _utils_mod
+
+# -- volnux.parser.operator -------------------------------------------------
+_parser_op = MagicMock()
+_parser_op.PipeType = MagicMock()
+sys.modules["volnux.parser.operator"] = _parser_op
+
+# -- volnux.execution.rehydrator.checkpoint (commented-out import) ----------
+_rehydrator_mod = MagicMock()
+sys.modules["volnux.execution.rehydrator"] = _rehydrator_mod
+
+_cp_mock = MagicMock()
+sys.modules["volnux.execution.rehydrator.checkpoint"] = _cp_mock
+
+# ---------------------------------------------------------------------------
+# 4. Now import the REAL checkpoint_config (needs formax mock above).
+# ---------------------------------------------------------------------------
+from volnux.engine.checkpoint_config import (  # noqa: E402
+    CheckPointConfig,
+    CheckPointFrequency,
+)
+
+# ---------------------------------------------------------------------------
+# Pytest hooks
+# ---------------------------------------------------------------------------
+
+def pytest_configure(config):
+    """Force asyncio_mode=auto so async test functions are auto-detected."""
+    config.option.asyncio_mode = "auto"

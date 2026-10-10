@@ -12,10 +12,14 @@ class TaskBase(ObjectIdentityMixin):
     def __init__(
         self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
     ) -> None:
-        super().__init__(*args, **kwargs)  # type: ignore
+        super().__init__()  # type: ignore
 
         # options specified in pointy scripts for tasks are kept here
         self.options: typing.Optional[Options] = None
+
+        # Use for identify the order of a task.
+        # This will be passed to events during initialization
+        self.sequence_number: typing.Optional[int] = None
 
         # attributes for when a task is created from a descriptor
         self._descriptor: typing.Optional[int] = None
@@ -118,6 +122,19 @@ class TaskBase(ObjectIdentityMixin):
         )
 
     def get_pointer_to_task(self) -> typing.Optional["PipeType"]:
+        """
+        Determines and retrieves the appropriate pipe type associated with the current task.
+
+        This method evaluates various conditions and attributes of the `parent_node` and its
+        corresponding nodes to decide which pipe type, if any, should be returned. The pipe
+        type is determined based on the relationship between the current task and its
+        associated condition or sink nodes. If no pipe type can be resolved from these checks,
+        the method attempts to use a custom descriptor configuration to derive a pipe type.
+
+        :return: The resolved pipe type associated with the current task, or None if no
+            applicable pipe type can be determined.
+        :rtype: typing.Optional[PipeType]
+        """
         pipe_type = None
         if self.parent_node is not None:
             if (
@@ -160,7 +177,7 @@ class TaskBase(ObjectIdentityMixin):
 
     def get_root(self) -> TaskType:
         if self.parent_node is None:
-            node = self
+            node = typing.cast(object, self)
             node = typing.cast(TaskType, node)
             return node
         return self.parent_node.get_root()
@@ -170,7 +187,7 @@ class TaskBase(ObjectIdentityMixin):
 
     def get_task_count(self) -> int:
         root = self.get_root()
-        nodes = list(self.bf_traversal(root))
+        nodes = list(self.df_traversal(root))
         return len(nodes)
 
     def get_descriptor(self, descriptor: int) -> typing.Optional[TaskType]:
@@ -184,22 +201,41 @@ class TaskBase(ObjectIdentityMixin):
         cls, node: typing.Optional[TaskType]
     ) -> typing.Generator[TaskType, None, None]:
         """
-        Performs a breadth-first traversal of the task tree starting from the given node.
-
-        Despite the method name, this traversal is depth-first, not breadth-first.
-        Yields each node in the tree.
+        Breadth-first traversal of the task tree starting from the given node.
+        Yields nodes level by level, left to right.
         """
-        if node:
-            yield node
+        if not node:
+            return
 
-            for child in node.get_children():
-                yield from cls.bf_traversal(child)
+        queue: typing.Deque[TaskType] = deque([node])
+        while queue:
+            current = queue.popleft()
+            yield current
+            queue.extend(current.get_children())
+
+    @classmethod
+    def df_traversal(
+        cls, node: typing.Optional[TaskType]
+    ) -> typing.Generator[TaskType, None, None]:
+        """
+        Depth-first (pre-order) traversal of the task tree starting from the given node.
+        Yields each node before its children.
+        """
+        if not node:
+            return
+
+        stack: typing.List[TaskType] = [node]
+        while stack:
+            current = stack.pop()
+            yield current
+            # Extend in reverse so leftmost child is processed first.
+            stack.extend(reversed(current.get_children()))
 
     def get_parallel_nodes(
         self,
     ) -> typing.Deque[TaskType]:
         parallel_tasks: typing.Deque[TaskType] = deque()
-        task = self
+        task = typing.cast(object, self)
         task = typing.cast(TaskType, task)
         while task and task.condition_node.on_success_pipe == PipeType.PARALLELISM:
             parallel_tasks.append(task)
@@ -219,7 +255,7 @@ class TaskBase(ObjectIdentityMixin):
             ):
                 return self.parent_node.get_first_task_in_parallel_execution_mode()
             else:
-                return self
+                return typing.cast(TaskType, self)
         return None
 
     def get_last_task_in_parallel_execution_mode(

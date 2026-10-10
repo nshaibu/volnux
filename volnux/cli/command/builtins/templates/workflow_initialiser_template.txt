@@ -1,7 +1,8 @@
 from pathlib import Path
+from asgiref import sync
 from volnux.setup import initialise_workflows
 
 
 project_dir = Path(__file__).parent
 
-workflows = initialise_workflows(project_dir)
+engine = sync.async_to_sync(initialise_workflows)(project_dir)

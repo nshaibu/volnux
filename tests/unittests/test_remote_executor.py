@@ -9,7 +9,7 @@ import queue
 from unittest.mock import Mock, patch
 from concurrent.futures import Future
 from volnux.manager.remote_manager import RemoteTaskManager
-from volnux.executors.remote_executor import RemoteExecutor, TaskMessage
+from volnux.executors.tcp import RemoteExecutor, TaskMessage
 
 
 class MockContextManager:
@@ -47,9 +47,7 @@ class TestRemoteExecutorWithSSL(unittest.TestCase):
         cls.client_key = os.path.join(
             cls.cert_dir, "volnux/scripts/certificates/client.key"
         )
-        cls.ca_cert = os.path.join(
-            cls.cert_dir, "volnux/scripts/certificates/ca.crt"
-        )
+        cls.ca_cert = os.path.join(cls.cert_dir, "volnux/scripts/certificates/ca.crt")
 
     def setUp(self):
         self.host = "localhost"

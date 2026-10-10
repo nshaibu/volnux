@@ -1,0 +1,231 @@
+---
+#
+# HorizontalPodAutoscalers for API and Worker deployments.
+#
+# Worker scaling strategy:
+#   Scale up fast (60s stabilisation) — new workflows need executors.
+#   Scale down slow (300s stabilisation) — avoids preempting in-flight events.
+#   CPU threshold 70%: leaves headroom for event execution bursts.
+#   Memory threshold 80%: LLM agent workloads have high memory footprint.
+#
+# API scaling strategy:
+#   Scale on CPU — API pods are I/O-bound (FastAPI + asyncio).
+#   Scale up fast, scale down moderately (no in-flight state on API pods).
+
+# ── Worker HPA ────────────────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: volnux-worker
+  namespace: volnux
+  labels:
+    app: volnux-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind:       Deployment
+    name:       volnux-worker
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    # CPU — primary scaling signal for compute-heavy event workloads
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type:               AverageUtilization
+          averageUtilization: 70
+    # Memory — secondary scaling signal for agent/LLM workloads
+    # where LLM response buffering and tool execution spike memory
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type:               AverageUtilization
+          averageUtilization: 80
+  behavior:
+    # Scale DOWN slowly — in-flight events are checkpointed on pod termination
+    # but reducing workers while workflows are executing increases latency.
+    scaleDown:
+      stabilizationWindowSeconds: 300   # Wait 5 min before scaling down
+      policies:
+        - type:          Pods
+          value:         1
+          periodSeconds: 120            # Remove at most 1 pod per 2 minutes
+    # Scale UP quickly — waiting too long leaves workflows queued
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type:          Pods
+          value:         3
+          periodSeconds: 60             # Add up to 3 pods per minute
+
+---
+# ── API HPA ───────────────────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: volnux-api
+  namespace: volnux
+  labels:
+    app: volnux-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind:       Deployment
+    name:       volnux-api
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type:               AverageUtilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 120
+      policies:
+        - type:          Pods
+          value:         1
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type:          Pods
+          value:         2
+          periodSeconds: 60
+
+
+---
+# deploy/kubernetes/11-pdb.yaml
+#
+# PodDisruptionBudgets — prevent Kubernetes cluster maintenance from
+# taking down too many pods simultaneously.
+#
+# API PDB:
+#   minAvailable: 1 — always keep at least one API pod running.
+#   Ensures REST API and TriggerEngine remain available during node drains.
+#
+# Worker PDB:
+#   maxUnavailable: 1 — allow at most one worker to be down at a time.
+#   Workers hold in-flight event state. Taking down more than one
+#   simultaneously during a node drain would require multiple concurrent
+#   checkpoint restorations.
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: volnux-api-pdb
+  namespace: volnux
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: volnux-api
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: volnux-worker-pdb
+  namespace: volnux
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: volnux-worker
+
+---
+# PostgreSQL PDB — never drain the database pod without another being ready
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgres-pdb
+  namespace: volnux
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: postgres
+
+---
+# Redis checkpoints PDB — HITL queue and checkpoints must remain available
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-checkpoints-pdb
+  namespace: volnux
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: redis-checkpoints
+
+
+---
+# deploy/kubernetes/12-resource-quota.yaml
+#
+# Namespace-level ResourceQuota.
+# Prevents a runaway HPA or misconfigured deployment from consuming
+# all cluster resources. Adjust limits to match your cluster capacity.
+#
+# Sizing guidance (Heavy workload — see README for other tiers):
+#   API:     2 pods × 2 CPU / 4Gi  =  4 CPU / 8Gi
+#   Worker: 10 pods × 4 CPU / 8Gi  = 40 CPU / 80Gi
+#   Infra:   ~6 CPU / 16Gi (postgres, redis×2, otel)
+#   Total:  ~50 CPU / 104Gi → set hard limits above peak with headroom
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: volnux-quota
+  namespace: volnux
+spec:
+  hard:
+    # Compute
+    requests.cpu:    "20"
+    requests.memory: "40Gi"
+    limits.cpu:      "60"
+    limits.memory:   "120Gi"
+    # Storage
+    persistentvolumeclaims: "10"
+    requests.storage:       "200Gi"
+    # Object counts
+    pods:     "50"
+    services: "20"
+    secrets:  "20"
+    configmaps: "20"
+    # Prevent accidental LoadBalancer creation
+    services.loadbalancers: "1"
+    services.nodeports:     "0"
+
+---
+# LimitRange — default limits for pods that do not declare their own.
+# Prevents pods without resource declarations from consuming unbounded resources.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: volnux-limits
+  namespace: volnux
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu:    "500m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu:    "100m"
+        memory: "128Mi"
+      max:
+        cpu:    "8"
+        memory: "16Gi"
+      min:
+        cpu:    "50m"
+        memory: "64Mi"
+    - type: PersistentVolumeClaim
+      max:
+        storage: "200Gi"
+      min:
+        storage: "1Gi"

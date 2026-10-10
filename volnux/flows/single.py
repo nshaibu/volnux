@@ -1,13 +1,12 @@
 import asyncio
+import inspect
 import logging
-import typing
-
-from volnux.base import ExecutorInitializerConfig
+from typing import Optional, Type, TYPE_CHECKING
 from volnux.executors import BaseExecutor
 
 from .base import BaseFlow
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from volnux.parser.protocols import TaskProtocol
 
 
@@ -15,15 +14,15 @@ logger = logging.getLogger(__name__)
 
 
 class SingleFlow(BaseFlow):
-    """Setup for execution flow of a single event"""
+    """Setup for the execution flow of a single event"""
 
-    task_profile: typing.Optional["TaskProtocol"] = None
+    task_profile: Optional["TaskProtocol"] = None
 
-    def __model_init__(self, *args, **kwargs) -> None:
-        super().__model_init__(*args, **kwargs)
+    def __post_init__(self, *args, **kwargs) -> None:
+        super().__post_init__(*args, **kwargs)
         self.task_profile = self.task_profiles[0]
 
-    async def get_flow_executor(self, *args, **kwargs) -> typing.Type[BaseExecutor]:
+    async def get_flow_executor(self, *args, **kwargs) -> Type[BaseExecutor]:
         """
         Get the executor class for this flow.
         Args:
@@ -32,11 +31,11 @@ class SingleFlow(BaseFlow):
         Returns:
             The executor class.
         """
-        executor_class = await self.get_task_executor_from_options(self.task_profile)
+        executor_class = self.get_task_executor_from_options(self.task_profile)
         if executor_class is not None:
             return executor_class
         event_class = self.task_profile.get_event_class()
-        return event_class.get_executor_class()
+        return event_class.get_task_executor()
 
     async def run(self) -> asyncio.Future:
         """
@@ -48,7 +47,12 @@ class SingleFlow(BaseFlow):
             RuntimeError: if the event submission or execution fails
             BrokenPipeError: if the internal queue of the executor is broken.
         """
+        executor = None
         try:
+            logger.debug(
+                f"Starting sequential execution flow for task: {self.task_profile}"
+            )
+
             executor_class, executor_config = await asyncio.gather(
                 self.get_flow_executor(self.task_profile),
                 self.get_flow_executor_config(self.task_profile),
@@ -59,28 +63,30 @@ class SingleFlow(BaseFlow):
 
             event, event_call_kwargs = self.get_initialized_event(self.task_profile)
 
-            if typing.TYPE_CHECKING:
-                executor_class = typing.cast(typing.Type[BaseExecutor], executor_class)
-                executor_config = typing.cast(
-                    ExecutorInitializerConfig, executor_config
-                )
+            executor = self._initialize_executor(executor_class, executor_config)
 
-            config = self.parse_executor_initialisation_configuration(
-                executor_class, executor_config
+            future = await self._submit_event_to_executor(
+                executor, event, event_call_kwargs
             )
-
-            with executor_class(**config) as executor:
-                future = await self._submit_event_to_executor(
-                    executor, event, event_call_kwargs
-                )
 
             return future
         except ValueError as e:
-            logger.error(f"Configuration error in run(): {e}")
+            logger.error(f"Configuration error in SingleFlow.run(): {e}")
             raise
         except RuntimeError as e:
-            logger.error(f"Executor runtime error in run(): {e}")
+            logger.error(f"Executor runtime error in SingleFlow.run(): {e}")
             raise
         except Exception as e:
-            logger.error(f"Unexpected error in run(): {e}")
-            raise RuntimeError(f"Failed to execute event: {e}")
+            logger.error(
+                f"Unexpected error in SingleFlow.run(): {e}\n"
+                f"Context: {self.context.state_id}\n"
+                f"Events: {self.context.task_profiles}",
+                exc_info=True,
+            )
+            raise RuntimeError(
+                f"Failed to execute events: {e}\n"
+                f"Events: {self.context.task_profiles}"
+            ) from e
+        finally:
+            if executor:
+                await self.shutdown_executor(executor)

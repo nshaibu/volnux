@@ -1,0 +1,70 @@
+---
+#
+# Persistent Volume Claims for Volnux infrastructure.
+#
+# IMPORTANT — ReadWriteMany requirement:
+#   volnux-workflows-pvc uses ReadWriteMany so both API and worker pods
+#   can mount the same workflow code directory simultaneously.
+#   RWX is NOT supported by default storage classes on major cloud providers:
+#     AWS:   Use EFS CSI driver (StorageClass: efs-sc)
+#     GCP:   Use Filestore CSI driver (StorageClass: standard-rwx)
+#     Azure: Use Azure Files (StorageClass: azurefile)
+#     Self:  Use NFS provisioner or Rook/CephFS
+#
+#   Alternative: Bake workflow code into the container image and remove
+#   this PVC entirely. This is the recommended approach for CI/CD pipelines
+#   where workflow code is versioned with the image.
+#
+#   If you use the container image approach, remove the `workflows` volume
+#   and volumeMount from api-deployment.yaml and worker-deployment.yaml.
+
+# ── Redis checkpoint storage ──────────────────────────────────────────────────
+# Persists checkpoint snapshots and HITL queue across Redis pod restarts.
+# Sized for AOF + RDB files. Increase for high-checkpoint-frequency workloads.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-checkpoints-pvc
+  namespace: volnux
+  labels:
+    app: redis-checkpoints
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName: "your-storage-class"  # Uncomment to specify
+
+---
+# ── Workflow code storage (ReadWriteMany — see note above) ────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: volnux-workflows-pvc
+  namespace: volnux
+  labels:
+    app: volnux
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 10Gi
+  # storageClassName: "efs-sc"  # AWS EFS example — set for your provider
+
+---
+# ── PostgreSQL backup storage ─────────────────────────────────────────────────
+# Holds pg_dump backups from the nightly backup CronJob.
+# Retention: 30 days of daily backups at ~compression_ratio × DB_size each.
+# Size accordingly: 50Gi is sufficient for a 5GB database with 10× compression.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-backup-pvc
+  namespace: volnux
+  labels:
+    app: postgres
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 50Gi

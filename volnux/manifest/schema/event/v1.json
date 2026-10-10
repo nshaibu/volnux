@@ -1,0 +1,520 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eventhub.volnux.dev/manifest/v1.schema.json",
+  "title": "Volnux EventHub manifest",
+  "description": "Validates volnux.manifest.json files submitted to the EventHub registry.",
+  "type": "object",
+  "required": ["$schema", "manifest_version", "package", "events", "changelog", "dependencies", "compatibility"],
+  "additionalProperties": false,
+
+  "properties": {
+
+    "$schema": {
+      "type": "string",
+      "const": "https://eventhub.volnux.dev/manifest/v1.json",
+      "description": "Must reference the EventHub v1 manifest schema URI."
+    },
+
+    "manifest_version": {
+      "type": "string",
+      "const": "1",
+      "description": "Manifest format version. Currently only '1' is accepted."
+    },
+
+    "package": {
+      "type": "object",
+      "description": "Top-level package identity and distribution metadata.",
+      "required": ["name", "version", "package_type", "description", "author", "license", "source", "python_requires", "volnux_requires"],
+      "additionalProperties": false,
+      "properties": {
+
+        "name": {
+          "type": "string",
+          "description": "PyPI-style package name. Lowercase, hyphens only.",
+          "pattern": "^[a-z][a-z0-9\\-]*[a-z0-9]$",
+          "minLength": 2,
+          "maxLength": 80
+        },
+
+        "version": {
+          "$ref": "#/$defs/semver",
+          "description": "Package version. Must be a valid semver string."
+        },
+
+        "package_type": {
+          "type": "string",
+          "enum": ["event", "workflow"],
+          "description": "Package type defines the content of the package. 'event' and 'workflow' are the only supported type at this time.",
+          "examples": ["event"]
+        },
+
+        "description": {
+          "type": "string",
+          "description": "Short human-readable description of the package.",
+          "minLength": 10,
+          "maxLength": 280
+        },
+
+        "author": {
+          "type": "string",
+          "description": "Publisher name or organisation slug.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+
+        "license": {
+          "type": "string",
+          "description": "SPDX licence identifier.",
+          "examples": ["MIT", "Apache-2.0", "GPL-3.0-only", "Proprietary"]
+        },
+
+        "homepage": {
+          "type": "string",
+          "format": "uri",
+          "description": "Optional URL for the project homepage."
+        },
+
+        "repository": {
+          "type": "string",
+          "format": "uri",
+          "description": "Optional URL for the source repository."
+        },
+
+        "python_requires": {
+          "type": "string",
+          "description": "PEP 440 python version specifier.",
+          "pattern": "^(>=|>|==|~=)[0-9]+\\.[0-9]+(\\.[0-9]+)?$",
+          "examples": [">=3.11", ">=3.11.0"]
+        },
+
+        "volnux_requires": {
+          "type": "string",
+          "description": "Minimum volnux-core version required.",
+          "pattern": "^(>=|>|==|~=)[0-9]+\\.[0-9]+(\\.[0-9]+)?$",
+          "examples": [">=0.8.0", ">=1.0.0"]
+        },
+
+        "keywords": {
+          "type": "array",
+          "description": "Optional search tags surfaced in the EventHub registry.",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9\\-_]+$",
+            "maxLength": 32
+          },
+          "maxItems": 20,
+          "uniqueItems": true
+        },
+
+        "source": {
+          "type": "object",
+          "description": "Distribution source used by the Volnux resolver at runtime.",
+          "required": ["type", "package", "version"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["pypi", "git", "hub", "local"],
+              "description": "Distribution channel. 'local' is rejected by EventHub for published packages."
+            },
+            "package": {
+              "type": "string",
+              "description": "Package identifier on the chosen source (PyPI name, git URL, hub slug).",
+              "minLength": 1
+            },
+            "version": {
+              "$ref": "#/$defs/semver"
+            },
+            "git_ref": {
+              "type": "string",
+              "description": "Git tag or SHA. Required when type is 'git'. Must not be a branch name.",
+              "pattern": "^(v[0-9]+\\.[0-9]+|[0-9a-f]{7,40}).*$"
+            }
+          },
+          "if": {
+            "properties": { "type": { "const": "git" } }
+          },
+          "then": {
+            "required": ["git_ref"]
+          }
+        }
+      }
+    },
+
+    "events": {
+      "type": "array",
+      "description": "All EventBase subclasses exported by this package.",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/event_entry" }
+    },
+
+    "changelog": {
+      "type": "object",
+      "description": "Package-level version history keyed by semver string.",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/semver_key"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/changelog_entry"
+      }
+    },
+
+    "dependencies": {
+      "type": "object",
+      "description": "Runtime Python dependencies with PEP 440 version specifiers.",
+      "additionalProperties": {
+        "type": "string",
+        "description": "PEP 440 version specifier for the dependency.",
+        "pattern": "^(>=|>|==|!=|~=|<=|<)[0-9]+(\\.[0-9]+)*(,\\s*(>=|>|==|!=|~=|<=|<)[0-9]+(\\.[0-9]+)*)*$",
+        "examples": [">=0.29", ">=2.0,<3.0", "==1.4.2"]
+      }
+    },
+
+    "compatibility": {
+      "type": "object",
+      "description": "Tested runtime compatibility matrix.",
+      "required": ["volnux", "python"],
+      "additionalProperties": false,
+      "properties": {
+        "volnux": {
+          "type": "array",
+          "description": "Volnux runtime versions this package has been tested against.",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9x]+)?$",
+            "examples": ["0.9.x", "1.0.0"]
+          },
+          "uniqueItems": true
+        },
+        "python": {
+          "type": "array",
+          "description": "Python versions this package has been tested against.",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^3\\.[0-9]+(\\.[0-9]+)?$",
+            "examples": ["3.11", "3.12"]
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+
+  "$defs": {
+
+    "semver": {
+      "type": "string",
+      "description": "Semantic version string.",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-(0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(\\.(0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?(\\+[0-9a-zA-Z-]+(\\.[0-9a-zA-Z-]+)*)?$",
+      "examples": ["1.0.0", "2.4.1", "0.9.0-beta.1"]
+    },
+
+    "semver_key": {
+      "type": "string",
+      "description": "Semver string used as an object key.",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-(0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(\\.(0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?$"
+    },
+
+    "python_identifier": {
+      "type": "string",
+      "description": "Valid Python class or module identifier.",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+    },
+
+    "event_categories_enum": {
+      "type": "string",
+      "enum": [
+        "EXTRACT",
+        "TRANSFORM",
+        "LOAD",
+        "INGEST",
+        "DATABASE",
+        "HTTP",
+        "MESSAGING",
+        "FILE",
+        "CACHE",
+        "VALIDATE",
+        "ANALYZE",
+        "MONITOR",
+        "AUTOMATION",
+        "NOTIFICATION",
+        "CLEANUP",
+        "AI",
+        "AGENT",
+        "OTHER"
+      ],
+      "description": "Maps to EventBase.categories (EventCategory enum)."
+    },
+
+    "deprecation_info": {
+      "type": "object",
+      "description": "Structured deprecation notice. Required when deprecated is true.",
+      "required": ["since_version", "reason", "replacement", "removal_version"],
+      "additionalProperties": false,
+      "properties": {
+        "since_version": {
+          "$ref": "#/$defs/semver",
+          "description": "Package version in which this event was first marked deprecated."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable explanation of why the event is deprecated.",
+          "minLength": 10,
+          "maxLength": 500
+        },
+        "replacement": {
+          "type": ["string", "null"],
+          "description": "Class name of the recommended replacement event, or null if none exists.",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "removal_version": {
+          "$ref": "#/$defs/semver",
+          "description": "Package version in which this event will be removed."
+        }
+      }
+    },
+
+    "param_type_enum": {
+      "type": "string",
+      "description": "Python type annotation string for an init parameter.",
+      "enum": [
+        "str",
+        "int",
+        "float",
+        "bool",
+        "list[str]",
+        "list[int]",
+        "list[float]",
+        "dict",
+        "dict[str, str]",
+        "dict[str, any]",
+        "str | None",
+        "int | None",
+        "float | None",
+        "bool | None",
+        "list[str] | None",
+        "list[int] | None",
+        "dict | None",
+        "any"
+      ]
+    },
+
+    "agent": {
+      "type": "object",
+      "description": "Present only when package_type is 'agent'.",
+      "required": [
+          "entry_point",
+          "llm_providers",
+          "tools",
+          "permitted_handoffs",
+          "prompt_version",
+          "max_reasoning_steps"
+      ],
+      "properties": {
+          "entry_point":          { "type": "string" },
+          "llm_providers":        { "type": "array", "items": { "type": "string" } },
+          "tools":                { "type": "array", "items": { "type": "string" } },
+          "permitted_handoffs":   { "type": "array", "items": { "type": "string" } },
+          "prompt_version":       { "$ref": "#/$defs/semver" },
+          "max_reasoning_steps":  { "type": "integer", "minimum": 1 },
+          "token_budget":         { "type": "integer", "minimum": 0 },
+          "hallucination_detection": { "type": "boolean" }
+      }
+    },
+
+    "init_param_schema": {
+      "type": "object",
+      "description": "Schema entry for one __init__ parameter of the event class.",
+      "required": ["type", "required", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/param_type_enum"
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Whether this parameter must be supplied when constructing the event."
+        },
+        "description": {
+          "type": "string",
+          "description": "Short description of the parameter's purpose.",
+          "minLength": 5,
+          "maxLength": 300
+        },
+        "default": {
+          "description": "Default value used when the parameter is not supplied. May be any JSON-compatible type or null.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "boolean" },
+            { "type": "null" },
+            { "type": "array" },
+            { "type": "object" }
+          ]
+        },
+        "enum": {
+          "type": "array",
+          "description": "Allowed values for this parameter. Present only when the parameter is constrained to a fixed set.",
+          "minItems": 2,
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "examples": {
+          "type": "array",
+          "description": "Optional illustrative example values.",
+          "maxItems": 5,
+          "items": {}
+        }
+      },
+      "if": {
+        "properties": { "required": { "const": false } }
+      },
+      "then": {
+        "required": ["default"]
+      }
+    },
+
+    "changelog_entry": {
+      "type": "object",
+      "description": "One version's changelog record.",
+      "required": ["date", "type", "entries"],
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "type": "string",
+          "format": "date",
+          "description": "ISO 8601 release date (YYYY-MM-DD)."
+        },
+        "type": {
+          "type": "string",
+          "enum": ["initial", "feature", "fix", "perf", "breaking", "security", "docs", "chore"],
+          "description": "Primary nature of this release."
+        },
+        "entries": {
+          "type": "array",
+          "description": "Human-readable changelog lines for this version.",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 500
+          }
+        }
+      }
+    },
+
+    "event_entry": {
+      "type": "object",
+      "description": "A single EventBase subclass exported by the package.",
+      "required": [
+        "class",
+        "module",
+        "name",
+        "version",
+        "categories",
+        "deprecated",
+        "changelog",
+        "init_params",
+        "call_params"
+      ],
+      "additionalProperties": false,
+      "properties": {
+
+        "class": {
+          "type": "string",
+          "description": "Exact Python class name as it appears in the source module.",
+          "pattern": "^[A-Z][A-Za-z0-9_]*$",
+          "minLength": 2,
+          "maxLength": 100
+        },
+
+        "module": {
+          "$ref": "#/$defs/python_identifier",
+          "description": "Fully-qualified Python module path from which the class is imported."
+        },
+
+        "name": {
+          "type": ["string", "null"],
+          "description": "Maps to EventBase.name. Optional human-friendly display name. Null falls back to the class name.",
+          "maxLength": 100
+        },
+
+        "version": {
+          "$ref": "#/$defs/semver",
+          "description": "Maps to EventBase.version. The version of this specific event class."
+        },
+
+        "categories": {
+          "type": "array",
+          "description": "Event categories for this event, used for filtering and discovery in the EventHub registry. Maps to EventBase.categories.",
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/$defs/event_categories_enum"
+          }
+        },
+
+        "deprecated": {
+          "type": "boolean",
+          "description": "Maps to EventBase.deprecated. When true, deprecation_info is required."
+        },
+
+        "deprecation_info": {
+          "oneOf": [
+            { "$ref": "#/$defs/deprecation_info" },
+            { "type": "null" }
+          ],
+          "description": "Maps to EventBase.deprecation_info. Must be non-null when deprecated is true."
+        },
+
+        "changelog": {
+          "type": ["string", "null"],
+          "description": "Maps to EventBase.changelog. Describes changes in this event's current version.",
+          "maxLength": 1000
+        },
+
+        "init_params": {
+          "type": "object",
+          "description": "Maps to EventBase.EXTRA_INIT_PARAMS_SCHEMA. Keys are parameter names; values are param schemas.",
+          "propertyNames": {
+            "pattern": "^[a-z_][a-z0-9_]*$",
+            "description": "Parameter names must be valid Python identifiers in snake_case."
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/init_param_schema"
+          }
+        },
+
+        "call_params": {
+          "type": "object",
+          "description": "Arguments for process method of EventBase subclasses. Keys are parameter names; values are param schemas.",
+          "propertyNames": {
+            "pattern": "^[a-z_][a-z0-9_]*$",
+            "description": "Parameter names must be valid Python identifiers in snake_case."
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/init_param_schema"
+          }
+        }
+      },
+
+      "if": {
+        "properties": { "deprecated": { "const": true } }
+      },
+      "then": {
+        "properties": {
+          "deprecation_info": { "$ref": "#/$defs/deprecation_info" }
+        },
+        "required": ["deprecation_info"]
+      },
+      "else": {
+        "properties": {
+          "deprecation_info": { "type": "null" }
+        }
+      }
+    }
+  }
+}

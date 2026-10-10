@@ -1,0 +1,424 @@
+# .github/workflows/ci-cd.yml
+#
+# Volnux CI/CD Pipeline
+#
+# Triggers:
+#   push → main        Build, test, push image, deploy to production
+#   push → staging/*   Build, test, push image, deploy to staging
+#   pull_request       Build and test only (no push, no deploy)
+#   release published  Tag image with release version
+#
+# Required GitHub secrets:
+#   REGISTRY_USERNAME        Container registry username
+#   REGISTRY_PASSWORD        Container registry password or token
+#   REGISTRY_HOST            e.g. docker.io or ghcr.io
+#   KUBECONFIG_PRODUCTION    base64-encoded kubeconfig for production cluster
+#   KUBECONFIG_STAGING       base64-encoded kubeconfig for staging cluster
+#   VOLNUX_POSTGRES_PASSWORD Production PostgreSQL password (for migration job)
+#   SLACK_WEBHOOK_URL        Slack channel for deployment notifications
+
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - "staging/*"
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - ".github/ISSUE_TEMPLATE/**"
+
+  pull_request:
+    branches:
+      - main
+      - "staging/*"
+
+  release:
+    types: [published]
+
+  # Allow manual trigger for emergency deploys
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required:    true
+        default:     "staging"
+        type:        choice
+        options:     ["staging", "production"]
+      image_tag:
+        description: "Image tag to deploy (leave empty to build fresh)"
+        required:    false
+
+# Cancel in-progress runs on the same branch
+concurrency:
+  group:  "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+env:
+  REGISTRY:   ${{ secrets.REGISTRY_HOST || 'ghcr.io' }}
+  IMAGE_NAME: ${{ github.repository_owner }}/volnux-engine
+  PYTHON_VERSION: "3.12"
+
+jobs:
+
+  # ── Job 1: Lint and type check ────────────────────────────────────────────
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dev dependencies
+        run: pip install ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check volnux/ tests/
+
+      - name: Format check (ruff)
+        run: ruff format --check volnux/ tests/
+
+      - name: Type check (mypy)
+        run: mypy volnux/ --ignore-missing-imports
+
+
+  # ── Job 2: Unit tests ─────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs:   lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install ".[dev,redis,postgres]"
+
+      - name: Run unit tests
+        env:
+          VOLNUX_ENV: test
+        run: |
+          pytest tests/unit/ \
+            -v \
+            --tb=short \
+            --cov=volnux \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            -m "not slow"
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+
+
+  # ── Job 3: Integration tests ──────────────────────────────────────────────
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs:   lint
+
+    services:
+      postgres:
+        image:   postgres:16-alpine
+        env:
+          POSTGRES_DB:       volnux_test
+          POSTGRES_USER:     volnux
+          POSTGRES_PASSWORD: test_password
+          PGDATA:            /var/lib/postgresql/data/pgdata
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U volnux"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis:
+        image:   redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install ".[dev,redis,postgres]"
+
+      - name: Run integration tests
+        env:
+          VOLNUX_ENV:                  test
+          VOLNUX_POSTGRES_HOST:        localhost
+          VOLNUX_POSTGRES_PORT:        5432
+          VOLNUX_POSTGRES_DB:          volnux_test
+          VOLNUX_POSTGRES_USER:        volnux
+          VOLNUX_POSTGRES_PASSWORD:    test_password
+          VOLNUX_POSTGRES_SSL:         disable
+          VOLNUX_REDIS_CHECKPOINT_URL: redis://localhost:6379/0
+          VOLNUX_REDIS_BROKER_URL:     redis://localhost:6379/1
+          VOLNUX_CHANNEL_BACKEND:      redis
+        run: |
+          pytest tests/integration/ \
+            -v \
+            --tb=short \
+            -m "integration"
+
+
+  # ── Job 4: Build container image ──────────────────────────────────────────
+  build:
+    name: Build Image
+    runs-on: ubuntu-latest
+    needs:   [unit-tests, integration-tests]
+
+    # Only build on push to main/staging or on release
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch'
+
+    outputs:
+      image_tag:    ${{ steps.meta.outputs.version }}
+      image_digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # On push to main: tag as sha-<short-sha> and latest
+            type=sha,prefix=sha-,format=short,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            # On push to staging/*: tag as staging-<short-sha>
+            type=sha,prefix=staging-,format=short,enable=${{ startsWith(github.ref, 'refs/heads/staging/') }}
+            # On release: tag with semver
+            type=semver,pattern={{version}},enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ github.event_name == 'release' }}
+          labels: |
+            org.opencontainers.image.title=Volnux Engine
+            org.opencontainers.image.description=Workflow Operating System
+            org.opencontainers.image.vendor=Volnux
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context:       .
+          file:          Dockerfile
+          push:          true
+          tags:          ${{ steps.meta.outputs.tags }}
+          labels:        ${{ steps.meta.outputs.labels }}
+          cache-from:    type=gha
+          cache-to:      type=gha,mode=max
+          # Build for both AMD64 and ARM64 (Apple Silicon, AWS Graviton)
+          platforms:     linux/amd64,linux/arm64
+          provenance:    true
+          sbom:          true
+
+      - name: Output image details
+        run: |
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          echo "Tags:  ${{ steps.meta.outputs.tags }}"
+          echo "Digest: ${{ steps.build.outputs.digest }}"
+
+
+  # ── Job 5: Deploy to Staging ──────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs:   build
+    environment:
+      name: staging
+      url:  https://api.staging.volnux.example.com/api/v1/health
+
+    if: >
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/heads/staging/')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_STAGING }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Update image in staging
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.image_tag }}"
+          kubectl set image deployment/volnux-api \
+            volnux-api="${IMAGE}" -n volnux
+          kubectl set image deployment/volnux-worker \
+            volnux-worker="${IMAGE}" -n volnux
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/volnux-api    -n volnux --timeout=300s
+          kubectl rollout status deployment/volnux-worker -n volnux --timeout=300s
+
+      - name: Smoke test
+        run: |
+          sleep 10
+          kubectl run smoke-test-${{ github.run_id }} \
+            --rm -it --restart=Never \
+            --image=curlimages/curl:latest \
+            -n volnux \
+            -- curl -f http://volnux-api:8080/api/v1/health
+
+      - name: Notify Slack on success
+        if: success()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "✅ Volnux staging deploy succeeded\nImage: `${{ needs.build.outputs.image_tag }}`\nCommit: `${{ github.sha }}`\nBy: ${{ github.actor }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "❌ Volnux staging deploy FAILED\nCommit: `${{ github.sha }}`\nBy: ${{ github.actor }}\nSee: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+
+  # ── Job 6: Deploy to Production ───────────────────────────────────────────
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs:   build
+    environment:
+      name: production
+      url:  https://api.volnux.example.com/api/v1/health
+
+    # Only deploy to production on push to main or manual trigger
+    if: >
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') ||
+      github.event_name == 'release'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_PRODUCTION }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Resolve image tag
+        id: resolve_tag
+        run: |
+          # Manual dispatch may provide an explicit tag
+          TAG="${{ github.event.inputs.image_tag || needs.build.outputs.image_tag }}"
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Deploying image tag: ${TAG}"
+
+      - name: Run database migrations
+        run: |
+          kubectl run volnux-migrate-${{ github.run_id }} \
+            --rm -it --restart=Never \
+            --image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.resolve_tag.outputs.image_tag }}" \
+            --namespace=volnux \
+            --env="VOLNUX_POSTGRES_PASSWORD=${{ secrets.VOLNUX_POSTGRES_PASSWORD }}" \
+            --env="VOLNUX_REDIS_CHECKPOINT_URL=redis://redis-checkpoints.volnux.svc.cluster.local:6379/0" \
+            -- migrate
+
+      - name: Update image in production
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.resolve_tag.outputs.image_tag }}"
+          kubectl set image deployment/volnux-api \
+            volnux-api="${IMAGE}" -n volnux
+          kubectl set image deployment/volnux-worker \
+            volnux-worker="${IMAGE}" -n volnux
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/volnux-api    -n volnux --timeout=600s
+          kubectl rollout status deployment/volnux-worker -n volnux --timeout=600s
+
+      - name: Smoke test production
+        run: |
+          sleep 15
+          kubectl run smoke-test-${{ github.run_id }} \
+            --rm -it --restart=Never \
+            --image=curlimages/curl:latest \
+            -n volnux \
+            -- curl -f http://volnux-api:8080/api/v1/health
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment failed — rolling back..."
+          kubectl rollout undo deployment/volnux-api    -n volnux
+          kubectl rollout undo deployment/volnux-worker -n volnux
+          kubectl rollout status deployment/volnux-api    -n volnux
+          kubectl rollout status deployment/volnux-worker -n volnux
+
+      - name: Notify Slack on success
+        if: success()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "🚀 Volnux production deploy succeeded\nImage: `${{ steps.resolve_tag.outputs.image_tag }}`\nCommit: `${{ github.sha }}`\nBy: ${{ github.actor }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "🔴 Volnux production deploy FAILED — auto-rollback triggered\nCommit: `${{ github.sha }}`\nBy: ${{ github.actor }}\nSee: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

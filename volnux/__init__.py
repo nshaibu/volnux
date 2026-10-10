@@ -29,16 +29,19 @@ try:
 except ImportError:
     from typing_extensions import TypeAlias
 
-logging.basicConfig(level=logging.INFO)
-
-from .base import EventBase, ExecutorInitializerConfig, RetryPolicy
+from .event import EventBase
 
 Event: TypeAlias = EventBase
 
-from .pipeline import BatchPipeline, Pipeline
+from .mixins.event import RetryPolicy, ExecutorInitializerConfig
+from .execution.pipeline import BatchPipeline, Pipeline
 from .result_evaluators import ResultEvaluationStrategies
 
+# hook all default signal handlers
+from .signal.handlers import *
+
 __all__ = [
+    "__version__",
     "EventBase",
     "Event",
     "RetryPolicy",

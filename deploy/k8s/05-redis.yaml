@@ -1,0 +1,367 @@
+---
+#
+# Two Redis instances with different roles and eviction policies:
+#
+# redis-checkpoints:
+#   Role: Checkpoints, HITL queue, command channel routing,
+#         task location registry, node heartbeats, DURABLE results.
+#   Eviction: volatile-lru — evicts only keys with TTL. Volnux sets TTLs
+#             on all temporary keys. Permanent governance keys have no TTL
+#             and are never evicted.
+#   Persistence: AOF (appendonly) — survives pod restarts. Critical because
+#                the HITL queue must not lose pending approval requests.
+#
+# redis-broker:
+#   Role: Celery task broker for ScheduleTrigger and workflow dispatch.
+#   Eviction: noeviction — broker must NEVER drop queued tasks.
+#   Persistence: None — broker messages are ephemeral. Celery handles
+#                redelivery on worker restart.
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REDIS CHECKPOINTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-checkpoints
+  namespace: volnux
+  labels:
+    app:                            redis-checkpoints
+    app.kubernetes.io/component:    cache
+    app.kubernetes.io/part-of:      volnux
+spec:
+  serviceName: redis-checkpoints-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-checkpoints
+  template:
+    metadata:
+      labels:
+        app: redis-checkpoints
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "9121"
+    spec:
+      securityContext:
+        fsGroup:     1000
+        runAsUser:   1000
+        runAsNonRoot: true
+
+      containers:
+
+        # ── Redis checkpoints primary ─────────────────────────────────────────
+        - name: redis
+          image: redis:7.2-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - redis-server
+            - /etc/redis/redis.conf
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          volumeMounts:
+            - name: redis-config
+              mountPath: /etc/redis
+            - name: redis-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu:    "500m"
+              memory: "2Gi"
+            limits:
+              cpu:    "1"
+              memory: "4Gi"
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds:       10
+            timeoutSeconds:      5
+            failureThreshold:    3
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds:       5
+            timeoutSeconds:      3
+            failureThreshold:    3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+        # ── Redis Exporter sidecar ─────────────────────────────────────────────
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.55.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9121
+          resources:
+            requests:
+              cpu:    "50m"
+              memory: "32Mi"
+            limits:
+              cpu:    "100m"
+              memory: "64Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot:             true
+            runAsUser:                65534
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: redis-config
+          configMap:
+            name: redis-checkpoints-config
+
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+        labels:
+          app: redis-checkpoints
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+
+---
+# Redis checkpoints configuration
+# volatile-lru: evicts only keys with TTL (checkpoint TTLs, task location TTLs)
+# Permanent keys (no TTL) are never evicted — correct for Volnux key space.
+# AOF persistence: survives pod restart. HITL queue entries must not be lost.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-checkpoints-config
+  namespace: volnux
+data:
+  redis.conf: |
+    bind 0.0.0.0
+    protected-mode no
+    port 6379
+    tcp-keepalive 300
+
+    # Memory — evict only keys with TTL, never permanent keys
+    maxmemory 3500mb
+    maxmemory-policy volatile-lru
+
+    # AOF persistence — required for HITL queue durability
+    appendonly yes
+    appendfsync everysec
+    no-appendfsync-on-rewrite no
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+
+    # RDB snapshots as secondary recovery mechanism
+    save 900 1
+    save 300 100
+    save 60 10000
+
+    # Keyspace notifications — x = expired events
+    # Used by RehydrationManager to detect timed-out HITL entries
+    notify-keyspace-events "Kx"
+
+    # Slow log
+    slowlog-log-slower-than 10000
+    slowlog-max-len 256
+
+    # Disable dangerous commands
+    rename-command FLUSHALL ""
+    rename-command FLUSHDB  ""
+    rename-command DEBUG    ""
+
+---
+# Service for redis-checkpoints
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-checkpoints
+  namespace: volnux
+  labels:
+    app: redis-checkpoints
+spec:
+  type: ClusterIP
+  selector:
+    app: redis-checkpoints
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+    - name: metrics
+      port: 9121
+      targetPort: 9121
+
+---
+# Headless service for StatefulSet DNS
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-checkpoints-headless
+  namespace: volnux
+spec:
+  type:      ClusterIP
+  clusterIP: None
+  selector:
+    app: redis-checkpoints
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REDIS BROKER (Celery)
+# ══════════════════════════════════════════════════════════════════════════════
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-broker
+  namespace: volnux
+  labels:
+    app:                            redis-broker
+    app.kubernetes.io/component:    broker
+    app.kubernetes.io/part-of:      volnux
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-broker
+  template:
+    metadata:
+      labels:
+        app: redis-broker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "9121"
+    spec:
+      securityContext:
+        fsGroup:     1000
+        runAsUser:   1000
+        runAsNonRoot: true
+
+      containers:
+
+        # ── Redis broker primary ───────────────────────────────────────────────
+        - name: redis
+          image: redis:7.2-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - redis-server
+            - /etc/redis/redis.conf
+          ports:
+            - name: redis
+              containerPort: 6379
+          volumeMounts:
+            - name: redis-config
+              mountPath: /etc/redis
+          resources:
+            requests:
+              cpu:    "250m"
+              memory: "512Mi"
+            limits:
+              cpu:    "500m"
+              memory: "1Gi"
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds:       10
+            timeoutSeconds:      5
+            failureThreshold:    3
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds:       5
+            timeoutSeconds:      3
+            failureThreshold:    3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+        # ── Redis Exporter sidecar ─────────────────────────────────────────────
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.55.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9121
+          resources:
+            requests:
+              cpu:    "50m"
+              memory: "32Mi"
+            limits:
+              cpu:    "100m"
+              memory: "64Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser:    65534
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: redis-config
+          configMap:
+            name: redis-broker-config
+
+---
+# Redis broker configuration
+# noeviction: broker must NEVER drop messages.
+# No persistence: broker messages are ephemeral. Celery redelivers on restart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-broker-config
+  namespace: volnux
+data:
+  redis.conf: |
+    bind 0.0.0.0
+    protected-mode no
+    port 6379
+    tcp-keepalive 300
+
+    # Broker must NEVER evict messages — use noeviction
+    maxmemory 800mb
+    maxmemory-policy noeviction
+
+    # No persistence for broker — ephemeral messages, Celery handles redelivery
+    save ""
+    appendonly no
+
+    slowlog-log-slower-than 10000
+    slowlog-max-len 128
+
+    rename-command FLUSHALL ""
+    rename-command FLUSHDB  ""
+    rename-command DEBUG    ""
+
+---
+# Service for redis-broker
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-broker
+  namespace: volnux
+  labels:
+    app: redis-broker
+spec:
+  type: ClusterIP
+  selector:
+    app: redis-broker
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+    - name: metrics
+      port: 9121
+      targetPort: 9121

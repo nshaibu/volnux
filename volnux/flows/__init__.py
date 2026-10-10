@@ -5,7 +5,7 @@ from .parallel import ParallelFlow
 from .single import SingleFlow
 
 if typing.TYPE_CHECKING:
-    from event_pipeline.execution.context import ExecutionContext
+    from volnux.execution.context import ExecutionContext
 
 
 def setup_execution_flow(execution_context: "ExecutionContext") -> BaseFlow:

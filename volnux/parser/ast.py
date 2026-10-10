@@ -1,10 +1,13 @@
 import importlib
 import importlib.util
 import typing
+from os import environ
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
+from .__version__ import __version__ as version
+from .task_namespace import VALID_NAMESPACES
 from .protocols import GroupingStrategy
 
 if typing.TYPE_CHECKING:
@@ -18,17 +21,13 @@ STANDARD_EXECUTORS = {
 }
 
 
-class BlockType(Enum):
-    ASSIGNMENT = "assignment"
-    CONDITIONAL = "conditional"
-    GROUP = "group"
-
-
 class LiteralType(Enum):
     NUMBER = "number"
     STRING = "string"
     IMPORT_STRING = "import_string"
     BOOLEAN = "boolean"
+    ASSIGNMENT_REFERENCE = "assignment_reference"
+    NULL = "null"
 
     @classmethod
     def determine_literal_type(cls, value) -> "LiteralType":
@@ -37,9 +36,13 @@ class LiteralType(Enum):
         elif isinstance(value, (int, float)):
             return cls.NUMBER
         elif isinstance(value, str):
-            if cls._is_import_string(value):
+            if value == "null":
+                return cls.NULL
+            elif cls._is_import_string(value):
                 return cls.IMPORT_STRING
             return cls.STRING
+        elif isinstance(value, VariableAccessNode):
+            return cls.ASSIGNMENT_REFERENCE
         else:
             raise ValueError(f"Unsupported literal type: {type(value).__name__}")
 
@@ -82,52 +85,107 @@ class ASTNode(ABC):
     def accept(self, visitor: "ASTVisitor"):
         pass
 
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.__class__.__name__})"
+
+
+class ExpressionNode(ASTNode, ABC):
+    pass
+
 
 @dataclass
 class ProgramNode(ASTNode):
-    __slots__ = ("chain",)
     chain: ASTNode
+    _version: str = field(repr=False, default=version)
+    global_variables: typing.Dict[str, ASTNode] = field(default_factory=dict)
+    directives: typing.Dict[str, ASTNode] = field(default_factory=dict)
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_program(self)
 
 
 @dataclass
-class AssignmentNode(ASTNode):
-    __slots__ = ("target", "value")
-    target: str
-    value: "LiteralNode"
-
-    def accept(self, visitor: "ASTVisitor"):
-        return visitor.visit_assignment(self)
-
-
-@dataclass
-class BlockNode(ASTNode):
-    __slots__ = ("statements", "type")
-    statements: typing.List[ASTNode]
-    type: BlockType
-
-    def accept(self, visitor: "ASTVisitor"):
-        return visitor.visit_block(self)
-
-
-@dataclass
-class BinOpNode(ASTNode):
+class BinOpNode(ExpressionNode):
     __slots__ = ("left", "right", "op")
-    left: ASTNode
+    left: ExpressionNode
     op: str
-    right: ASTNode
+    right: ExpressionNode
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_binop(self)
 
 
 @dataclass
+class UnaryOpNode(ExpressionNode):
+    __slots__ = ("op", "right")
+    op: str
+    right: ExpressionNode
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_unaryop(self)
+
+
+@dataclass
+class DirectiveNode(ASTNode):
+    name: str
+    value: "LiteralNode"
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_directive(self)
+
+
+@dataclass
+class VariableAccessNode(ExpressionNode):
+    __slots__ = ("name", "value")
+    name: str
+    value: "LiteralNode"
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_variable_access(self)
+
+    def resolve(self) -> typing.Any:
+        value = self.value
+
+        while (
+            isinstance(value, LiteralNode)
+            and value.type == LiteralType.ASSIGNMENT_REFERENCE
+        ):
+            value = value.value
+        return value.value
+
+
+@dataclass
+class EnvironmentVariableAccessNode(ExpressionNode):
+    __slots__ = ("name",)
+    name: str
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_access_environment_variable(self)
+
+    def resolve(self) -> typing.Any:
+        """
+        Resolve environment variables.
+        Returns:
+            Value
+        """
+        return environ.get(self.name)
+
+
+@dataclass
+class VariableDeclNode(ASTNode):
+    __slots__ = ("name", "type")
+    name: str
+    value: ExpressionNode
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_variable_declaration(self)
+
+
+@dataclass
 class ConditionalNode(ASTNode):
     __slots__ = ("task", "branches")
     task: "TaskNode"
-    branches: BlockNode
+    branches: typing.List["BranchNode"]
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_conditional(self)
@@ -137,7 +195,28 @@ class ConditionalNode(ASTNode):
 class TaskNode(ASTNode):
     # __slots__ = ("task", "options")
     task: str
-    options: typing.Optional[BlockNode] = None
+    options: typing.List["AttributeNode"]
+    namespace: str = field(default="local")
+
+    def __post_init__(self):
+        """Validate namespace if provided"""
+        if self.namespace and self.namespace not in VALID_NAMESPACES:
+            raise ValueError(
+                f"Invalid task namespace '{self.namespace}'. "
+                f"Valid namespaces: {', '.join(VALID_NAMESPACES)}"
+            )
+
+    @property
+    def fully_qualified_name(self) -> str:
+        """Get fully qualified task name"""
+        if self.namespace:
+            return f"{self.namespace}::{self.task}"
+        return self.task
+
+    @property
+    def is_external(self) -> bool:
+        """Check if task is from external source"""
+        return self.namespace is not None and self.namespace != "local"
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_task(self)
@@ -155,7 +234,7 @@ class DescriptorNode(ASTNode):
 
 
 @dataclass
-class LiteralNode(ASTNode):
+class LiteralNode(ExpressionNode):
     __slots__ = ("value",)
     value: typing.Any
     type: typing.Optional[LiteralType] = None
@@ -169,12 +248,37 @@ class LiteralNode(ASTNode):
 
 
 @dataclass
-class ExpressionGroupingNode(ASTNode):
+class ListNode(ASTNode):
+    __slots__ = ("value",)
+    value: typing.List[typing.Any]
+
+    def __len__(self) -> int:
+        return len(self.value)
+
+    def __getitem__(self, index: int) -> typing.Any:
+        return self.value[index]
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_list(self)
+
+
+@dataclass
+class MapNode(ASTNode):
+    __slots__ = ("value",)
+    value: typing.Dict[str, typing.Any]
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_map(self)
+
+
+@dataclass
+class PipelineGroupingNode(ASTNode):
     """AST for expression chain. One expression chain only"""
 
     expressions: typing.List[ASTNode]
-    grouping_strategy: "GroupingStrategy" = None
-    options: typing.Optional[BlockNode] = None
+    grouping_strategy: typing.Optional["GroupingStrategy"] = None
+    # Options attached to a grouped expression are attribute lists (list[AttributeNode])
+    options: typing.Optional[typing.List["AttributeNode"]] = None
 
     def __post_init__(self):
         if self.grouping_strategy is None:
@@ -185,4 +289,105 @@ class ExpressionGroupingNode(ASTNode):
             )
 
     def accept(self, visitor: "ASTVisitor"):
-        return visitor.visit_expression_grouping(self)
+        return visitor.visit_pipeline_grouping(self)
+
+
+@dataclass
+class MetaTaskNode(ASTNode):
+    """
+    AST node for Meta Events
+    Represents control flow patterns like MAP, FILTER, REDUCE, etc.
+    """
+
+    mode: typing.Literal["MAP", "FILTER", "REDUCE", "FOREACH", "FLATMAP", "FANOUT"]
+    template_task: str  # Name of the Template Task (identifier)
+    options: typing.List["AttributeNode"]
+    template_event_namespace: str = "local"
+
+    def accept(self, visitor: "ASTVisitor"):
+        """Visitor pattern support"""
+        return visitor.visit_meta_task(self)
+
+
+@dataclass
+class NullCoalesceExprNode(ASTNode):
+    left: ASTNode
+    right: ASTNode
+
+    def __repr__(self):
+        return f"NullCoalesce({self.left} ?? {self.right})"
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_null_coalesce(self)
+
+
+@dataclass
+class ComparisonExprNode(ASTNode):
+    operator: str
+    left: ASTNode
+    right: ASTNode
+
+    def __repr__(self):
+        return f"Comparison({self.left} {self.operator} {self.right})"
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_comparison_expr(self)
+
+
+@dataclass
+class TernaryExprNode(ASTNode):
+    condition: ASTNode
+    true_expr: ASTNode
+    false_expr: ASTNode
+
+    def __repr__(self):
+        return f"Ternary({self.condition} ? {self.true_expr} : {self.false_expr})"
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_ternary_expr(self)
+
+
+@dataclass
+class AttributeNode(ASTNode):
+    value: ExpressionNode
+    attr: str
+
+    def __repr__(self):
+        return f"Attribute({self.value}.{self.attr})"
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_attribute(self)
+
+
+@dataclass
+class RetryNode(ASTNode):
+    job: ASTNode
+    attempts: LiteralNode
+
+    def __repr__(self):
+        return f"Retry(job={self.job}, attempts={self.attempts})"
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_retry(self)
+
+
+@dataclass
+class BranchNode(ASTNode):
+    condition: DescriptorNode
+    operator: str
+    task: ASTNode
+
+    def __repr__(self):
+        return f"Branch(condition={self.condition}, task={self.task})"
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_branch(self)
+
+
+@dataclass
+class IndexExprNode(ExpressionNode):
+    collection: ASTNode
+    index: LiteralNode
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_index_expr(self)

@@ -2,11 +2,14 @@ import logging
 import socket
 import ssl
 import sys
+import threading
 import time
 import typing
 import uuid
 import warnings
+import subprocess
 from io import BytesIO
+from pathlib import Path
 
 try:
     import resource
@@ -22,13 +25,15 @@ except ImportError:
     from io import StringIO
 
 from .constants import EMPTY
-from .exceptions import ImproperlyConfigured
+from .exceptions import ImproperlyConfigured, SubprocessTimeoutError
 from .typing import BatchProcessType
+from volnux.backends.object_id import TypedObjectId
 
 if typing.TYPE_CHECKING:
-    from .base import EventBase
+    from . import EventBase
     from .executors import BaseExecutor
-    from .pipeline import Pipeline
+    from .execution.pipeline import Pipeline
+    from volnux.mixins import KeyValueStoreIntegrationMixin
 
 logger = logging.getLogger(__name__)
 
@@ -59,17 +64,36 @@ def _extend_recursion_depth(
     return limit
 
 
-def generate_unique_id(obj: object) -> str:
-    """
-    Generate unique identify for objects
-    :param obj: The object to generate the id for
-    :return: string
-    """
+def _do_assign(obj: object) -> str:
     pk = getattr(obj, "_id", None)
     if pk is None:
-        pk = f"{obj.__class__.__name__}-{time.time()}-{str(uuid.uuid4())}"
-        setattr(obj, "_id", pk)
+        pk = str(TypedObjectId.generate(get_obj_klass_import_str(obj)))
+        try:
+            obj._id = pk
+        except AttributeError:
+            object.__setattr__(obj, "_id", pk)
     return pk
+
+
+def generate_unique_id(obj: object, lock: typing.Optional[threading.Lock]) -> str:
+    """
+    Generate and assign a unique identifier for an object using BSON ObjectId.
+
+    Safe in both sync and async contexts. ObjectId() is pure CPU work with a
+    nanosecond-scale threading.Lock — it does not block the event loop in any
+    meaningful way, consistent with how PyMongo itself handles ObjectId generation.
+
+    :param obj: The object to generate the ID for.
+    :param lock: Optional threading.Lock to guard against concurrent access
+                 from multiple threads (not needed for async-only code since
+                 asyncio is single-threaded).
+    :return: The unique ID string.
+    :raises AttributeError: If '_id' cannot be set on the object.
+    """
+    if lock is not None:
+        with lock:
+            return _do_assign(obj)
+    return _do_assign(obj)
 
 
 def validate_event_process_method(
@@ -256,6 +280,9 @@ def get_obj_state(obj: typing.Any) -> typing.Dict[str, typing.Any]:
 
 
 def get_obj_klass_import_str(obj: typing.Any) -> str:
+    # check if the object is a class
+    if isinstance(obj, type):
+        return f"{obj.__module__}.{obj.__qualname__}"
     return f"{obj.__class__.__module__}.{obj.__class__.__qualname__}"
 
 
@@ -399,3 +426,108 @@ def is_multiprocessing_executor(executor_class: typing.Type["BaseExecutor"]) -> 
     return executor_class == ProcessPoolExecutor or getattr(
         executor_class, "support_parallel_execution", False
     )
+
+
+def resolve_event_str_to_class(
+    event_str: typing.Union[str, typing.Type["EventBase"]],
+) -> typing.Type["EventBase"]:
+    """
+    Resolve an event string to an event class.
+    :param event_str: event string to resolve.
+    :return: EventBase subclass of event_str.
+    """
+
+    from volnux.event import get_event_registry, EventBase
+
+    if not isinstance(event_str, str):
+        event_str = str(event_str).strip()
+        namespace = "local"
+        event_name = event_str
+
+        if "::" in event_str:
+            namespace, event_name = event_str.split("::")
+
+        registry = get_event_registry()
+
+        event_class = registry.get_by_name(event_name, namespace)
+        if event_class is None:
+            raise ValueError("Unknown event type '%s'" % event_str)
+
+        return event_class
+    elif issubclass(event_str, EventBase):
+        return event_str
+    raise ValueError(f"Event '{event_str}' is not valid")
+
+
+def run_command(
+    cmd: typing.List[str],
+    *,
+    cwd: typing.Optional["Path"] = None,
+    timeout_ms: typing.Optional[int] = None,
+    timeout_s: typing.Optional[float] = None,
+) -> subprocess.CompletedProcess:
+    """
+    Run a subprocess command, capturing stdout and stderr.
+
+    Accepts timeout in **either** milliseconds (``timeout_ms``) or seconds
+    (``timeout_s``). Exactly one may be provided; ``timeout_ms`` takes
+    precedence if both are somehow supplied.
+
+    Args:
+        cmd: Full command list, e.g. ``["git", "clone", ...]``.
+        cwd:        Working directory for the subprocess.
+        timeout_ms: Timeout in milliseconds (used by the pypi loader).
+        timeout_s:  Timeout in seconds (used by the git loader).
+
+    Returns:
+        ``subprocess.CompletedProcess`` — the caller decides whether a
+        non-zero ``returncode`` is fatal.
+
+    Raises:
+        SubprocessTimeoutError: If the process does not complete within the
+            timeout. The caller is responsible for logging a context-specific
+            message (package name, URL, etc.) before handling this exception.
+    """
+    timeout_seconds: typing.Optional[float] = None
+    if timeout_ms is not None:
+        timeout_seconds = timeout_ms / 1000
+    elif timeout_s is not None:
+        timeout_seconds = float(timeout_s)
+
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        raise SubprocessTimeoutError(cmd, timeout_seconds or 0.0)
+
+
+def hydrate_model(
+    model_class: typing.Type["KeyValueStoreIntegrationMixin"],
+    state: typing.Dict[str, typing.Any],
+) -> "KeyValueStoreIntegrationMixin":
+    """
+    Hydrates an instance of the specified model class using the provided state.
+
+    :param model_class: The class type of the model to be hydrated. It should be a subclass
+        of `KeyValueStoreIntegrationMixin`.
+    :param state: A dictionary containing the state that should be restored within the
+        instance. The dictionary may include an optional "id" or "_id" key to uniquely
+        identify the object.
+    :return: An instance of the `model_class`, populated with the given state.
+    :rtype: KeyValueStoreIntegrationMixin
+    """
+    object_id: typing.Optional[str] = state.get("id") or state.get("_id")
+
+    if hasattr(model_class, "hydrate_formax_model"):
+        obj: "KeyValueStoreIntegrationMixin" = model_class.hydrate_formax_model(state)
+    else:
+        obj = model_class.__new__(model_class)
+        obj.__setstate__(state)
+    if object_id:
+        obj.change_object_id(object_id)
+    return obj

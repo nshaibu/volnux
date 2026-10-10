@@ -1,0 +1,284 @@
+# docker-compose.yml
+#
+# Local development environment for Volnux.
+# Mirrors the Kubernetes production architecture locally:
+#   - PostgreSQL (governance data)
+#   - Redis checkpoints (AOF persistence, volatile-lru)
+#   - Redis broker (noeviction, Celery)
+#   - OTel Collector (traces → Tempo, metrics → Prometheus)
+#   - Tempo (trace storage)
+#   - Prometheus (metrics)
+#   - Grafana (dashboards)
+#
+# Usage:
+#   Start all infrastructure:
+#     docker compose up -d
+#
+#   Start with Volnux API and worker:
+#     docker compose --profile volnux up -d
+#
+#   View logs:
+#     docker compose logs -f volnux-api
+#     docker compose logs -f volnux-worker
+#
+#   Stop everything:
+#     docker compose down
+#
+#   Stop and delete volumes (clean slate):
+#     docker compose down -v
+
+name: volnux
+
+# ── Shared configuration ───────────────────────────────────────────────────────
+x-volnux-common: &volnux-common
+  image: your-registry/volnux-engine:2.0.0
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  restart: unless-stopped
+  environment:
+    VOLNUX_ENV:                    development
+    VOLNUX_LOG_LEVEL:              DEBUG
+    VOLNUX_LOG_FORMAT:             text
+    VOLNUX_POSTGRES_HOST:          postgres
+    VOLNUX_POSTGRES_PORT:          "5432"
+    VOLNUX_POSTGRES_DB:            volnux
+    VOLNUX_POSTGRES_USER:          volnux
+    VOLNUX_POSTGRES_PASSWORD:      volnux_dev_password
+    VOLNUX_POSTGRES_SSL:           disable
+    VOLNUX_REDIS_CHECKPOINT_URL:   redis://redis-checkpoints:6379/0
+    VOLNUX_REDIS_BROKER_URL:       redis://redis-broker:6379/0
+    VOLNUX_CHANNEL_BACKEND:        redis
+    VOLNUX_OTEL_ENABLED:           "true"
+    VOLNUX_OTEL_ENDPOINT:          http://otel-collector:4317
+    VOLNUX_OTEL_PROTOCOL:          grpc
+    VOLNUX_CHECKPOINT_DRAIN_TIMEOUT: "30"
+    VOLNUX_JWT_SECRET:             dev_jwt_secret_not_for_production
+    OLLAMA_BASE_URL:               http://host.docker.internal:11434
+    OLLAMA_TIMEOUT:                "120"
+  volumes:
+    - ./workflows:/opt/volnux/workflows
+    - volnux_data:/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis-checkpoints:
+      condition: service_healthy
+    redis-broker:
+      condition: service_healthy
+  networks:
+    - volnux-net
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       volnux
+      POSTGRES_USER:     volnux
+      POSTGRES_PASSWORD: volnux_dev_password
+      PGDATA:            /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:     ["CMD-SHELL", "pg_isready -U volnux -d volnux"]
+      interval: 5s
+      timeout:  3s
+      retries:  10
+    networks:
+      - volnux-net
+
+  # ── Redis Checkpoints (AOF persistence, volatile-lru) ───────────────────────
+  redis-checkpoints:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --maxmemory 512mb
+      - --maxmemory-policy volatile-lru
+      - --appendonly yes
+      - --appendfsync everysec
+      - --notify-keyspace-events Kx
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_checkpoints_data:/data
+    healthcheck:
+      test:     ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout:  3s
+      retries:  5
+    networks:
+      - volnux-net
+
+  # ── Redis Broker (noeviction, Celery) ───────────────────────────────────────
+  redis-broker:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --maxmemory 256mb
+      - --maxmemory-policy noeviction
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test:     ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout:  3s
+      retries:  5
+    networks:
+      - volnux-net
+
+  # ── OTel Collector ──────────────────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus scrape
+    volumes:
+      - ./deploy/docker/otel-config.yaml:/etc/otel/config.yaml:ro
+    depends_on:
+      - tempo
+    networks:
+      - volnux-net
+
+  # ── Tempo (trace storage) ───────────────────────────────────────────────────
+  tempo:
+    image: grafana/tempo:2.4.0
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    ports:
+      - "3200:3200"   # Tempo HTTP API
+      - "4320:4317"   # OTLP gRPC receiver
+    volumes:
+      - ./deploy/docker/tempo-config.yaml:/etc/tempo/config.yaml:ro
+      - tempo_data:/var/tempo
+    networks:
+      - volnux-net
+
+  # ── Prometheus ──────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.50.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - volnux-net
+
+  # ── Grafana ─────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER:     admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED:  "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - tempo
+    networks:
+      - volnux-net
+
+  # ── Volnux API (optional — use `--profile volnux`) ─────────────────────────
+  volnux-api:
+    <<: *volnux-common
+    profiles: ["volnux"]
+    command: ["api"]
+    environment:
+      VOLNUX_ENV:                  development
+      VOLNUX_LOG_LEVEL:            DEBUG
+      VOLNUX_LOG_FORMAT:           text
+      VOLNUX_POSTGRES_HOST:        postgres
+      VOLNUX_POSTGRES_PORT:        "5432"
+      VOLNUX_POSTGRES_DB:          volnux
+      VOLNUX_POSTGRES_USER:        volnux
+      VOLNUX_POSTGRES_PASSWORD:    volnux_dev_password
+      VOLNUX_POSTGRES_SSL:         disable
+      VOLNUX_REDIS_CHECKPOINT_URL: redis://redis-checkpoints:6379/0
+      VOLNUX_REDIS_BROKER_URL:     redis://redis-broker:6379/0
+      VOLNUX_CHANNEL_BACKEND:      redis
+      VOLNUX_OTEL_ENABLED:         "true"
+      VOLNUX_OTEL_ENDPOINT:        http://otel-collector:4317
+      VOLNUX_NODE_ID:              volnux-api-dev
+      VOLNUX_JWT_SECRET:           dev_jwt_secret_not_for_production
+      VOLNUX_API_DOCS:             "true"
+      OLLAMA_BASE_URL:             http://host.docker.internal:11434
+    ports:
+      - "8080:8080"
+      - "9464:9464"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-checkpoints:
+        condition: service_healthy
+      redis-broker:
+        condition: service_healthy
+
+  # ── Volnux Worker (optional — use `--profile volnux`) ──────────────────────
+  volnux-worker:
+    <<: *volnux-common
+    profiles: ["volnux"]
+    command: ["worker"]
+    environment:
+      VOLNUX_ENV:                  development
+      VOLNUX_LOG_LEVEL:            DEBUG
+      VOLNUX_LOG_FORMAT:           text
+      VOLNUX_POSTGRES_HOST:        postgres
+      VOLNUX_POSTGRES_PORT:        "5432"
+      VOLNUX_POSTGRES_DB:          volnux
+      VOLNUX_POSTGRES_USER:        volnux
+      VOLNUX_POSTGRES_PASSWORD:    volnux_dev_password
+      VOLNUX_POSTGRES_SSL:         disable
+      VOLNUX_REDIS_CHECKPOINT_URL: redis://redis-checkpoints:6379/0
+      VOLNUX_REDIS_BROKER_URL:     redis://redis-broker:6379/0
+      VOLNUX_CHANNEL_BACKEND:      redis
+      VOLNUX_OTEL_ENABLED:         "true"
+      VOLNUX_OTEL_ENDPOINT:        http://otel-collector:4317
+      VOLNUX_NODE_ID:              volnux-worker-dev
+      OLLAMA_BASE_URL:             http://host.docker.internal:11434
+    ports:
+      - "9465:9464"   # Offset to avoid collision with API
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-checkpoints:
+        condition: service_healthy
+      redis-broker:
+        condition: service_healthy
+
+# ── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_checkpoints_data:
+  tempo_data:
+  prometheus_data:
+  grafana_data:
+  volnux_data:
+
+# ── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  volnux-net:
+    driver: bridge

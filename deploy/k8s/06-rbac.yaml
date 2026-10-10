@@ -1,0 +1,106 @@
+---
+#
+# Service accounts and RBAC for Volnux API and Worker pods.
+#
+# Principle of least privilege:
+#   API pods: read-only access to pods and services for health monitoring.
+#   Worker pods: create/delete Jobs for KubernetesWorkflowExecutor.
+#                Read pods/logs for execution monitoring.
+#   Neither role has cluster-wide access — all permissions are namespace-scoped.
+
+# ── Service accounts ──────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: volnux-api
+  namespace: volnux
+  labels:
+    app: volnux-api
+automountServiceAccountToken: false   # Explicitly mount only where needed
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: volnux-worker
+  namespace: volnux
+  labels:
+    app: volnux-worker
+automountServiceAccountToken: true    # Workers need to create K8s Jobs
+
+---
+# ── API Role — read-only monitoring ───────────────────────────────────────────
+# API pods query pod status to report cluster health in the REST API.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: volnux-api
+  namespace: volnux
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs:     ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs:     ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs:     ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: volnux-api
+  namespace: volnux
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind:     Role
+  name:     volnux-api
+subjects:
+  - kind:      ServiceAccount
+    name:      volnux-api
+    namespace: volnux
+
+---
+# ── Worker Role — Job management for KubernetesWorkflowExecutor ───────────────
+# Workers create one Kubernetes Job per workflow execution when
+# WORKFLOW_EXECUTOR = "kubernetes".
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: volnux-worker
+  namespace: volnux
+rules:
+  # Job management for KubernetesWorkflowExecutor
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs:     ["create", "get", "list", "watch", "delete", "patch"]
+  # Pod inspection for job monitoring and log access
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs:     ["get", "list", "watch"]
+  # ConfigMap read — workers mount settings.py via ConfigMap volume
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs:     ["get"]
+  # Secret read — workers need to pass secrets to created Job pods
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs:     ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: volnux-worker
+  namespace: volnux
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind:     Role
+  name:     volnux-worker
+subjects:
+  - kind:      ServiceAccount
+    name:      volnux-worker
+    namespace: volnux

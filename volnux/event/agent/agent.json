@@ -1,0 +1,22 @@
+"agent": {
+    "type": "object",
+    "description": "Present only when package_type is 'agent'.",
+    "required": [
+        "entry_point",
+        "llm_providers",
+        "tools",
+        "permitted_handoffs",
+        "prompt_version",
+        "max_reasoning_steps"
+    ],
+    "properties": {
+        "entry_point":          { "type": "string" },
+        "llm_providers":        { "type": "array", "items": { "type": "string" } },
+        "tools":                { "type": "array", "items": { "type": "string" } },
+        "permitted_handoffs":   { "type": "array", "items": { "type": "string" } },
+        "prompt_version":       { "$ref": "#/$defs/semver" },
+        "max_reasoning_steps":  { "type": "integer", "minimum": 1 },
+        "token_budget":         { "type": "integer", "minimum": 0 },
+        "hallucination_detection": { "type": "boolean" }
+    }
+}

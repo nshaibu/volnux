@@ -10,8 +10,13 @@ import pytest
 from volnux import EventBase
 from volnux.exceptions import ImproperlyConfigured
 from volnux.fields import InputDataField
-from volnux.pipeline import BatchPipeline, BatchPipelineStatus, Pipeline, _BatchProcessingMonitor
-from volnux.conf import ConfigLoader
+from volnux.execution.pipeline import Pipeline
+from volnux.execution.pipeline.batch import (
+    BatchPipeline,
+    BatchPipelineStatus,
+    _BatchProcessingMonitor,
+)
+from volnux.config import VolnuxConfig
 
 
 class Start(EventBase):
@@ -79,7 +84,7 @@ class TestBatchPipeline(unittest.TestCase):
         # Should only create one pipeline
         self.assertEqual(batch._configured_pipelines_count, 1)
 
-    @patch("volnux.pipeline.ProcessPoolExecutor")
+    @patch("volnux.execution.pipeline.batch.ProcessPoolExecutor")
     def test_parallel_execution(self, mock_executor):
         """Test parallel execution of multiple pipelines"""
         mock_executor.return_value.__enter__.return_value = Mock()
@@ -163,7 +168,7 @@ class TestBatchPipeline(unittest.TestCase):
             # Verify signal queue was created
             self.assertIsNotNone(batch._signals_queue)
 
-    @patch('psutil.Process')
+    @patch("psutil.Process")
     def test_memory_management(self, mock_process):
         """Test memory management and batch size adjustment"""
         batch = self.batch_cls(data=list(range(100)))
@@ -190,70 +195,72 @@ class TestBatchPipeline(unittest.TestCase):
         # Test minimum batch size limit
         for _ in range(10):
             batch.check_memory_usage()
-        self.assertEqual(field.batch_size, 1)   
-    
-    @patch('psutil.Process')
+        self.assertEqual(field.batch_size, 1)
+
+    @patch("psutil.Process")
     def test_memory_check_in_executor(self, mock_process):
         """Test memory checking during execution"""
         batch = self.batch_cls(data=list(range(100)))
-        
+
         mock_process.return_value.memory_percent.return_value = 95.0
-        
-        with patch.object(batch, '_adjust_batch_size') as mock_adjust:
+
+        with patch.object(batch, "_adjust_batch_size") as mock_adjust:
             batch.check_memory_usage()
             mock_adjust.assert_called_once()
-            
+
         # Test no adjustment needed
         mock_process.return_value.memory_percent.return_value = 85.0
-        with patch.object(batch, '_adjust_batch_size') as mock_adjust:
+        with patch.object(batch, "_adjust_batch_size") as mock_adjust:
             batch.check_memory_usage()
             mock_adjust.assert_not_called()
 
-    @patch('psutil.Process') 
+    @patch("psutil.Process")
     @pytest.mark.skip("Needs to be fixed later. Affecting test_batch_processing test")
     def test_batch_monitor_memory_check(self, mock_process):
         """Test memory monitoring in BatchProcessingMonitor during execution"""
         batch = self.batch_cls(data=list(range(10)))
-        
-        mock_process.return_value.memory_percent.side_effect = itertools.cycle([85.0, 95.0, 95.0, 85.0])
-        
+
+        mock_process.return_value.memory_percent.side_effect = itertools.cycle(
+            [85.0, 95.0, 95.0, 85.0]
+        )
+
         field = next(batch.get_fields())[1]
         original_batch_size = field.batch_size = 10
         batch._field_batch_op_map = {field: iter(range(10))}
-        
+
         monitor = _BatchProcessingMonitor(batch)
         try:
             monitor.start()
-            
+
             time.sleep(0.1)
-            
+
             self.assertLess(field.batch_size, original_batch_size)
-            
+
         finally:
             monitor._shutdown_flag.set()
             monitor.join(timeout=1.0)
-            
+
             if monitor.is_alive():
                 monitor._cleanup_signal_listeners()
 
     def test_executor_config(self):
         """Test executor configuration settings"""
         batch = self.batch_cls(data=[1, 2, 3, 4])
-        conf = ConfigLoader.get_lazily_loaded_config()
-        
+        conf = VolnuxConfig.get_instance()
+
         # Test default config
         config = batch.get_executor_config
-        self.assertEqual(config['max_workers'], conf.MAX_BATCH_PROCESSING_WORKERS)
-        self.assertEqual(config['max_memory_percent'], 90.00)
-        
+        self.assertEqual(config["max_workers"], conf.MAX_BATCH_PROCESSING_WORKERS)
+        self.assertEqual(config["max_memory_percent"], 90.00)
+
         # Test with custom settings
         batch.max_workers = 4
         batch.max_memory_percent = 85.0
         config = batch.get_executor_config
-        
-        self.assertEqual(config['max_workers'], 4)
-        self.assertEqual(config['max_memory_percent'], 85.0)
-        self.assertIsNotNone(config['mp_context'])
+
+        self.assertEqual(config["max_workers"], 4)
+        self.assertEqual(config["max_memory_percent"], 85.0)
+        self.assertIsNotNone(config["mp_context"])
 
     def tearDown(self):
         # Clean up any resources
