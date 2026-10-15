@@ -8,6 +8,12 @@ MAX_EVENT_BACKOFF = 100
 
 MAX_BATCH_PROCESSING_WORKERS = 4
 
+# Pipeline-lifecycle reporters installed at bootstrap, once per process, by
+# "volnux.setup.initialise_workflows" → "ensure_pipeline_reporters_installed"
+# (each entry is a dotted path, imported and called with no arguments). The
+# governance reporter is what produces events for "volnux:governance:events"
+PIPELINE_REPORTERS = ["volnux.governance.reporter.install_governance_reporter"]
+
 KEY_VALUE_STORE_CONFIG = {
     "ENGINE": "volnux.backends.stores.inmemory.InMemoryKeyValueStoreBackend",
     # "CONNECTOR_CONFIG": {
