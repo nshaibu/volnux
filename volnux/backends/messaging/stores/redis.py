@@ -1,8 +1,20 @@
 import asyncio
+import contextlib
+import functools
 import logging
-from typing import Any, List, Optional, TYPE_CHECKING, Type, Callable, Union
+from typing import (
+    Any,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    TYPE_CHECKING,
+    Tuple,
+    Type,
+    Union,
+)
 
-from redis.exceptions import RedisError
+from redis.exceptions import RedisError, ResponseError
 
 from volnux.backends.messaging.base import (
     PubSubCapabilityMixin,
@@ -22,29 +34,88 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_CLOSE_SENTINEL = object()
+
+@contextlib.contextmanager
+def _redis_errors(message: str) -> Iterator[None]:
+    """Re-raise RedisError as ConnectionError prefixed with ``message``."""
+    try:
+        yield
+    except RedisError as exc:
+        raise ConnectionError(f"{message}: {exc}") from exc
 
 
-class RedisStorePubSubMixin(PubSubCapabilityMixin):
+def _decode(value: Any) -> Any:
+    return value.decode() if isinstance(value, bytes) else value
+
+
+class RedisMessagingMixin:
+    """Shared command execution for the Redis messaging capability mixins.
+
+    Expects the host backend to provide ``connector``, ``_ensure_connected()``,
+    ``_serialize_record()`` and ``_deserialize_record()``
+    (see ``KeyValueStoreBackendBase``).
+    """
 
     connector: "RedisConnector"
 
+    # Connections left free for non-blocking commands (push/publish/etc.)
+    # so that blocking callers (BLPOP/BRPOP/XREADGROUP BLOCK) can never
+    # claim the whole pool.
+    _BLOCKING_POOL_RESERVE = 2
+
+    def _execute_sync(self, command: str, *args: Any, **kwargs: Any) -> Any:
+        # Runs in a worker thread: reconnecting is blocking network I/O and
+        # must not happen on the event loop.
+        self._ensure_connected()  # type: ignore[attr-defined]
+        return getattr(self.connector.get_cursor(), command)(*args, **kwargs)
+
+    async def _execute(self, command: str, *args: Any, **kwargs: Any) -> Any:
+        """Run a non-blocking Redis command in the default thread pool."""
+        return await asyncio.to_thread(self._execute_sync, command, *args, **kwargs)
+
+    async def _execute_blocking(self, command: str, *args: Any, **kwargs: Any) -> Any:
+        """Run a blocking Redis command in the dedicated blocking executor.
+
+        Blocking commands hold a pooled connection for their full duration,
+        so concurrency is capped below the pool size.
+        """
+        loop = asyncio.get_running_loop()
+        async with self._get_blocking_semaphore():
+            return await loop.run_in_executor(
+                _BLOCKING_EXECUTOR,
+                functools.partial(self._execute_sync, command, *args, **kwargs),
+            )
+
+    def _get_blocking_semaphore(self) -> asyncio.Semaphore:
+        # asyncio primitives bind to the loop they are first used on, so keep
+        # one semaphore per running loop.
+        loop = asyncio.get_running_loop()
+        cached: Optional[Tuple[asyncio.AbstractEventLoop, asyncio.Semaphore]] = getattr(
+            self, "_blocking_semaphore", None
+        )
+        if cached is None or cached[0] is not loop:
+            pool_size = getattr(self.connector.config, "pool_size", 10)
+            limit = max(1, pool_size - self._BLOCKING_POOL_RESERVE)
+            cached = (loop, asyncio.Semaphore(limit))
+            self._blocking_semaphore = cached
+        return cached[1]
+
+    def _deserialize(self, raw: Any, record_class: Type[Record]) -> Record:
+        return self._deserialize_record(raw, record_class)  # type: ignore[attr-defined]
+
+
+class RedisStorePubSubMixin(RedisMessagingMixin, PubSubCapabilityMixin):
+
     async def publish(self, channel: str, record: Record) -> int:
-        try:
-            self._ensure_connected()  # type: ignore[attr-unresolved]
-
-            payload = self._serialize_record(record)  # type: ignore[attr-unresolved]
-
-            cursor = self.connector.get_cursor()
-
-            receivers = await asyncio.to_thread(cursor.publish, channel, payload)
-            return receivers
-        except RedisError as exc:
-            raise ConnectionError(f"Failed to publish to {channel}: {exc}") from exc
+        payload = self._serialize_record(record)  # type: ignore[attr-defined]
+        with _redis_errors(f"Failed to publish to {channel}"):
+            return await self._execute("publish", channel, payload)
 
     def subscribe(
         self, *channels: str, record_class: Type[Record]
     ) -> "RedisStoreSubscriptionContext":
+        if not channels:
+            raise ValueError("subscribe() requires at least one channel")
         return RedisStoreSubscriptionContext(
             backend=self,
             channels=list(channels),
@@ -55,6 +126,8 @@ class RedisStorePubSubMixin(PubSubCapabilityMixin):
     def psubscribe(
         self, *patterns: str, record_class: Type[Record]
     ) -> "RedisStoreSubscriptionContext":
+        if not patterns:
+            raise ValueError("psubscribe() requires at least one pattern")
         return RedisStoreSubscriptionContext(
             backend=self,
             channels=[],
@@ -64,6 +137,17 @@ class RedisStorePubSubMixin(PubSubCapabilityMixin):
 
 
 class RedisStoreSubscriptionContext(AsyncSubscriptionContext):
+    """Bridges a blocking redis-py PubSub connection to an async iterator.
+
+    A worker thread polls the PubSub connection and hands messages to the
+    event loop through an ``asyncio.Queue``. The thread polls with a short
+    timeout and checks ``_closing`` between polls, so shutdown never has to
+    interrupt a blocked read from another thread.
+    """
+
+    _CLOSE_SENTINEL = object()
+    _POLL_INTERVAL = 0.5
+    _QUEUE_MAXSIZE = 10000
 
     def __init__(
         self,
@@ -76,61 +160,67 @@ class RedisStoreSubscriptionContext(AsyncSubscriptionContext):
         self.channels = channels
         self.patterns = patterns
         self.record_class = record_class
-        self._pubsub = None
-        self._async_queue: asyncio.Queue = asyncio.Queue(maxsize=10000)
-        self._listener_task: Optional[asyncio.Task] = None
-        self._loop = asyncio.get_running_loop()
+        self._pubsub: Any = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._async_queue: Optional[asyncio.Queue] = None
+        self._listener: Optional[asyncio.Future] = None
         self._closing = False
         self._listen_exception: Optional[BaseException] = None
 
     async def __aenter__(self) -> "RedisStoreSubscriptionContext":
+        if self._loop is not None:
+            raise RuntimeError("Subscription context cannot be entered twice")
+
+        self._loop = asyncio.get_running_loop()
+        self._async_queue = asyncio.Queue(maxsize=self._QUEUE_MAXSIZE)
+
         try:
-            self.backend._ensure_connected()  # type: ignore
-
-            cursor = self.backend.connector.get_cursor()
-
-            # Get pubsub object from the existing pooled client
-            self._pubsub = await asyncio.to_thread(cursor.pubsub)
-
-            if self.channels:
-                await asyncio.to_thread(self._pubsub.subscribe, *self.channels)
-            if self.patterns:
-                await asyncio.to_thread(self._pubsub.psubscribe, *self.patterns)
-
-            # Start the background bridge task
-            self._listener_task = asyncio.create_task(self._bridge_listen())
-            return self
+            self._pubsub = await asyncio.to_thread(self._open_pubsub)
         except Exception as exc:
             await self._cleanup()
             raise ConnectionError(f"Failed to subscribe: {exc}") from exc
 
-    async def _bridge_listen(self):
-        """Runs the blocking listen() in a dedicated thread pool and bridges to async."""
+        self._listener = self._loop.run_in_executor(_BLOCKING_EXECUTOR, self._listen)
+        return self
 
-        def sync_listen():
-            try:
-                # pubsub.listen() is a blocking generator that yields messages
-                for msg in self._pubsub.listen():
-                    if msg["type"] in ("message", "pmessage"):
-                        # Thread-safe bridge to the async event loop
-                        self._loop.call_soon_threadsafe(self._enqueue_nowait, msg)
-            except Exception as e:
-                if self._closing:
-                    logger.debug("Redis listen loop terminated: %s", e)
-                else:
-                    logger.warning(
-                        "Redis subscription listen loop terminated unexpectedly: %s", e
-                    )
-                    self._listen_exception = e
-            finally:
-                # Always unblock __anext__, even on a clean/unexpected exit,
-                # or consumers of `async for` would await the queue forever.
-                self._loop.call_soon_threadsafe(
-                    self._enqueue_nowait, self._CLOSE_SENTINEL
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self._cleanup()
+
+    def _open_pubsub(self) -> Any:
+        self.backend._ensure_connected()  # type: ignore[attr-defined]
+        pubsub = self.backend.connector.get_cursor().pubsub(
+            ignore_subscribe_messages=True
+        )
+        try:
+            if self.channels:
+                pubsub.subscribe(*self.channels)
+            if self.patterns:
+                pubsub.psubscribe(*self.patterns)
+        except Exception:
+            pubsub.close()
+            raise
+        return pubsub
+
+    def _listen(self) -> None:
+        """Worker-thread loop that forwards messages to the event loop."""
+        try:
+            while not self._closing:
+                msg = self._pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=self._POLL_INTERVAL
                 )
-
-        # Run in the dedicated blocking executor, NOT the default to_thread pool
-        await self._loop.run_in_executor(_BLOCKING_EXECUTOR, sync_listen)
+                if msg is not None and msg.get("type") in ("message", "pmessage"):
+                    self._loop.call_soon_threadsafe(self._enqueue_nowait, msg)
+        except Exception as exc:
+            if self._closing:
+                logger.debug("Redis listen loop terminated: %s", exc)
+            else:
+                logger.warning(
+                    "Redis subscription listen loop terminated unexpectedly: %s", exc
+                )
+                self._listen_exception = exc
+        finally:
+            # Always unblock __anext__, or `async for` consumers would wait forever.
+            self._loop.call_soon_threadsafe(self._enqueue_nowait, self._CLOSE_SENTINEL)
 
     def _enqueue_nowait(self, item: Any) -> None:
         try:
@@ -147,106 +237,64 @@ class RedisStoreSubscriptionContext(AsyncSubscriptionContext):
             else:
                 logger.warning("Redis subscription queue full; dropping message")
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self._cleanup()
-
-    async def _cleanup(self):
+    async def _cleanup(self) -> None:
         self._closing = True
 
-        if self._listener_task and not self._listener_task.done():
-            self._listener_task.cancel()
-
-        if self._pubsub:
+        if self._listener is not None:
+            # The worker notices _closing within one poll interval.
             try:
-                if self.channels:
-                    await asyncio.to_thread(self._pubsub.unsubscribe, *self.channels)
-                if self.patterns:
-                    await asyncio.to_thread(self._pubsub.punsubscribe, *self.patterns)
-                # Closing the connection also unblocks the listener thread,
-                # which is otherwise parked in a blocking listen() read.
-                await asyncio.to_thread(self._pubsub.close)
+                await self._listener
+            except Exception as exc:
+                logger.debug("Error while awaiting Redis listener: %s", exc)
+            self._listener = None
+
+        if self._pubsub is not None:
+            # Closing drops the subscriptions server-side; no UNSUBSCRIBE needed.
+            pubsub, self._pubsub = self._pubsub, None
+            try:
+                await asyncio.to_thread(pubsub.close)
             except Exception as exc:
                 logger.debug("Error while closing Redis pubsub: %s", exc)
 
-        if self._listener_task:
-            # Wait for the bridge thread to actually exit before returning,
-            # since cancel() alone cannot interrupt a thread already blocked
-            # in listen() — closing the connection above is what does that.
-            try:
-                await self._listener_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:
-                logger.debug("Error while awaiting Redis listener task: %s", exc)
-
-    def __aiter__(self):
+    def __aiter__(self) -> "RedisStoreSubscriptionContext":
         return self
 
     async def __anext__(self) -> Message:
-        # Pure async wait. Wakes up instantly when the bridge thread pushes a
-        # message, or when the listener stops (see _CLOSE_SENTINEL below).
+        if self._async_queue is None:
+            raise RuntimeError(
+                "Subscription is not active; use 'async with' before iterating"
+            )
+
         msg = await self._async_queue.get()
 
         if msg is self._CLOSE_SENTINEL:
+            # Re-queue so further iteration also stops instead of hanging.
+            self._enqueue_nowait(msg)
             if self._listen_exception is not None:
                 raise ConnectionError(
                     f"Redis subscription terminated unexpectedly: {self._listen_exception}"
                 ) from self._listen_exception
             raise StopAsyncIteration
 
-        channel = (
-            msg["channel"].decode()
-            if isinstance(msg["channel"], bytes)
-            else msg["channel"]
-        )
-
-        pattern = msg.get("pattern")
-        if isinstance(pattern, bytes):
-            pattern = pattern.decode()
-
         return Message(
-            **{
-                "channel": channel,
-                "pattern": pattern,
-                "data": self.backend._deserialise_record(msg["data"], self.record_class),  # type: ignore[attr-unresolved]
-                "raw": msg["data"],
-            }
+            channel=_decode(msg["channel"]),
+            pattern=_decode(msg.get("pattern")),
+            data=self.backend._deserialize(msg["data"], self.record_class),
+            raw=msg["data"],
         )
 
 
-class RedisStorePushPopMixin(PushPopCapabilityMixin):
-
-    connector: "RedisConnector"
-
-    # Connections left free for non-blocking commands (push/publish/etc.)
-    # so that BLPOP/BRPOP callers can never claim the whole pool.
-    _BLOCKING_POOL_RESERVE = 2
-
-    def _get_blocking_pop_semaphore(self) -> asyncio.Semaphore:
-        sem = getattr(self, "_blocking_pop_semaphore", None)
-        if sem is None:
-            pool_size = getattr(self.connector.config, "pool_size", 10)
-            limit = max(1, pool_size - self._BLOCKING_POOL_RESERVE)
-            sem = asyncio.Semaphore(limit)
-            self._blocking_pop_semaphore = sem
-        return sem
+class RedisStorePushPopMixin(RedisMessagingMixin, PushPopCapabilityMixin):
 
     async def push(
         self, key: str, *values: Record, side: QueueSide = QueueSide.RIGHT
     ) -> int:
-        try:
-            self._ensure_connected()  # type: ignore[attr-unresolved]
-
-            payloads = [self._serialize_record(v) for v in values]  # type: ignore[attr-unresolved]
-
-            cursor = self.connector.get_cursor()
-
-            if side == QueueSide.LEFT:
-                return await asyncio.to_thread(cursor.lpush, key, *payloads)
-            else:
-                return await asyncio.to_thread(cursor.rpush, key, *payloads)
-        except RedisError as exc:
-            raise ConnectionError(f"Failed to push to {key}: {exc}") from exc
+        if not values:
+            raise ValueError("push() requires at least one value")
+        payloads = [self._serialize_record(v) for v in values]  # type: ignore[attr-defined]
+        command = "lpush" if side == QueueSide.LEFT else "rpush"
+        with _redis_errors(f"Failed to push to {key}"):
+            return await self._execute(command, key, *payloads)
 
     async def pop(
         self,
@@ -255,37 +303,22 @@ class RedisStorePushPopMixin(PushPopCapabilityMixin):
         timeout: Optional[Union[float, int]] = None,
         side: QueueSide = QueueSide.LEFT,
     ) -> Optional[Record]:
-        try:
-            self._ensure_connected()  # type: ignore[attr-unresolved]
+        if timeout is not None and timeout < 0:
+            raise ValueError("timeout must be None or >= 0")
 
-            loop = asyncio.get_running_loop()
-
-            cursor = self.connector.get_cursor()
-
+        left = side == QueueSide.LEFT
+        with _redis_errors(f"Failed to pop from {key}"):
             if timeout is None:
-                # Non-blocking pop (safe for default to_thread)
-                if side == QueueSide.LEFT:
-                    raw = await asyncio.to_thread(cursor.lpop, key)
-                else:
-                    raw = await asyncio.to_thread(cursor.rpop, key)
+                raw = await self._execute("lpop" if left else "rpop", key)
             else:
-                # Blocking pop (MUST use dedicated executor to prevent thread-pool starvation)
-                func: Callable[[str, Union[float, int]], Any] = (
-                    cursor.blpop if side == QueueSide.LEFT else cursor.brpop
+                result = await self._execute_blocking(
+                    "blpop" if left else "brpop", key, timeout=float(timeout)
                 )
-
-                async with self._get_blocking_pop_semaphore():
-                    result = await loop.run_in_executor(
-                        _BLOCKING_EXECUTOR, lambda: func(key, float(timeout))
-                    )
-
                 if result is None:
                     return None
                 _, raw = result
 
-            return self._deserialise_record(raw, record_class) if raw is not None else None  # type: ignore
-        except RedisError as exc:
-            raise ConnectionError(f"Failed to pop from {key}: {exc}") from exc
+        return None if raw is None else self._deserialize(raw, record_class)
 
     async def pop_many(
         self,
@@ -298,63 +331,63 @@ class RedisStorePushPopMixin(PushPopCapabilityMixin):
         """
         Block until the queue has data, then drain a batch of items up to `limit`.
         """
-        results = []
+        if limit is not None and limit <= 0:
+            return []
 
+        # Only the first item waits up to `timeout`; the rest is drained
+        # from whatever is already available.
         first_item = await self.pop(key, record_class, timeout=timeout, side=side)
         if first_item is None:
             return []
-        results.append(first_item)
 
-        # Drain whatever is already available, non-blocking — only the
-        # first item above waits up to `timeout`.
-        items_popped = 1
-        while True:
-            if limit is not None and items_popped >= limit:
-                break
+        remaining = None if limit is None else limit - 1
+        if remaining == 0:
+            return [first_item]
+        return [first_item] + await self._drain(key, record_class, remaining, side)
 
-            result = await self.pop(key, record_class, timeout=None, side=side)
-
-            if result is None:
-                break
-
-            results.append(result)
-
-            items_popped += 1
-
-        return results
+    async def _drain(
+        self,
+        key: str,
+        record_class: Type[Record],
+        count: Optional[int],
+        side: QueueSide,
+    ) -> List[Record]:
+        """Non-blocking pop of up to ``count`` items (all available if None)."""
+        command = "lpop" if side == QueueSide.LEFT else "rpop"
+        with _redis_errors(f"Failed to pop from {key}"):
+            if count is None:
+                count = await self._execute("llen", key)
+            if not count:
+                return []
+            try:
+                # LPOP/RPOP with COUNT (Redis 6.2+) drains atomically in one call
+                raws = await self._execute(command, key, count) or []
+            except ResponseError:
+                # Older servers reject the COUNT argument; pop one at a time
+                raws = []
+                for _ in range(count):
+                    raw = await self._execute(command, key)
+                    if raw is None:
+                        break
+                    raws.append(raw)
+        return [self._deserialize(raw, record_class) for raw in raws]
 
     async def queue_length(self, key: str) -> int:
-        try:
-            self._ensure_connected()  # type: ignore[attr-unresolved]
-
-            cursor = self.connector.get_cursor()
-
-            return await asyncio.to_thread(cursor.llen, key)
-        except RedisError as exc:
-            raise ConnectionError(
-                f"Failed to get queue length for {key}: {exc}"
-            ) from exc
+        with _redis_errors(f"Failed to get queue length for {key}"):
+            return await self._execute("llen", key)
 
     async def queue_range(
         self, key: str, record_class: Type[Record], start: int = 0, stop: int = -1
     ) -> List[Record]:
-        try:
-            self._ensure_connected()  # type: ignore
-
-            cursor = self.connector.get_cursor()
-
-            raws = await asyncio.to_thread(cursor.lrange, key, start, stop)
-            return [self._deserialise_record(r, record_class) for r in raws]  # type: ignore
-        except RedisError as exc:
-            raise ConnectionError(
-                f"Failed to get queue range for {key}: {exc}"
-            ) from exc
+        with _redis_errors(f"Failed to get queue range for {key}"):
+            raws = await self._execute("lrange", key, start, stop)
+        return [self._deserialize(raw, record_class) for raw in raws]
 
 
-class RedisStreamCapabilityMixin(StreamCapabilityMixin):
+class RedisStreamCapabilityMixin(RedisMessagingMixin, StreamCapabilityMixin):
     """Redis Streams implementation of the append-only durable event log."""
 
-    connector: "RedisConnector"
+    _DEFAULT_CONSUMER = "default"
 
     async def stream_append(
         self,
@@ -363,30 +396,18 @@ class RedisStreamCapabilityMixin(StreamCapabilityMixin):
         max_len: Optional[int] = None,
         approximate_trim: bool = True,
     ) -> str:
-        try:
-            self._ensure_connected()  # type: ignore[attr-unresolved]
+        payload = self._serialize_record(record)  # type: ignore[attr-defined]
 
-            payload = self._serialize_record(record)  # type: ignore[attr-unresolved]
+        kwargs: dict[str, Any] = {"id": "*"}
+        if max_len is not None:
+            kwargs["maxlen"] = max_len
+            kwargs["approximate"] = approximate_trim
 
-            cursor = self.connector.get_cursor()
-
-            kwargs: dict[str, Any] = {"id": "*"}
-            if max_len is not None:
-                kwargs["maxlen"] = max_len
-                kwargs["approximate"] = approximate_trim
-
-            entry_id = await asyncio.to_thread(
-                cursor.xadd,
-                stream_key,
-                {"data": payload},
-                **kwargs,
+        with _redis_errors(f"Failed to append to stream '{stream_key}'"):
+            entry_id = await self._execute(
+                "xadd", stream_key, {"data": payload}, **kwargs
             )
-            return entry_id
-
-        except RedisError as exc:
-            raise ConnectionError(
-                f"Failed to append to stream '{stream_key}': {exc}"
-            ) from exc
+        return _decode(entry_id)
 
     async def stream_ensure_consumer_group(
         self,
@@ -394,32 +415,22 @@ class RedisStreamCapabilityMixin(StreamCapabilityMixin):
         group_name: str,
         start_from: str = StreamOffset.BEGINNING,
     ) -> None:
-        try:
-            self._ensure_connected()  # type: ignore[attr-unresolved]
-            # Translate Volnux canonical offsets to Redis-native values
-            redis_start_id = self._translate_offset(start_from)
-
-            cursor = self.connector.get_cursor()
-
-            # XGROUP CREATE is idempotent when using MKSTREAM + ignoring BUSYGROUP
+        with _redis_errors(
+            f"Failed to ensure consumer group '{group_name}' on '{stream_key}'"
+        ):
             try:
-                await asyncio.to_thread(
-                    cursor.xgroup_create,
+                # MKSTREAM creates the stream if needed; BUSYGROUP means the
+                # group already exists, which is fine (idempotent create).
+                await self._execute(
+                    "xgroup_create",
                     stream_key,
                     group_name,
-                    id=redis_start_id,
+                    id=self._translate_offset(start_from),
                     mkstream=True,
                 )
-            except RedisError as exc:
-                if "BUSYGROUP" in str(exc).upper():
-                    pass  # Group already exists — expected idempotent behavior
-                else:
+            except ResponseError as exc:
+                if "BUSYGROUP" not in str(exc).upper():
                     raise
-
-        except RedisError as exc:
-            raise ConnectionError(
-                f"Failed to ensure consumer group '{group_name}' on '{stream_key}': {exc}"
-            ) from exc
 
     async def stream_read(
         self,
@@ -430,43 +441,20 @@ class RedisStreamCapabilityMixin(StreamCapabilityMixin):
         count: int = 1,
         block_ms: Optional[int] = 5000,
     ) -> List[StreamEntry[Record]]:
-        try:
-            self._ensure_connected()  # type: ignore
-            loop = asyncio.get_running_loop()
+        consumer = consumer_id or self._DEFAULT_CONSUMER
+        args = (group_name, consumer, {stream_key: ">"})
 
-            cursor = self.connector.get_cursor()
-
+        with _redis_errors(f"Failed to read from stream '{stream_key}'"):
             if block_ms is None:
-                # Non-blocking read — safe for default thread pool
-                raw = await asyncio.to_thread(
-                    cursor.xreadgroup,
-                    group_name,
-                    consumer_id or "default",
-                    {stream_key: ">"},
-                    count=count,
-                )
+                raw = await self._execute("xreadgroup", *args, count=count)
             else:
-                # BLOCKING read — MUST use dedicated executor
-                effective_block = 0 if block_ms == 0 else block_ms
-                raw = await loop.run_in_executor(
-                    _BLOCKING_EXECUTOR,
-                    lambda: cursor.xreadgroup(
-                        group_name,
-                        consumer_id or "default",
-                        {stream_key: ">"},
-                        count=count,
-                        block=effective_block,
-                    ),
+                raw = await self._execute_blocking(
+                    "xreadgroup", *args, count=count, block=block_ms
                 )
 
-            return self._parse_xreadgroup_response(
-                raw, stream_key, group_name, consumer_id, record_class
-            )
-
-        except RedisError as exc:
-            raise ConnectionError(
-                f"Failed to read from stream '{stream_key}': {exc}"
-            ) from exc
+        return self._parse_xreadgroup_response(
+            raw, stream_key, group_name, consumer, record_class
+        )
 
     async def stream_claim_pending(
         self,
@@ -482,15 +470,10 @@ class RedisStreamCapabilityMixin(StreamCapabilityMixin):
         Uses XAUTOCLAIM (Redis 6.2+) for atomic claim-and-return.
         Falls back to XPENDING + XCLAIM for older Redis versions.
         """
-        try:
-            self._ensure_connected()  # type: ignore[attr-unresolved]
-
-            cursor = self.connector.get_cursor()
-
+        with _redis_errors(f"Failed to claim pending entries on '{stream_key}'"):
             try:
-                # Preferred: XAUTOCLAIM is atomic and returns claimed entries directly
-                raw = await asyncio.to_thread(
-                    cursor.xautoclaim,
+                raw = await self._execute(
+                    "xautoclaim",
                     stream_key,
                     group_name,
                     consumer_id,
@@ -498,59 +481,51 @@ class RedisStreamCapabilityMixin(StreamCapabilityMixin):
                     start_id="0-0",
                     count=count,
                 )
-                # xautoclaim returns (new_start_id, [(id, fields), ...], [deleted_ids])
-                claimed_entries = (
+                # xautoclaim returns (next_start_id, [(id, fields), ...], [deleted_ids])
+                claimed = (
                     raw[1] if isinstance(raw, (list, tuple)) and len(raw) > 1 else []
                 )
-
-            except (RedisError, AttributeError):
-                # Fallback for Redis < 6.2: manual XPENDING + XCLAIM
-                pending = await asyncio.to_thread(
-                    cursor.xpending_range,
-                    stream_key,
-                    group_name,
-                    min="-",
-                    max="+",
-                    count=count,
-                    consumername=None,
-                )
-                eligible_ids = [
-                    p["message_id"]
-                    for p in pending
-                    if p.get("time_since_delivered", 0) >= min_idle_ms
-                ]
-                if not eligible_ids:
-                    return []
-                claimed_entries = await asyncio.to_thread(
-                    cursor.xclaim,
-                    stream_key,
-                    group_name,
-                    consumer_id,
-                    min_idle_time=min_idle_ms,
-                    message_ids=eligible_ids,
+            except ResponseError as exc:
+                if "unknown command" not in str(exc).lower():
+                    raise
+                claimed = await self._claim_with_xpending(
+                    stream_key, group_name, consumer_id, min_idle_ms, count
                 )
 
-            results: List[StreamEntry] = []
-            for entry_id, fields in claimed_entries:
-                eid = entry_id.decode() if isinstance(entry_id, bytes) else entry_id
-                data = fields.get(b"data") or fields.get("data")
-                if data is None:
-                    continue
-                payload = data.decode() if isinstance(data, bytes) else data
-                results.append(
-                    StreamEntry(
-                        entry_id=eid,
-                        record=self._deserialise_record(payload, record_class),  # type: ignore[attr-unresolved]
-                        group_name=group_name,
-                        consumer_id=consumer_id,
-                    )
-                )
-            return results
+        return self._build_entries(claimed, group_name, consumer_id, record_class)
 
-        except RedisError as exc:
-            raise ConnectionError(
-                f"Failed to claim pending entries on '{stream_key}': {exc}"
-            ) from exc
+    async def _claim_with_xpending(
+        self,
+        stream_key: str,
+        group_name: str,
+        consumer_id: str,
+        min_idle_ms: int,
+        count: int,
+    ) -> List[Any]:
+        """XPENDING + XCLAIM fallback for Redis < 6.2 (no XAUTOCLAIM)."""
+        pending = await self._execute(
+            "xpending_range",
+            stream_key,
+            group_name,
+            min="-",
+            max="+",
+            count=count,
+        )
+        eligible_ids = [
+            p["message_id"]
+            for p in pending
+            if p.get("time_since_delivered", 0) >= min_idle_ms
+        ]
+        if not eligible_ids:
+            return []
+        return await self._execute(
+            "xclaim",
+            stream_key,
+            group_name,
+            consumer_id,
+            min_idle_time=min_idle_ms,
+            message_ids=eligible_ids,
+        )
 
     async def stream_ack(
         self,
@@ -560,26 +535,12 @@ class RedisStreamCapabilityMixin(StreamCapabilityMixin):
     ) -> int:
         if not entry_ids:
             return 0
-        try:
-            self._ensure_connected()  # type: ignore[attr-unresolved]
-            cursor = self.connector.get_cursor()
-            return await asyncio.to_thread(
-                cursor.xack, stream_key, group_name, *entry_ids
-            )
-        except RedisError as exc:
-            raise ConnectionError(
-                f"Failed to ACK entries on '{stream_key}': {exc}"
-            ) from exc
+        with _redis_errors(f"Failed to ACK entries on '{stream_key}'"):
+            return await self._execute("xack", stream_key, group_name, *entry_ids)
 
     async def stream_length(self, stream_key: str) -> int:
-        try:
-            self._ensure_connected()  # type: ignore[attr-unresolved]
-            cursor = self.connector.get_cursor()
-            return await asyncio.to_thread(cursor.xlen, stream_key)
-        except RedisError as exc:
-            raise ConnectionError(
-                f"Failed to get length of '{stream_key}': {exc}"
-            ) from exc
+        with _redis_errors(f"Failed to get length of '{stream_key}'"):
+            return await self._execute("xlen", stream_key)
 
     async def stream_trim(
         self,
@@ -587,28 +548,14 @@ class RedisStreamCapabilityMixin(StreamCapabilityMixin):
         max_len: int,
         approximate: bool = True,
     ) -> int:
-        try:
-            self._ensure_connected()  # type: ignore[attr-unresolved]
-            cursor = self.connector.get_cursor()
-            return await asyncio.to_thread(
-                cursor.xtrim,
-                stream_key,
-                maxlen=max_len,
-                approximate=approximate,
+        with _redis_errors(f"Failed to trim '{stream_key}'"):
+            return await self._execute(
+                "xtrim", stream_key, maxlen=max_len, approximate=approximate
             )
-        except RedisError as exc:
-            raise ConnectionError(f"Failed to trim '{stream_key}': {exc}") from exc
 
     async def stream_delete(self, stream_key: str) -> bool:
-        try:
-            self._ensure_connected()  # type: ignore[attr-unresolved]
-            cursor = self.connector.get_cursor()
-            result = await asyncio.to_thread(cursor.delete, stream_key)
-            return bool(result)
-        except RedisError as exc:
-            raise ConnectionError(
-                f"Failed to delete stream '{stream_key}': {exc}"
-            ) from exc
+        with _redis_errors(f"Failed to delete stream '{stream_key}'"):
+            return bool(await self._execute("delete", stream_key))
 
     @staticmethod
     def _translate_offset(offset: str) -> str:
@@ -631,26 +578,44 @@ class RedisStreamCapabilityMixin(StreamCapabilityMixin):
         """Parses Redis XREADGROUP response into typed StreamEntry list."""
         if not raw:
             return []
-
-        results: List[StreamEntry] = []
         # XREADGROUP returns [[stream_key, [(id, fields), ...]], ...]
-        for stream_result in raw:
-            entries = stream_result[1] if len(stream_result) > 1 else []
-            for entry_id, fields in entries:
-                eid = entry_id.decode() if isinstance(entry_id, bytes) else entry_id
-                data = fields.get(b"data") or fields.get("data")
+        entries = [
+            entry
+            for stream_result in raw
+            if len(stream_result) > 1
+            for entry in stream_result[1]
+        ]
+        return self._build_entries(entries, group_name, consumer_id, record_class)
+
+    def _build_entries(
+        self,
+        entries: Iterable[Any],
+        group_name: str,
+        consumer_id: Optional[str],
+        record_class: Type[Any],
+    ) -> List[StreamEntry]:
+        """Convert ``(entry_id, fields)`` pairs into StreamEntry objects.
+
+        Entries whose fields are missing (deleted while pending) or that have
+        no ``data`` field are skipped.
+        """
+        results: List[StreamEntry] = []
+        for entry_id, fields in entries:
+            eid = _decode(entry_id)
+            data = None
+            if fields:
+                data = fields.get(b"data")
                 if data is None:
-                    logger.warning(
-                        "Stream entry %s missing 'data' field, skipping", eid
-                    )
-                    continue
-                payload = data.decode() if isinstance(data, bytes) else data
-                results.append(
-                    StreamEntry(
-                        entry_id=eid,
-                        record=self._deserialise_record(payload, record_class),  # type: ignore[attr-unresolved]
-                        group_name=group_name,
-                        consumer_id=consumer_id,
-                    )
+                    data = fields.get("data")
+            if data is None:
+                logger.warning("Stream entry %s missing 'data' field, skipping", eid)
+                continue
+            results.append(
+                StreamEntry(
+                    entry_id=eid,
+                    record=self._deserialize(_decode(data), record_class),
+                    group_name=group_name,
+                    consumer_id=consumer_id,
                 )
+            )
         return results

@@ -1,6 +1,6 @@
 import datetime
 from dataclasses import dataclass
-from typing import Any, Tuple, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 from formax import MiniAnnotated, Attrib
 
 from .utils import formax_null_validator
@@ -11,18 +11,65 @@ class DTConfig:
     """Configuration for DateTimeField.
 
     Args:
-        field_name: Name of the field. Must match the name of the attribute in the model.
+        field_name: Name of the field. Optional; when omitted it is discovered from the
+            model the field is declared on. If given, it must match the attribute name.
         auto_now: Automatically set the field to now every time the object is saved.
         auto_now_add: Automatically set the field to now when the object is first created.
         tz_aware: Enforce timezone-aware datetime objects (defaults to UTC if naive).
         nullable: Whether the datetime field can be None.
     """
 
-    field_name: str
+    field_name: Optional[str] = None
     auto_now: bool = False
     auto_now_add: bool = False
     tz_aware: bool = True
     nullable: bool = False
+
+
+def _utc_now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _find_field_name(model_class: type, attrib: Attrib) -> Optional[str]:
+    """Find which annotated field on ``model_class`` is bound to ``attrib``."""
+    for klass in model_class.__mro__:
+        for fname, annotation in getattr(klass, "__annotations__", {}).items():
+            if any(meta is attrib for meta in getattr(annotation, "__metadata__", ())):
+                return fname
+    return None
+
+
+def _make_current_value_getter(
+    config: DTConfig,
+) -> Tuple[Callable[[Any], Any], Callable[[Attrib], None]]:
+    """Build a reader for the value currently stored on an instance.
+
+    Returns ``(get_current, bind)``; ``bind`` must be called with the field's
+    Attrib so the field name can be discovered when ``config.field_name`` is unset.
+    """
+    state: Dict[str, Any] = {}
+
+    def bind(attrib: Attrib) -> None:
+        state["attrib"] = attrib
+
+    def get_current(instance: Any) -> Any:
+        if instance is None:
+            return None
+        field_name = config.field_name
+        if field_name is None:
+            cls = type(instance)
+            if cls not in state:
+                state[cls] = _find_field_name(cls, state["attrib"])
+            field_name = state[cls]
+            if field_name is None:
+                return None
+        try:
+            return getattr(instance, field_name)
+        except AttributeError:
+            # Field not assigned yet (first assignment during __init__)
+            return None
+
+    return get_current, bind
 
 
 def parse_params(params: Optional[Tuple[Any]], *, field_type) -> DTConfig:
@@ -82,20 +129,20 @@ class DateTimeField:
             if not config.nullable:
                 validators.append(formax_null_validator)
 
+        get_current, bind = _make_current_value_getter(config)
+
         def pre_fmt(instance, value):
             """Serializes datetime to strict JSON primitive (ISO 8601 string)."""
             if value is None:
                 if config.auto_now:
-                    value = datetime.datetime.now()
+                    value = _utc_now()
                 elif config.auto_now_add:
-                    # check that the field is set on the instance if not set generate a new date
-                    value: Optional[datetime.datetime] = getattr(
-                        instance, config.field_name
-                    )
+                    # Keep the value from the first save; only generate one if unset
+                    value = get_current(instance)
                     if value is None:
-                        value = datetime.datetime.now()
-                    elif value.tzinfo is not None:
-                        value = value.replace(tzinfo=None)
+                        value = _utc_now()
+                    elif isinstance(value, str):
+                        value = post_fmt(instance, value)
                 else:
                     return None
 
@@ -136,21 +183,20 @@ class DateTimeField:
 
             return dt
 
-        return MiniAnnotated[
-            Any,
-            Attrib(
-                pre_formatter=pre_fmt,
-                post_formatter=post_fmt,
-                validators=validators,
-                metadata={
-                    "type": "datetime",
-                    "auto_now": config.auto_now,
-                    "auto_now_add": config.auto_now_add,
-                    "tz_aware": config.tz_aware,
-                    "nullable": config.nullable,
-                },
-            ),
-        ]
+        attrib = Attrib(
+            pre_formatter=pre_fmt,
+            post_formatter=post_fmt,
+            validators=validators,
+            metadata={
+                "type": "datetime",
+                "auto_now": config.auto_now,
+                "auto_now_add": config.auto_now_add,
+                "tz_aware": config.tz_aware,
+                "nullable": config.nullable,
+            },
+        )
+        bind(attrib)
+        return MiniAnnotated[Any, attrib]
 
 
 class DateField:
@@ -186,16 +232,20 @@ class DateField:
             if not config.nullable:
                 validators.append(formax_null_validator)
 
+        get_current, bind = _make_current_value_getter(config)
+
         def pre_fmt(instance, value):
             """Serializes date to strict JSON primitive (ISO 8601 date string)."""
             if value is None:
                 if config.auto_now:
                     value = datetime.date.today()
                 elif config.auto_now_add:
-                    # check that the field is set on the instance if not set generate a new date
-                    value = getattr(instance, config.field_name)
+                    # Keep the value from the first save; only generate one if unset
+                    value = get_current(instance)
                     if value is None:
                         value = datetime.date.today()
+                    elif isinstance(value, str):
+                        value = post_fmt(instance, value)
                 else:
                     return None
 
@@ -228,17 +278,16 @@ class DateField:
                     f"Cannot deserialize date from {type(value).__name__}. Expected string."
                 )
 
-        return MiniAnnotated[
-            Any,
-            Attrib(
-                pre_formatter=pre_fmt,
-                post_formatter=post_fmt,
-                validators=validators,
-                metadata={
-                    "type": "date",
-                    "auto_now": config.auto_now,
-                    "auto_now_add": config.auto_now_add,
-                    "nullable": config.nullable,
-                },
-            ),
-        ]
+        attrib = Attrib(
+            pre_formatter=pre_fmt,
+            post_formatter=post_fmt,
+            validators=validators,
+            metadata={
+                "type": "date",
+                "auto_now": config.auto_now,
+                "auto_now_add": config.auto_now_add,
+                "nullable": config.nullable,
+            },
+        )
+        bind(attrib)
+        return MiniAnnotated[Any, attrib]

@@ -1,0 +1,21 @@
+[pytest]
+# Auto mode: every `async def test_*` is treated as an asyncio test.
+asyncio_mode = auto
+
+# Only collect from the event/ folder — keep this suite scoped.
+testpaths = .
+python_files = test_*.py
+python_classes = Test*
+python_functions = test_*
+
+# Quiet logging by default; tests can opt in via `caplog`.
+log_cli = false
+log_level = WARNING
+
+# Don't run tests in __pycache__ or .git
+norecursedirs = .git __pycache__ .pytest_cache
+
+# Custom markers
+markers =
+    asyncio: marks tests as asyncio (auto-applied by pytest-asyncio)
+    slow: marks tests as slow (deselect with -m "not slow")

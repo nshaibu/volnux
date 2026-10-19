@@ -27,18 +27,17 @@ from volnux.execution.pipeline import Pipeline
 from volnux.result import EventResult, ResultSet
 from volnux.result_evaluators import EventEvaluator, ResultEvaluationStrategies
 from volnux.signal.signals import (
+    SoftSignal,
     event_execution_aborted,
     event_execution_cancelled,
     event_execution_failed,
     event_execution_paused,
 )
 from volnux.task import PipelineTask, PipelineTaskGrouping
-from volnux.concurrency.async_utils import to_thread
 from volnux.context import get_current_node_id, get_current_project_id
 from volnux.backends.fields import (
     ForeignKeyField,
     FKConfig,
-    FKConstraint,
     ListConfig,
     ListField,
     OnDelete,
@@ -46,9 +45,22 @@ from volnux.backends.fields import (
 
 if typing.TYPE_CHECKING:
     from volnux.engine.base import WorkflowEngine
-    from volnux.execution.rehydrator.engine.snapshot import ContextSnapshot
 
 logger = logging.getLogger(__name__)
+
+# Statuses after which a context will not run again. A parent group is
+# re-evaluated whenever one of its children reaches one of these.
+TERMINAL_STATUSES = frozenset(
+    {
+        ExecutionStatus.COMPLETED,
+        ExecutionStatus.FAILED,
+        ExecutionStatus.CANCELLED,
+        ExecutionStatus.ABORTED,
+    }
+)
+
+# Child statuses that count as "finished" for group finality.
+_GROUP_DONE_STATUSES = frozenset({ExecutionStatus.COMPLETED, ExecutionStatus.FAILED})
 
 
 @dataclass
@@ -68,14 +80,40 @@ def preformat_task_profile(
         TaskType, typing.List[TaskType], typing.Deque[TaskType]
     ],
 ) -> typing.Deque[TaskType]:
+    """Normalise a single task, list/tuple or deque of tasks into a deque."""
+    if isinstance(task_profiles, deque):
+        return task_profiles
+    if isinstance(task_profiles, (list, tuple)):
+        return deque(task_profiles)
     if isinstance(task_profiles, (PipelineTask, PipelineTaskGrouping)):
         return deque([task_profiles])  # type: ignore
-    elif isinstance(task_profiles, (list, tuple)):
-        return deque(task_profiles)
-    elif isinstance(task_profiles, deque):
-        return task_profiles
-    # TODO: descriptive error message
-    raise FormaxValidationError("invalid task format")  # type: ignore
+    raise FormaxValidationError(  # type: ignore
+        "task_profiles must be a PipelineTask, PipelineTaskGrouping, or a "
+        f"list/tuple/deque of them, got {type(task_profiles).__name__}"
+    )
+
+
+def _with_default(annotation: typing.Any, **defaults: typing.Any) -> typing.Any:
+    """Give a field-factory annotation (ForeignKeyField/ListField) a default.
+
+    Formax only honours defaults declared on the field's Attrib, which these
+    factories build internally. Each ``Field[...]`` call creates a fresh Attrib,
+    so mutating it here only affects this declaration.
+    """
+    attrib = annotation.__metadata__[0]
+    for name, value in defaults.items():
+        setattr(attrib, name, value)
+    return annotation
+
+
+def _context_link() -> typing.Any:
+    return _with_default(
+        ForeignKeyField[
+            "ExecutionContext",
+            FKConfig(nullable=True, on_delete=OnDelete.SET_NULL),
+        ],
+        default=None,
+    )
 
 
 class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
@@ -84,8 +122,7 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
 
     This class encapsulates the necessary data and state associated with
     executing an event, such as the task being processed and the pipeline
-    it belongs to. It ensures thread safety using a conditional variable for
-    concurrent event execution.
+    it belongs to.
 
     :ivar task_profiles: The specific tasks being executed within the pipeline.
     :ivar pipeline: The pipeline that orchestrates the execution of the task.
@@ -94,13 +131,6 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
     :ivar next_context: The succeeding context in a doubly-linked list structure.
     :ivar parent_context: The parent context in a tree structure, used for hierarchical task management.
     :ivar child_contexts: The child contexts in a tree structure, representing branches of execution.
-    :type task_profiles: typing.Deque[TaskType]
-    :type pipeline: Pipeline
-    :type metrics: ExecutionMetrics
-    :type previous_context: typing.Optional[ExecutionContext]
-    :type next_context: typing.Optional[ExecutionContext]
-    :type parent_context: typing.Optional[ExecutionContext]
-    :type child_contexts: typing.List[ExecutionContext]
 
     Details:
         Represents the execution context of the pipeline as a bidirectional (doubly-linked) list.
@@ -118,6 +148,8 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         - Use `get_tail_context()` to retrieve the tail (ending context).
 
         Reverse traversal can be done by walking backward from the tail using the linked structure.
+
+        Contexts compare and hash by identity (``id``), never by field values.
     """
 
     task_profiles: MiniAnnotated[
@@ -136,30 +168,22 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
     ]
 
     # Horizontal Links (Linked list)
-    previous_context: ForeignKeyField[
-        "ExecutionContext",
-        FKConfig(nullable=True, on_delete=OnDelete.SET_NULL),
-    ]
-    next_context: ForeignKeyField[
-        "ExecutionContext",
-        FKConfig(nullable=True, on_delete=OnDelete.SET_NULL),
-    ]
+    previous_context: _context_link()
+    next_context: _context_link()
 
     # Vertical Links (The Tree)
-    parent_context: ForeignKeyField[
-        "ExecutionContext",
-        FKConfig(nullable=True, on_delete=OnDelete.SET_NULL),
-    ]
-    child_contexts: ListField["ExecutionContext", ListConfig(unique_items=True)]
+    parent_context: _context_link()
+    child_contexts: _with_default(
+        ListField["ExecutionContext", ListConfig(unique_items=True)],
+        default_factory=list,
+    )
 
     # Workflow identifier for grouping contexts
-    workflow_id: typing.Optional[str]
-    workflow_name: typing.Optional[str]
+    workflow_id: MiniAnnotated[typing.Optional[str], Attrib(default=None)]
+    workflow_name: MiniAnnotated[typing.Optional[str], Attrib(default=None)]
 
-    # Hot execution state (formerly ExecutionState/StateManager). Persisted
-    # through KeyValueStoreIntegrationMixin (see get_state/set_state) instead
-    # of an in-process multiprocessing.Manager, so it can be shared across
-    # workers/machines rather than just processes forked from one parent.
+    # Hot execution state. Persisted through KeyValueStoreIntegrationMixin
+    # (see get_state/set_state) so it can be shared across workers/machines.
     status: MiniAnnotated[ExecutionStatus, Attrib(default=ExecutionStatus.PENDING)]
     errors: typing.List[Exception] = field(default_factory=list)
     results: "ResultSet[EventResult]" = field(
@@ -189,22 +213,71 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         validation = ValidationFlags.NONE
         init_strategy = InitStrategy.DATACLASS
 
+    def __post_init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
+        super().__post_init__(*args, **kwargs)
+        # Formax skips pre-formatters under ValidationFlags.NONE, so normalise
+        # here: callers (e.g. the engine) pass a single task as often as a deque.
+        self.task_profiles = preformat_task_profile(self.task_profiles)
+        if self.metrics is None:
+            self.metrics = ExecutionMetrics()
+        # Strong refs to fire-and-forget saves scheduled by sync mutators
+        self._pending_saves: typing.Set[asyncio.Task] = set()
+
+    # Identity
+
+    def __eq__(self, other: object) -> bool:
+        # Field-wise dataclass equality would compare the parent/child graph
+        # (and locks); two contexts are the same only if they are the same node.
+        if not isinstance(other, ExecutionContext):
+            return NotImplemented
+        return self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @property
+    def state_id(self) -> str:
+        return self.id
+
+    # Persistence
+
     def get_state(self) -> typing.Dict[str, typing.Any]:
         """Persisted slice of the context: hot execution state plus enough
         hierarchy/identity to look records back up, excluding the transient,
         non-serializable orchestration graph (pipeline, task_profiles, engine
-        ref, locks)."""
-        state = self.__get_formax_state__().copy()
-
-        result_list = [self._result_id(result) for result in self.results]
-
-        state.pop("_context_lock", None)
-        state.pop("_engine_ref", None)
-        state.pop("_task_checkpoint", None)
-
-        return state
+        ref, locks). Links are stored as ids; resolving them is the
+        rehydrator's job. Safe to call repeatedly (idempotent)."""
+        return {
+            "id": self.id,
+            "status": self.status.value,
+            "errors": [self._serialize_error(error) for error in self.errors],
+            "result_ids": [self._result_id(result) for result in self.results],
+            "aggregated_result_id": self._result_id(self.aggregated_result),
+            "workflow_id": self.workflow_id,
+            "workflow_name": self.workflow_name,
+            "node_id": self.node_id,
+            "project_id": self.project_id,
+            "persist_state": self.persist_state,
+            "metrics": {
+                "start_time": self.metrics.start_time,
+                "end_time": self.metrics.end_time,
+            },
+            "task_checkpoint": self._task_checkpoint,
+            "parent_context_id": self._link_id(self.parent_context),
+            "previous_context_id": self._link_id(self.previous_context),
+            "next_context_id": self._link_id(self.next_context),
+            "child_context_ids": [
+                self._link_id(child) for child in self.child_contexts
+            ],
+        }
 
     def set_state(self, state: typing.Dict[str, typing.Any]) -> None:
+        """Restore from ``get_state()`` output.
+
+        Live objects (pipeline, tasks, linked contexts, results) are not part of
+        the persisted state; the rehydrator re-attaches them. Their ids are kept
+        on ``_*_id(s)`` attributes for that purpose.
+        """
         self._objectid_lock = threading.Lock()
 
         if "id" in state:
@@ -216,11 +289,14 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         # Persisted errors are flattened dicts, not live Exception instances -
         # sentinel scanning (get_switch_request et al.) only matters during
         # live execution, never after a cold reload/rehydration.
-        self.errors = state.get("errors", [])
-        self.results = state.get("results", [])
-        self.aggregated_result = state.get("aggregated_result")
+        self.errors = list(state.get("errors", []))
+        self.results = ResultSet[EventResult]()
+        self.aggregated_result = None
         self.workflow_id = state.get("workflow_id")
         self.workflow_name = state.get("workflow_name")
+        self.node_id = state.get("node_id")
+        self.project_id = state.get("project_id")
+        self.persist_state = state.get("persist_state", False)
         metrics = state.get("metrics") or {}
         self.metrics = ExecutionMetrics(
             start_time=metrics.get("start_time", 0.0),
@@ -228,10 +304,21 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         )
         self._task_checkpoint = state.get("task_checkpoint")
 
-        # Hierarchy is restored as plain ids, not live object refs - resolving
-        # the actual neighbors/children is the rehydrator's job.
+        # Transient orchestration graph: re-attached by the rehydrator
+        self.task_profiles = deque()
+        self.pipeline = None
+        self.previous_context = None
+        self.next_context = None
+        self.parent_context = None
+        self.child_contexts = []
+        self._context_lock = asyncio.Lock()
+        self._engine_ref = None
+        self._pending_saves = set()
+
+        self._result_ids = list(state.get("result_ids", []))
+        self._aggregated_result_id = state.get("aggregated_result_id")
         self._parent_context_id = state.get("parent_context_id")
-        self._child_context_ids = state.get("child_context_ids", [])
+        self._child_context_ids = list(state.get("child_context_ids", []))
         self._previous_context_id = state.get("previous_context_id")
         self._next_context_id = state.get("next_context_id")
 
@@ -239,9 +326,7 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
     def _serialize_error(
         error: typing.Union[Exception, typing.Dict[str, typing.Any]],
     ) -> typing.Dict[str, typing.Any]:
-        # get_state() must be idempotent: backends (e.g. the in-memory one,
-        # via copy.deepcopy) may round-trip get_state()/set_state() more than
-        # once, so `error` may already be a previously-serialized dict.
+        # `error` may already be a previously-serialized dict (state round trips)
         if isinstance(error, dict):
             return error
         return {
@@ -256,117 +341,139 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
     def _result_id(
         result: typing.Union["EventResult", str, None],
     ) -> typing.Optional[str]:
-        # Same idempotency concern as _serialize_error: `result` may already
-        # be a plain id from a prior round trip.
+        # `result` may already be a plain id from a prior round trip
         return getattr(result, "id", result)
+
+    @staticmethod
+    def _link_id(context: typing.Any) -> typing.Optional[str]:
+        """Id of a linked context, a ForeignKey reference, or an id string."""
+        if context is None:
+            return None
+        return getattr(context, "id", context)
+
+    def _maybe_persist(self) -> None:
+        """Persist from sync code paths (no-op unless ``persist_state``).
+
+        ``save()`` is async: inside a running loop it is scheduled as a task,
+        otherwise it runs to completion before returning.
+        """
+        if not self.persist_state:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.save())
+            return
+        task = loop.create_task(self.save())
+        self._pending_saves.add(task)
+        task.add_done_callback(self._on_save_done)
+
+    def _on_save_done(self, task: "asyncio.Task") -> None:
+        self._pending_saves.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error(
+                "Background save of context %s failed: %s",
+                self.id,
+                task.exception(),
+            )
+
+    async def _maybe_persist_async(self) -> None:
+        if self.persist_state:
+            await self.save()
+
+    def set_task_checkpoint(self, checkpoint_data: dict) -> None:
+        """
+        Set checkpoint data for the current task (idempotency support).
+
+        Args:
+            checkpoint_data: Arbitrary data marking progress within a task
+        """
+        self._task_checkpoint = checkpoint_data
+
+    def get_task_checkpoint(self) -> typing.Optional[typing.Dict[str, typing.Any]]:
+        """Checkpoint data recorded for the current task, if any."""
+        return self._task_checkpoint
+
+    # Control-flow requests raised by events
+
+    def _find_error(
+        self, error_type: typing.Type[Exception]
+    ) -> typing.Optional[Exception]:
+        # Exact type match: these sentinels are distinct control-flow signals
+        for err in self.errors:
+            if type(err) is error_type:
+                return err
+        return None
 
     def get_stop_processing_request(self) -> typing.Optional[Exception]:
         """Check for StopProcessingError in errors"""
-        for err in self.errors:
-            if isinstance(err, Exception) and type(err) == StopProcessingError:
-                return err
-        return None
+        return self._find_error(StopProcessingError)
 
     def get_switch_request(self) -> typing.Optional[Exception]:
         """Check for SwitchTask in errors"""
-        for err in self.errors:
-            if isinstance(err, Exception) and type(err) == SwitchTask:
-                return err
-        return None
+        return self._find_error(SwitchTask)
 
     def get_suspension_request(self) -> typing.Optional[Exception]:
         """Check for SuspendTask in errors"""
-        for err in self.errors:
-            if isinstance(err, Exception) and type(err) == SuspendTask:
-                return err
-        return None
+        return self._find_error(SuspendTask)
+
+    # Construction and tree
 
     @classmethod
     async def create_context(
         cls,
-        workflow_id: str,
-        workflow_name: str,
-        task_profiles: typing.Deque[TaskType],
+        workflow_id: typing.Optional[str],
+        workflow_name: typing.Optional[str],
+        task_profiles: typing.Union[TaskType, typing.Iterable[TaskType]],
         pipeline: Pipeline,
-        metrics: ExecutionMetrics = None,
+        metrics: typing.Optional[ExecutionMetrics] = None,
         previous_context: typing.Optional["ExecutionContext"] = None,
         next_context: typing.Optional["ExecutionContext"] = None,
         parent_context: typing.Optional["ExecutionContext"] = None,
-        child_contexts: typing.List["ExecutionContext"] = None,
+        child_contexts: typing.Optional[typing.Iterable["ExecutionContext"]] = None,
         persist_state: bool = False,
     ) -> "ExecutionContext":
         """
-        Creates an ExecutionContext instance in an asynchronous, thread-safe manner. This method wraps the
-        initialization logic to allow for non-blocking execution while ensuring thread synchronization when
-        creating the context. It enables efficient execution context creation, especially in concurrent
-        environments.
+        Creates an ExecutionContext instance.
 
         :param workflow_id: Unique identifier of the workflow.
-        :type workflow_id: str
         :param workflow_name: Name of the workflow.
-        :type workflow_name: str
-        :param task_profiles: Queue of task profiles to be executed as part of this context.
-        :type task_profiles: typing.Deque[TaskType]
+        :param task_profiles: A single task, or a list/tuple/deque of tasks to be executed
+            as part of this context.
         :param pipeline: Pipeline object managing the execution flow and dependencies.
-        :type pipeline: Pipeline
-        :param metrics: (Optional) Metrics object containing execution statistics and performance data.
-        :type metrics: ExecutionMetrics, optional
-        :param previous_context: (Optional) Reference to a previously executed ExecutionContext in the workflow chain.
-        :type previous_context: typing.Optional[ExecutionContext], optional
-        :param next_context: (Optional) Reference to the next ExecutionContext in the workflow chain.
-        :type next_context: typing.Optional[ExecutionContext], optional
-        :param parent_context: (Optional) Reference to the immediate parent ExecutionContext, if nested.
-        :type parent_context: typing.Optional[ExecutionContext], optional
-        :param child_contexts: (Optional) List of child ExecutionContexts derived from the current context.
-        :type child_contexts: typing.List[ExecutionContext], optional
+        :param metrics: (Optional) Metrics object; a fresh one (started now) is created if omitted.
+        :param previous_context: (Optional) Previous ExecutionContext in the workflow chain.
+        :param next_context: (Optional) Next ExecutionContext in the workflow chain.
+        :param parent_context: (Optional) The immediate parent ExecutionContext, if nested.
+        :param child_contexts: (Optional) Child ExecutionContexts derived from this context.
         :param persist_state: (Optional) Whether mutators should persist hot state to the
             configured backend after every change. Defaults to False.
-        :type persist_state: bool, optional
-
-        :return: An instance of ExecutionContext constructed asynchronously.
-        :rtype: ExecutionContext
+        :return: The new ExecutionContext.
         """
-
-        if child_contexts is None:
-            child_contexts = []
-
-        if not isinstance(child_contexts, (list, tuple)):
-            child_contexts = list(child_contexts)
-
-        context = await to_thread(
-            cls,
+        return cls(
             workflow_id=workflow_id,
             workflow_name=workflow_name,
             task_profiles=task_profiles,
             pipeline=pipeline,
-            metrics=metrics,
+            metrics=metrics if metrics is not None else ExecutionMetrics(),
             previous_context=previous_context,
             next_context=next_context,
             parent_context=parent_context,
-            child_contexts=child_contexts,
+            child_contexts=list(child_contexts) if child_contexts else [],
             persist_state=persist_state,
         )
-        return context
-
-    @property
-    def state_id(self) -> str:
-        return self.id
 
     async def spawn_child(
-        self, task_profiles: typing.Deque[TaskType]
+        self, task_profiles: typing.Union[TaskType, typing.Iterable[TaskType]]
     ) -> "ExecutionContext":
         """
-        Creates and returns a child ExecutionContext. The parent-child
-        relationship is established by linking the child context to the parent's list
-        of child contexts.
+        Creates a child ExecutionContext linked under this context (shares this
+        context's pipeline, workflow identity and persistence mode).
 
-        :param task_profiles: A deque containing TaskType instances to be executed in
-            the context of the child ExecutionContext.
-        :return: A newly created ExecutionContext configured as a child of the
-            current context.
-        :rtype: ExecutionContext
+        :param task_profiles: A single task or a collection of tasks for the child.
+        :return: The newly created child context.
         """
-        child = await ExecutionContext.create_context(
+        child = await type(self).create_context(
             task_profiles=task_profiles,
             pipeline=self.pipeline,
             parent_context=self,
@@ -387,23 +494,78 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
     def is_leaf(self) -> bool:
         return len(self.child_contexts) == 0
 
+    def _walk(self, attr: str) -> typing.Iterator["ExecutionContext"]:
+        """Follow ``attr`` links from (and excluding) self, stopping on cycles."""
+        seen = {id(self)}
+        current = getattr(self, attr)
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            yield current
+            current = getattr(current, attr)
+
     def get_root_context(self) -> "ExecutionContext":
         """Climb the tree to find the absolute start of the orchestration."""
-        current = self
-        while current.parent_context:
-            current = current.parent_context
-        return current  # type: ignore
+        root = self
+        for root in self._walk("parent_context"):
+            pass
+        return root
 
     def get_depth(self) -> int:
         """Calculates nesting level for directive validation."""
-        depth = 0
-        current = self
-        while current.parent_context:
-            depth += 1
-            current = current.parent_context
-        return depth
+        return sum(1 for _ in self._walk("parent_context"))
 
-    async def _evaluate_group_finality(self):
+    def get_head_context(self) -> "ExecutionContext":
+        """
+        Returns the execution context head of the execution context.
+        :return: ExecutionContext head of the execution context.
+        """
+        head = self
+        for head in self._walk("previous_context"):
+            pass
+        return head
+
+    def get_latest_context(self) -> "ExecutionContext":
+        """
+        Returns the latest (tail) execution context.
+        :return: ExecutionContext
+        """
+        tail = self
+        for tail in self._walk("next_context"):
+            pass
+        return tail
+
+    def get_tail_context(self) -> "ExecutionContext":
+        """
+        Returns the tail context of the execution context.
+        :return: ExecutionContext
+        """
+        return self.get_latest_context()
+
+    def __iter__(self) -> typing.Iterator["ExecutionContext"]:
+        yield self
+        yield from self._walk("next_context")
+
+    def filter_by_event(self, event_name: str) -> typing.List["ExecutionContext"]:
+        """
+        Returns every context in this chain (head to tail) that runs a task for
+        the given event.
+        :param event_name: Case-insensitive event name.
+        :return: The matching contexts, in chain order.
+        """
+        wanted = event_name.lower()
+
+        def runs_event(context: "ExecutionContext") -> bool:
+            for task in context.get_task_profiles():
+                get_name = getattr(task, "get_event_name", None)
+                if callable(get_name) and str(get_name()).lower() == wanted:
+                    return True
+            return False
+
+        return [context for context in self.get_head_context() if runs_event(context)]
+
+    # Status transitions
+
+    async def _evaluate_group_finality(self) -> None:
         """
         Internal check: Is every child context in this subtree finished?
 
@@ -412,40 +574,33 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         hasn't been registered yet is invisible to this snapshot, and the
         group can be marked complete before that child ever ran.
         """
+        if self.status in TERMINAL_STATUSES:
+            return  # Never overwrite an outcome this context already reached
+
         async with self._context_lock:
-            children_snapshot = list(self.child_contexts)
-            all_done = True
-            for child in children_snapshot:
-                if child.status not in (
-                    ExecutionStatus.COMPLETED,
-                    ExecutionStatus.FAILED,
-                ):
-                    all_done = False
-                    break
+            all_done = all(
+                child.status in _GROUP_DONE_STATUSES for child in self.child_contexts
+            )
 
         if all_done:
             # The 'Super-Task' is now officially complete
             await self.update_status_async(ExecutionStatus.COMPLETED)
 
-    def _maybe_persist(self) -> None:
-        if self.persist_state:
-            self.save()
-
-    async def _maybe_persist_async(self) -> None:
-        if self.persist_state:
-            await self.save()
+    async def _notify_parent(self) -> None:
+        if self.status in TERMINAL_STATUSES and self.parent_context is not None:
+            await self.parent_context._evaluate_group_finality()
 
     def update_status(self, new_status: "ExecutionStatus") -> None:
+        """Sync status update. Does not re-evaluate the parent group; use
+        ``update_status_async`` from async code."""
         self.status = new_status
         self._maybe_persist()
 
     async def update_status_async(self, new_status: "ExecutionStatus") -> None:
         self.status = new_status
         await self._maybe_persist_async()
-
         # If this child is done, signal the parent to check its 'Group' status
-        if new_status == ExecutionStatus.COMPLETED and self.parent_context:
-            await self.parent_context._evaluate_group_finality()
+        await self._notify_parent()
 
     def add_error(self, error: Exception) -> None:
         self.errors.append(error)
@@ -456,105 +611,25 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         await self._maybe_persist_async()
 
     def add_result(self, result: EventResult) -> None:
-        self.results.append(result)
+        self.results.add(result)
         self._maybe_persist()
 
     async def add_result_async(self, result: EventResult) -> None:
-        self.results.append(result)
+        self.results.add(result)
         await self._maybe_persist_async()
 
-    def cancel(self) -> None:
-        """
-        Cancel execution - only mutates THIS context.
-        Other contexts continue running unaffected.
-        """
-        self.update_status(ExecutionStatus.CANCELLED)
-        # Emit event
-        event_execution_cancelled.emit(
-            sender=self.__class__,
-            task_profiles=self.get_task_profiles().copy(),
-            execution_context=self,
-            state=ExecutionStatus.CANCELLED,
-        )
-
-    async def cancel_async(self) -> None:
-        """
-        Async version of cancel execution - only mutates THIS context.
-        Other contexts continue running unaffectedly.
-        """
-        await self.update_status_async(ExecutionStatus.CANCELLED)
-        # Emit event
-        await event_execution_cancelled.emit_async(
-            sender=self.__class__,
-            task_profiles=self.get_task_profiles().copy(),
-            execution_context=self,
-            state=ExecutionStatus.CANCELLED,
-        )
-
-    def abort(self) -> None:
-        """
-        Abort execution - only mutates THIS context.
-        Other contexts continue running unaffected.
-        """
-        self.update_status(ExecutionStatus.ABORTED)
-        # Emit event
-        event_execution_aborted.emit(
-            sender=self.__class__,
-            task_profiles=self.get_task_profiles().copy(),
-            execution_context=self,
-            state=ExecutionStatus.ABORTED,
-        )
-
-    async def abort_async(self) -> None:
-        """
-        Async version of abort execution - only mutates THIS context.
-        Other contexts continue running unaffected.
-        """
-        await self.update_status_async(ExecutionStatus.ABORTED)
-        # Emit event
-        await event_execution_aborted.emit_async(
-            sender=self.__class__,
-            task_profiles=self.get_task_profiles().copy(),
-            execution_context=self,
-            state=ExecutionStatus.ABORTED,
-        )
-
-    def failed(self) -> None:
-        """
-        Mark the execution context as failed.
-        """
-        self.update_status(ExecutionStatus.FAILED)
-        # Emit event
-        event_execution_failed.emit(
-            sender=self.__class__,
-            task_profiles=self.get_task_profiles().copy(),
-            execution_context=self,
-            state=ExecutionStatus.FAILED,
-        )
-
-    async def failed_async(self) -> None:
-        """
-        Async version of marking the execution context as failed.
-        """
-        await self.update_status_async(ExecutionStatus.FAILED)
-        # Emit event
-        await event_execution_failed.emit_async(
-            sender=self.__class__,
-            task_profiles=self.get_task_profiles().copy(),
-            execution_context=self,
-            state=ExecutionStatus.FAILED,
-        )
-
-    async def paused_async(self) -> None:
-        await self.update_status_async(ExecutionStatus.PAUSED)
-
-        # Emit event
-        await event_execution_paused.emit_async(
-            sender=self.__class__,
-            task_profiles=self.get_task_profiles().copy(),
-            execution_context=self,
-            state=ExecutionStatus.PAUSED,
-        )
+    def _apply_bulk(
+        self,
+        status: typing.Optional["ExecutionStatus"],
+        errors: typing.Optional[typing.Sequence[Exception]],
+        results: typing.Optional[typing.Sequence[EventResult]],
+    ) -> None:
+        if status is not None:
+            self.status = status
+        if errors is not None:
+            self.errors.extend(errors)
+        if results is not None:
+            self.results.extend(results)
 
     def bulk_update(
         self,
@@ -562,13 +637,8 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         errors: typing.Optional[typing.Sequence[Exception]] = None,
         results: typing.Optional[typing.Sequence[EventResult]] = None,
     ) -> None:
-        """Efficient bulk update"""
-        if status is not None:
-            self.status = status
-        if errors is not None:
-            self.errors.extend(errors)
-        if results is not None:
-            self.results.extend(results)
+        """Efficient bulk update (single persist)"""
+        self._apply_bulk(status, errors, results)
         self._maybe_persist()
 
     async def bulk_update_async(
@@ -577,27 +647,65 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         errors: typing.Optional[typing.Sequence[Exception]] = None,
         results: typing.Optional[typing.Sequence[EventResult]] = None,
     ) -> None:
-        """Async version of efficient bulk update"""
-        if status is not None:
-            self.status = status
-        if errors is not None:
-            self.errors.extend(errors)
-        if results is not None:
-            self.results.extend(results)
+        """Async version of efficient bulk update (single persist)"""
+        self._apply_bulk(status, errors, results)
         await self._maybe_persist_async()
+        if status is not None:
+            await self._notify_parent()
 
     async def update_aggregated_result(self, result: "EventResult") -> None:
         self.aggregated_result = result
         await self._maybe_persist_async()
 
-    def __iter__(self) -> typing.Generator["ExecutionContext", typing.Any, None]:
-        current: typing.Optional["ExecutionContext"] = self
-        while current is not None:
-            yield current
-            current = current.next_context
+    def _signal_kwargs(self, status: ExecutionStatus) -> typing.Dict[str, typing.Any]:
+        return {
+            "sender": self.__class__,
+            "task_profiles": self.get_task_profiles().copy(),
+            "execution_context": self,
+            "state": status,
+        }
 
-    def __hash__(self) -> int:
-        return hash(self.id)
+    def _transition(self, status: ExecutionStatus, signal: SoftSignal) -> None:
+        self.update_status(status)
+        signal.emit(**self._signal_kwargs(status))
+
+    async def _transition_async(
+        self, status: ExecutionStatus, signal: SoftSignal
+    ) -> None:
+        await self.update_status_async(status)
+        await signal.emit_async(**self._signal_kwargs(status))
+
+    def cancel(self) -> None:
+        """Cancel execution - only mutates THIS context."""
+        self._transition(ExecutionStatus.CANCELLED, event_execution_cancelled)
+
+    async def cancel_async(self) -> None:
+        """Async version of cancel - only mutates THIS context."""
+        await self._transition_async(
+            ExecutionStatus.CANCELLED, event_execution_cancelled
+        )
+
+    def abort(self) -> None:
+        """Abort execution - only mutates THIS context."""
+        self._transition(ExecutionStatus.ABORTED, event_execution_aborted)
+
+    async def abort_async(self) -> None:
+        """Async version of abort - only mutates THIS context."""
+        await self._transition_async(ExecutionStatus.ABORTED, event_execution_aborted)
+
+    def failed(self) -> None:
+        """Mark the execution context as failed."""
+        self._transition(ExecutionStatus.FAILED, event_execution_failed)
+
+    async def failed_async(self) -> None:
+        """Async version of marking the execution context as failed."""
+        await self._transition_async(ExecutionStatus.FAILED, event_execution_failed)
+
+    async def paused_async(self) -> None:
+        """Mark the execution context as paused."""
+        await self._transition_async(ExecutionStatus.PAUSED, event_execution_paused)
+
+    # Execution
 
     async def dispatch(
         self, timeout: typing.Optional[float] = None
@@ -607,9 +715,8 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         Args:
             timeout: Optional dispatch timeout
         Returns:
-            SwitchRequest if task switching is requested, else None.
+            The coordinator's execution result.
         Raises:
-            RuntimeError: If called from within an existing event loop
             Exception: If execution fails
         """
         from .coordinator import ExecutionCoordinator
@@ -620,89 +727,39 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
             return await coordinator.execute_async()
         except Exception as e:
             logger.error(
-                f"{self.pipeline.__class__.__name__} : {str(self.task_profiles)} : {str(e)}"
+                "%s : %s : %s",
+                self.pipeline.__class__.__name__,
+                self.task_profiles,
+                e,
             )
             raise
 
     def get_task_profiles(self) -> typing.Deque["TaskType"]:
-        task_profiles = self.task_profiles
-
-        return typing.cast(typing.Deque["TaskType"], task_profiles)
+        return typing.cast(typing.Deque["TaskType"], self.task_profiles)
 
     def is_multitask(self) -> bool:
         return len(self.get_task_profiles()) > 1
-
-    def get_head_context(self) -> "ExecutionContext":
-        """
-        Returns the execution context head of the execution context.
-        :return: ExecutionContext head of the execution context.
-        """
-        current = self
-        while current.previous_context:
-            current = current.previous_context
-        return current
-
-    def get_latest_context(self) -> "ExecutionContext":
-        """
-        Returns the latest execution context.
-        :return: ExecutionContext
-        """
-        current = self.get_head_context()
-        while current.next_context:
-            current = current.next_context
-        return current
-
-    def get_tail_context(self) -> "ExecutionContext":
-        """
-        Returns the tail context of the execution context.
-        :return: ExecutionContext
-        """
-        return self.get_latest_context()
-
-    def filter_by_event(self, event_name: str) -> ResultSet:
-        """
-        Filters the execution context based on the event name.
-        :param event_name: Case-insensitive event name.
-        :return: ResultSet with the filtered execution context.
-        """
-        head = self.get_head_context()
-        event = ""  # PipelineTask.resolve_event_name(event_name)
-        result = ResultSet()
-
-        def filter_condition(context: ExecutionContext, term: str) -> bool:
-            task_profiles = context.task_profiles
-
-        for context in head:
-            if event in [task.event for task in context.task_profiles]:
-                result.add(context)
-        return result
 
     def get_decision_task_profile(
         self,
     ) -> typing.Optional[TaskType]:
         """
-        Retrieves a task profile crucial for decision-making processes.
+        Retrieves the task profile that decides how this context's result is evaluated.
 
-        This method identifies the final task in a pipeline or sequence of tasks.
-        If a single task profile exists, it is directly returned. For multiple
-        task profiles, the method analyzes each profile to determine its role in
-        a parallel task pipeline scenario. Specifically, it identifies a task profile
-        associated with parallelism (PipeType.PARALLELISM) while ensuring the
-        subsequent condition does not point to parallelism, marking it as the
-        concluding task of the pipeline.
+        A single task profile is returned directly. For multiple task profiles
+        (a parallel group), returns the last task of the parallel chain: the
+        one entered via PipeType.PARALLELISM whose success pipe does not
+        continue the parallelism.
 
-        :return: A PipelineTask object representing the final task profile in the
-                 pipeline or None if no such profile is found.
-        :rtype: Optional[TaskType]
+        :return: The deciding task profile, or None if none qualifies.
         """
         task_profiles = self.get_task_profiles()
         if len(task_profiles) == 1:
             return task_profiles[0]
 
         for task_profile in task_profiles:
-            pointer_to_task = task_profile.get_pointer_to_task()
             if (
-                pointer_to_task == PipeType.PARALLELISM
+                task_profile.get_pointer_to_task() == PipeType.PARALLELISM
                 and task_profile.condition_node.on_success_pipe != PipeType.PARALLELISM
             ):
                 return task_profile
@@ -710,43 +767,37 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
 
     def get_result_evaluator(self) -> typing.Optional["EventEvaluator"]:
         """
-        Retrieves the result evaluation strategy from the task profile.
+        Retrieves the result evaluation strategy for the deciding task profile.
 
-        This method first identifies the relevant task profile using the
-        `get_decision_task_profile` method. If a task profile is found,
-        it then accesses the associated condition node to retrieve the
-        result evaluation strategy.
+        A ``result_evaluation_strategy`` configured on the task's options takes
+        precedence; otherwise the event class's own evaluator is used.
 
         Returns:
-            EventEvaluator: The result evaluation strategy associated with the
-            task profile, or None if no task profile is found.
+            EventEvaluator, or None if no deciding task profile is found.
         """
         task_profile = self.get_decision_task_profile()
-        if task_profile:
-            if task_profile.options and task_profile.options.is_configured(
-                "result_evaluation_strategy"
-            ):
-                # resolve evaluation strategy from options
-                try:
-                    evaluator_strategy = typing.cast(
-                        ResultEvaluationStrategy,
-                        task_profile.options.result_evaluation_strategy,
-                    )
-                    strategy = getattr(
-                        ResultEvaluationStrategies,
-                        evaluator_strategy.name,
-                    )
-                except AttributeError as e:
-                    logger.warning(
-                        f"Error resolving result evaluation strategy from options: {e}"
-                    )
-                    strategy = None
+        if task_profile is None:
+            return None
 
-                if strategy:
-                    return EventEvaluator(strategy=strategy)
+        options = task_profile.options
+        if options and options.is_configured("result_evaluation_strategy"):
+            try:
+                evaluator_strategy = typing.cast(
+                    ResultEvaluationStrategy, options.result_evaluation_strategy
+                )
+                strategy = getattr(ResultEvaluationStrategies, evaluator_strategy.name)
+            except AttributeError as e:
+                logger.warning(
+                    "Error resolving result evaluation strategy from options: %s", e
+                )
+                strategy = None
 
-            return task_profile.get_event_class().evaluator()
-        return None
+            if strategy:
+                return EventEvaluator(strategy=strategy)
+
+        return task_profile.get_event_class().evaluator()
+
+    # Engine association
 
     def set_engine(self, engine: "WorkflowEngine") -> None:
         """Associate this context with its execution engine"""
@@ -757,70 +808,3 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         if self._engine_ref:
             return self._engine_ref()
         return None
-
-    async def create_snapshot(self) -> "ContextSnapshot":
-        """
-        Creates a snapshot of the current context.
-
-        The method asynchronously generates a snapshot of the current
-        context state using the `SnapshotBuilder`. This snapshot can be
-        used for preserving the state or for other rehydration operations.
-
-        :return: An instance of `ContextSnapshot` representing the captured snapshot.
-        :rtype: ContextSnapshot
-        """
-
-        from .rehydrator.engine.builder import SnapshotBuilder
-
-        snapshot = await SnapshotBuilder().build(self)
-        return snapshot
-
-    def _extract_current_task_from_engine(
-        self, engine: "WorkflowEngine"
-    ) -> typing.Tuple[
-        typing.Optional[str], typing.Optional[str], typing.Optional[dict]
-    ]:
-        """
-        Extract the current task being executed from the engine.
-
-        Returns:
-            Tuple of (task_id, event_name, checkpoint_data)
-        """
-        # The engine's queue structure is: deque[TaskNode]
-        # We need to peek at what's currently being processed
-
-        # If engine tracks the current task explicitly
-        node = engine.current_task_node
-        if node and node.task:
-            return (
-                getattr(node.task, "id", None),
-                node.task.event,
-                self._task_checkpoint,
-            )
-
-        # Peek at the front of the queue
-        # if hasattr(engine, "queue") and engine.queue:
-        #     node = engine.queue[0]  # Peek without removing
-        #     if node and node.task:
-        #         return (
-        #             getattr(node.task, "id", None),
-        #             node.task.event,
-        #             self._task_checkpoint,
-        #         )
-
-        return None, None, None
-
-    async def persist(self) -> None:
-        """Persist current state"""
-        snapshot = await self.create_snapshot()
-        await snapshot.save()
-        logger.debug(f"Persisted context {self.state_id}")
-
-    def set_task_checkpoint(self, checkpoint_data: dict) -> None:
-        """
-        Set checkpoint data for the current task (idempotency support).
-
-        Args:
-            checkpoint_data: Arbitrary data marking progress within a task
-        """
-        self._task_checkpoint = checkpoint_data

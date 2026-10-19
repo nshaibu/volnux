@@ -517,7 +517,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
             CheckPointFrequency.PER_TASK,
             CheckPointFrequency.ON_STATE_CHANGE,
         ]:
-            await context.persist()
+            await context.save()
             logger.debug(
                 f"[Engine] Checkpointed after task (success={success}): "
                 f"{self.tasks_processed} tasks processed"

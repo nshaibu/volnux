@@ -12,11 +12,14 @@ from typing import (
     Union,
     Iterator,
     TYPE_CHECKING,
+    ForwardRef,
 )
 
 from formax import MiniAnnotated, Attrib
 from volnux.utils import get_obj_klass_import_str
 from volnux.import_utils import import_string
+from volnux.backends.db_utils import ModelResolverMixin
+from .foreign_key import ForeignKey
 from .utils import formax_null_validator
 
 if TYPE_CHECKING:
@@ -63,30 +66,46 @@ class ManagedList(Generic[T]):
         parent_instance: Any = None,
         field_name: str = "",
     ):
-        self._items: List[Any] = list(items) if items else []
+        # Wrap a stored list by reference so mutations reach the parent's
+        # underlying field value instead of a throwaway copy.
+        if isinstance(items, list):
+            self._items: List[Any] = items
+        else:
+            self._items = list(items) if items else []
         self._item_model = item_model
         self._parent_instance = parent_instance
         self._field_name = field_name
         self._dirty = False
 
+    def _resolved_item_model(self) -> Optional[Type[Any]]:
+        """Resolve the item model, returning None if it is an unresolvable ForwardRef."""
+        return _try_resolve_model(self._item_model)
+
     def add(self, item: T) -> None:
         """Add a typed item to the list. Validates type at insertion."""
-        if self._item_model is not None and not isinstance(item, self._item_model):
+        model = self._resolved_item_model()
+        if (
+            model is not None
+            and item is not None
+            and not isinstance(item, (model, ForeignKey))
+        ):
             raise TypeError(
-                f"Cannot add {type(item).__name__} to "
-                f"ListField[{self._item_model.__name__}]"
+                f"Cannot add {type(item).__name__} to " f"ListField[{model.__name__}]"
             )
         self._items.append(item)
         self._dirty = True
 
+    # list-compatible alias
+    append = add
+
     def remove(self, item: T) -> bool:
         """Remove the first occurrence of the item. Returns True if found."""
-        try:
-            self._items.remove(item)
-            self._dirty = True
-            return True
-        except ValueError:
-            return False
+        for i in range(len(self._items)):
+            if self._resolve_item(i) == item:
+                del self._items[i]
+                self._dirty = True
+                return True
+        return False
 
     def clear(self) -> None:
         """Remove all items."""
@@ -105,7 +124,7 @@ class ManagedList(Generic[T]):
 
     def contains(self, item: T) -> bool:
         """Check if item exists in the list."""
-        return item in self._items
+        return any(self._resolve_item(i) == item for i in range(len(self._items)))
 
     def is_empty(self) -> bool:
         """Check if the list has no items."""
@@ -117,8 +136,30 @@ class ManagedList(Generic[T]):
     def __bool__(self) -> bool:
         return not self.is_empty()
 
+    @property
+    def is_dirty(self) -> bool:
+        """Whether the list has been mutated since it was loaded."""
+        return self._dirty
+
+    def _resolve_item(self, index: int) -> Any:
+        """Lazily convert a serialized reference dict into a ForeignKey.
+
+        The converted reference is cached back into the list so repeated
+        access returns the same object.
+        """
+        item = self._items[index]
+        if isinstance(item, dict) and "object_id" in item and "model_path" in item:
+            item = ForeignKey(
+                object_id=item["object_id"],
+                model_path=item["model_path"],
+                backend_alias=item.get("backend_alias", "default"),
+            )
+            self._items[index] = item
+        return item
+
     def __iter__(self) -> Iterator[T]:
-        return iter(self._items)
+        for i in range(len(self._items)):
+            yield self._resolve_item(i)
 
     @overload
     def __getitem__(self, index: int) -> T: ...
@@ -126,13 +167,21 @@ class ManagedList(Generic[T]):
     def __getitem__(self, index: slice) -> List[T]: ...
 
     def __getitem__(self, index: Union[int, slice]) -> Union[T, List[T]]:
-        return self._items[index]
+        if isinstance(index, slice):
+            return [self._resolve_item(i) for i in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self._items)
+        return self._resolve_item(index)
 
     def __contains__(self, item: Any) -> bool:
         return self.contains(item)
 
     def __repr__(self) -> str:
-        model_name = self._item_model.__name__ if self._item_model else "Any"
+        model = self._item_model
+        if isinstance(model, ForwardRef):
+            model_name = model.__forward_arg__
+        else:
+            model_name = getattr(model, "__name__", "Any")
         return f"<ManagedList[{model_name}] len={self.len()}>"
 
     def to_serializable(self) -> List[Dict[str, str]]:
@@ -146,21 +195,24 @@ class ManagedList(Generic[T]):
             if isinstance(item, dict):
                 # Already serialized (e.g., from deserialization round-trip)
                 result.append(item)
-            elif hasattr(item, "id") and hasattr(item, "__class__"):
-                result.append(
-                    {
-                        "object_id": str(item.id),
-                        "model_path": get_obj_klass_import_str(item),
-                        "backend_alias": getattr(item, "_backend_alias", "default"),
-                    }
-                )
-            elif hasattr(item, "object_id") and hasattr(item, "model_path"):
-                # ForeignKey-like reference object
+            elif isinstance(item, ForeignKey) or (
+                hasattr(item, "object_id") and hasattr(item, "model_path")
+            ):
+                # ForeignKey-like reference object. Checked before the generic
+                # ``id`` branch since ForeignKey also exposes ``id``.
                 result.append(
                     {
                         "object_id": item.object_id,
                         "model_path": item.model_path,
                         "backend_alias": getattr(item, "backend_alias", "default"),
+                    }
+                )
+            elif hasattr(item, "id"):
+                result.append(
+                    {
+                        "object_id": str(item.id),
+                        "model_path": get_obj_klass_import_str(item),
+                        "backend_alias": getattr(item, "_backend_alias", "default"),
                     }
                 )
             else:
@@ -178,8 +230,9 @@ class ManagedList(Generic[T]):
     ) -> "ManagedList[T]":
         """Reconstruct a ManagedList from serialized data.
 
-        Items remain as raw dicts/primitives until accessed.
-        Lazy resolution happens via _resolve_item() on iteration/access.
+        Items remain as raw dicts/primitives until accessed. Reference dicts
+        are lazily converted to ForeignKey objects via _resolve_item() on
+        iteration/access; call ``await ref.resolve_async()`` to load them.
         """
         instance = cls(
             items=raw or [],
@@ -212,26 +265,6 @@ class ListField:
     def __new__(cls, *args, **kwargs):
         raise TypeError("ListField cannot be instantiated")
 
-    @classmethod
-    def _create_result_stream(
-        cls, item_model: Type["KeyValueStoreIntegrationMixin"], config: ListConfig
-    ):
-        from volnux.result import ResultStream
-
-        kwargs: Dict[str, Any] = {"keys": []}
-        if config.max_length is not None:
-            kwargs["memory_capacity"] = config.max_length
-            kwargs["chunk_size"] = config.max_length
-        else:
-            kwargs["memory_capacity"] = 20
-            kwargs["chunk_size"] = 20
-        return ResultStream._make(
-            model_klass=item_model,
-            transaction_id=cls.__name__,
-            persisted_backend=None,  # defer backend resolution since it is an async
-            **kwargs,
-        )
-
     def __class_getitem__(cls, params) -> MiniAnnotated:
         if not isinstance(params, tuple):
             params = (params, ListConfig())
@@ -250,9 +283,24 @@ class ListField:
                 f"ListField[...] expects 1 or 2 arguments, got {len(params)}"
             )
 
+        if config.min_length < 0:
+            raise ValueError("min_length cannot be negative")
+        if config.max_length is not None and config.max_length < config.min_length:
+            raise ValueError("max_length cannot be less than min_length")
+
+        if isinstance(item_model, str):
+            try:
+                module_path, class_name = item_model.rsplit(".", 1)
+            except ValueError:
+                module_path, class_name = None, item_model
+            item_model = ForwardRef(class_name, module=module_path, is_class=True)
+
         validators = []
         if not config.nullable:
             validators.append(formax_null_validator)
+
+        # Resolved lazily by post_fmt (the Attrib isn't bound to a field yet)
+        field_name_cache: Dict[str, str] = {}
 
         def pre_fmt(instance, value):
             if value is None:
@@ -278,27 +326,30 @@ class ListField:
                     f"List has {len(items)} items, maximum is {config.max_length}"
                 )
 
-            # Per-item type validation for live model instances
-            if item_model is not None:
-                resolved_model = item_model
-                if hasattr(resolved_model, "__forward_arg__"):
-                    from typing import evaluate_forward_ref
+            # Per-item validation. Type checks are skipped while a forward
+            # reference to the item model is not yet resolvable.
+            resolved_model = _try_resolve_model(item_model)
+            for i, item in enumerate(items):
+                if item is None:
+                    if not config.item_nullable:
+                        raise ValueError(f"List item [{i}] cannot be None")
+                    continue
+                # Skip validation for already-serialized dicts and references
+                if resolved_model is None or isinstance(item, (dict, ForeignKey)):
+                    continue
+                if not isinstance(item, resolved_model):
+                    raise TypeError(
+                        f"List item [{i}]: expected {resolved_model.__name__}, "
+                        f"got {type(item).__name__}"
+                    )
 
-                    resolved_model = evaluate_forward_ref(item_model, None, None)
-
+            if config.unique_items:
+                seen = set()
                 for i, item in enumerate(items):
-                    if item is None:
-                        if not config.item_nullable:
-                            raise ValueError(f"List item [{i}] cannot be None")
-                        continue
-                    # Skip validation for already-serialized dicts/primitives
-                    if isinstance(item, dict):
-                        continue
-                    if not isinstance(item, resolved_model):
-                        raise TypeError(
-                            f"List item [{i}]: expected {resolved_model.__name__}, "
-                            f"got {type(item).__name__}"
-                        )
+                    key = _identity_key(item)
+                    if key in seen:
+                        raise ValueError(f"List item [{i}] is a duplicate")
+                    seen.add(key)
 
             return items
 
@@ -306,40 +357,66 @@ class ListField:
             if value is None:
                 return None
 
-            # Extract field name from the Attrib metadata context
-            field_name = ""
-            if hasattr(instance, "__class__"):
-                # Find which field this post_formatter belongs to
-                for fname, fattr in instance.__class__.__annotations__.items():
-                    if (
-                        hasattr(fattr, "metadata")
-                        and fattr.metadata.get("type") == "listfield"
-                    ):
-                        # Match by checking if this formatter is the one bound
-                        field_name = fname
-                        break
+            if isinstance(value, ManagedList):
+                return value
+
+            if "name" not in field_name_cache:
+                field_name_cache["name"] = _find_field_name(type(instance), attrib)
 
             return ManagedList.from_serializable(
                 raw=value,
                 item_model=item_model,
                 parent_instance=instance,
-                field_name=field_name,
+                field_name=field_name_cache["name"],
             )
 
-        return MiniAnnotated[
-            Any,
-            Attrib(
-                pre_formatter=pre_fmt,
-                post_formatter=post_fmt,
-                validators=validators,
-                metadata={
-                    "type": "list",
-                    "item_model": item_model,
-                    "max_length": config.max_length,
-                    "min_length": config.min_length,
-                    "unique_items": config.unique_items,
-                    "nullable": config.nullable,
-                    "item_nullable": config.item_nullable,
-                },
-            ),
-        ]
+        attrib = Attrib(
+            pre_formatter=pre_fmt,
+            post_formatter=post_fmt,
+            validators=validators,
+            metadata={
+                "type": "list",
+                "item_model": item_model,
+                "max_length": config.max_length,
+                "min_length": config.min_length,
+                "unique_items": config.unique_items,
+                "nullable": config.nullable,
+                "item_nullable": config.item_nullable,
+            },
+        )
+        return MiniAnnotated[Any, attrib]
+
+
+def _try_resolve_model(model: Any) -> Optional[Type[Any]]:
+    """Resolve an item model, returning None when it is missing or not yet resolvable."""
+    if model is None:
+        return None
+    try:
+        resolved = ModelResolverMixin._resolve_target_model(model)
+    except (NameError, ImportError, AttributeError, TypeError):
+        return None
+    return resolved if isinstance(resolved, type) else None
+
+
+def _identity_key(item: Any) -> Any:
+    """Key used for unique_items checks: model references compare by id."""
+    if isinstance(item, dict) and "object_id" in item:
+        return ("ref", item.get("model_path"), str(item["object_id"]))
+    if isinstance(item, ForeignKey):
+        return ("ref", item.model_path, str(item.object_id))
+    if hasattr(item, "id") and not isinstance(item, (str, int, float, bool)):
+        return ("ref", get_obj_klass_import_str(item), str(item.id))
+    try:
+        hash(item)
+        return ("val", item)
+    except TypeError:
+        return ("val", repr(item))
+
+
+def _find_field_name(model_class: Type[Any], attrib: Attrib) -> str:
+    """Find which annotated field on ``model_class`` is bound to ``attrib``."""
+    for klass in model_class.__mro__:
+        for fname, annotation in getattr(klass, "__annotations__", {}).items():
+            if any(meta is attrib for meta in getattr(annotation, "__metadata__", ())):
+                return fname
+    return ""

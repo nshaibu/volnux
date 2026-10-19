@@ -280,7 +280,7 @@ class TestCheckpointAfterTaskOverride:
         )
         mock_ctx = AsyncMock()
         await engine._checkpoint_after_task(mock_ctx, success=True)
-        mock_ctx.persist.assert_awaited_once()
+        mock_ctx.save.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_with_checkpointer_persists_for_on_state_change(self):
@@ -292,7 +292,7 @@ class TestCheckpointAfterTaskOverride:
         )
         mock_ctx = AsyncMock()
         await engine._checkpoint_after_task(mock_ctx, success=True)
-        mock_ctx.persist.assert_awaited_once()
+        mock_ctx.save.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_with_checkpointer_no_persist_for_periodic(self):
@@ -304,7 +304,7 @@ class TestCheckpointAfterTaskOverride:
         )
         mock_ctx = MagicMock()
         await engine._checkpoint_after_task(mock_ctx, success=True)
-        mock_ctx.persist.assert_not_called()
+        mock_ctx.save.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_clears_current_task_node(self):

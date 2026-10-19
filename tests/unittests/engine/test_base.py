@@ -219,9 +219,9 @@ class TestWorkflowEngine:
         engine = _ConcreteEngine()
         mock_ctx = MagicMock()
         mock_task_node = TaskNode(task=MagicMock())
-        # Should return without error and NOT call persist
+        # Should return without error and NOT call save
         await engine._checkpoint_before_task(mock_ctx, mock_task_node)
-        mock_ctx.persist.assert_not_called()
+        mock_ctx.save.assert_not_called()
         assert engine.current_task_node is None
 
     @pytest.mark.asyncio
@@ -236,8 +236,8 @@ class TestWorkflowEngine:
         )
         await engine._checkpoint_before_task(mock_ctx, mock_task_node)
         assert engine.current_task_node is mock_task_node
-        # ON_STATE_CHANGE frequency should NOT call persist before task
-        mock_ctx.persist.assert_not_called()
+        # ON_STATE_CHANGE frequency should NOT call save before task
+        mock_ctx.save.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_checkpoint_before_task_persists_for_per_task_frequency(self):
@@ -252,17 +252,17 @@ class TestWorkflowEngine:
             checkpoint_frequency=CheckPointFrequency.PER_TASK,
         )
         await engine._checkpoint_before_task(mock_ctx, mock_task_node)
-        mock_ctx.persist.assert_awaited_once()
+        mock_ctx.save.assert_awaited_once()
         assert engine.current_task_node is mock_task_node
 
     @pytest.mark.asyncio
     async def test_checkpoint_after_task_noop_when_no_checkpointer(self):
         engine = _ConcreteEngine()
         mock_ctx = MagicMock()
-        # Should return without error and NOT increment or persist
+        # Should return without error and NOT increment or save
         await engine._checkpoint_after_task(mock_ctx, success=True)
         assert engine.tasks_processed == 0
-        mock_ctx.persist.assert_not_called()
+        mock_ctx.save.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_checkpoint_after_task_increments_tasks_processed(self):
@@ -275,8 +275,8 @@ class TestWorkflowEngine:
         )
         await engine._checkpoint_after_task(mock_ctx, success=True)
         assert engine.tasks_processed == 1
-        # PERIODIC should NOT call persist
-        mock_ctx.persist.assert_not_called()
+        # PERIODIC should NOT call save
+        mock_ctx.save.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_checkpoint_after_task_clears_current_task_node(self):
@@ -301,7 +301,7 @@ class TestWorkflowEngine:
             checkpoint_frequency=CheckPointFrequency.PER_TASK,
         )
         await engine._checkpoint_after_task(mock_ctx, success=True)
-        mock_ctx.persist.assert_awaited_once()
+        mock_ctx.save.assert_awaited_once()
         assert engine.tasks_processed == 1
 
     @pytest.mark.asyncio
@@ -314,7 +314,7 @@ class TestWorkflowEngine:
             checkpoint_frequency=CheckPointFrequency.ON_STATE_CHANGE,
         )
         await engine._checkpoint_after_task(mock_ctx, success=False)
-        mock_ctx.persist.assert_awaited_once()
+        mock_ctx.save.assert_awaited_once()
         assert engine.tasks_processed == 1
 
     @pytest.mark.asyncio
@@ -330,7 +330,7 @@ class TestWorkflowEngine:
         for _ in range(3):
             await engine._checkpoint_after_task(mock_ctx, success=True)
         assert engine.tasks_processed == 3
-        assert mock_ctx.persist.await_count == 3
+        assert mock_ctx.save.await_count == 3
 
     @pytest.mark.asyncio
     async def test_execute_returns_result(self):

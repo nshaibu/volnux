@@ -15,9 +15,7 @@ class MockRecord:
 
     @classmethod
     def get_storage_route(cls):
-        return StorageRoute(
-            components=["volnux", "test_redis_store"]
-        )
+        return StorageRoute(components=["volnux", "test_redis_store"])
 
     def __getstate__(self):
         return {
@@ -272,8 +270,12 @@ def test_bulk_insert_writes_all_records(redis_store):
     redis_store.bulk_insert("users", records)
 
     assert pipeline.hsetnx.call_count == 2
-    pipeline.hsetnx.assert_any_call("users", "1", json.dumps(records["1"].__getstate__()))
-    pipeline.hsetnx.assert_any_call("users", "2", json.dumps(records["2"].__getstate__()))
+    pipeline.hsetnx.assert_any_call(
+        "users", "1", json.dumps(records["1"].__getstate__())
+    )
+    pipeline.hsetnx.assert_any_call(
+        "users", "2", json.dumps(records["2"].__getstate__())
+    )
     pipeline.execute.assert_called_once()
 
 

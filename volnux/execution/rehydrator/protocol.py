@@ -1,24 +1,28 @@
-from typing import Protocol, Type, Any
+from typing import Protocol, Type, Any, Optional
 
 
-class Monitorable(Protocol):
+class Persistable(Protocol):
     """
-    Protocol for monitorable objects that can be periodically snapshotted.
+    Protocol for objects the CheckpointManager can save
+    (any KeyValueStoreIntegrationMixin model).
     """
 
     id: str
 
-    async def create_snapshot(self, *args, **kwargs) -> "Snapshot": ...
+    async def save(self, force_insert: bool = False, ttl: Optional[int] = None): ...
 
 
-class Snapshot(Protocol):
+class Monitorable(Persistable, Protocol):
+    """
+    Protocol for long-lived objects that are periodically saved as they are
+    (e.g. ExecutionContext).
+    """
+
+
+class Snapshot(Persistable, Protocol):
     """
     Protocol for snapshot objects that can be saved and restored.
     """
-
-    id: str
-
-    async def save_async(self, force_inert: bool = False, ttl: int = 0): ...
 
     async def restore(self) -> object: ...
 

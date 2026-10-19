@@ -204,7 +204,7 @@ class WorkflowEngine(ABC):
         self.current_task_node = task_node
 
         if self._checkpoint_frequency == CheckPointFrequency.PER_TASK:
-            await context.persist()
+            await context.save()
             logger.debug(f"Checkpointed before task: {task_node.task.event}")
 
     async def _checkpoint_after_task(self, context: "ExecutionContext", success: bool):
@@ -221,7 +221,7 @@ class WorkflowEngine(ABC):
             CheckPointFrequency.PER_TASK,
             CheckPointFrequency.ON_STATE_CHANGE,
         ]:
-            await context.persist()
+            await context.save()
             logger.debug(
                 f"Checkpointed after task: {self.tasks_processed} tasks processed"
             )

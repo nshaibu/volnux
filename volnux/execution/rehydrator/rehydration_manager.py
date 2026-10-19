@@ -379,7 +379,7 @@ class RehydrationManager:
         This should be called periodically during execution.
         """
         for context in self._iterate_tree(root_context):
-            await context.persist()
+            await context.save()
 
     def _iterate_tree(
         self, root: "ExecutionContext"

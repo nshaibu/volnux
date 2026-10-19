@@ -420,59 +420,24 @@ def instrument_execution_context_failed_async(original_failed_async):
     return instrumented_failed_async
 
 
-def instrument_execution_context_create_snapshot(original_create_snapshot):
+def instrument_execution_context_save(original_save):
     """
-    Decorator to instrument ExecutionContext.create_snapshot().
+    Decorator to instrument ExecutionContext.save().
     """
 
-    @functools.wraps(original_create_snapshot)
-    async def instrumented_create_snapshot(self: "ExecutionContext"):
+    @functools.wraps(original_save)
+    async def instrumented_save(self: "ExecutionContext", *args, **kwargs):
         tracer = get_tracer()
         if not tracer:
-            return await original_create_snapshot(self)
+            return await original_save(self, *args, **kwargs)
 
         with tracer.start_as_current_span(
-            "context.snapshot",
+            "context.save",
             kind=trace.SpanKind.INTERNAL,
         ) as span:
             try:
                 _add_execution_context_attributes(span, self)
-                span.set_attribute("context.child_count", len(self.child_contexts))
-                span.set_attribute("context.task_count", len(self.get_task_profiles()))
-                result = await original_create_snapshot(self)
-
-                span.set_attribute("snapshot.class", result.__class__.__name__)
-                span.set_attribute(
-                    "snapshot.version", getattr(result, "snapshot_version", "")
-                )
-                span.set_status(Status(StatusCode.OK))
-                return result
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_create_snapshot
-
-
-def instrument_execution_context_persist(original_persist):
-    """
-    Decorator to instrument ExecutionContext.persist().
-    """
-
-    @functools.wraps(original_persist)
-    async def instrumented_persist(self: "ExecutionContext"):
-        tracer = get_tracer()
-        if not tracer:
-            return await original_persist(self)
-
-        with tracer.start_as_current_span(
-            "context.persist",
-            kind=trace.SpanKind.INTERNAL,
-        ) as span:
-            try:
-                _add_execution_context_attributes(span, self)
-                result = await original_persist(self)
+                result = await original_save(self, *args, **kwargs)
                 span.set_attribute("context.status", self.status.value)
                 span.set_status(Status(StatusCode.OK))
                 return result
@@ -481,7 +446,7 @@ def instrument_execution_context_persist(original_persist):
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
 
-    return instrumented_persist
+    return instrumented_save
 
 
 def instrument_coordinator_execute(original_execute):
@@ -633,14 +598,9 @@ def patch_execution_context():
             ExecutionContext._original_failed_async
         )
 
-        ExecutionContext._original_create_snapshot = ExecutionContext.create_snapshot
-        ExecutionContext.create_snapshot = instrument_execution_context_create_snapshot(
-            ExecutionContext._original_create_snapshot
-        )
-
-        ExecutionContext._original_persist = ExecutionContext.persist
-        ExecutionContext.persist = instrument_execution_context_persist(
-            ExecutionContext._original_persist
+        ExecutionContext._original_save = ExecutionContext.save
+        ExecutionContext.save = instrument_execution_context_save(
+            ExecutionContext._original_save
         )
 
         logger.info("ExecutionContext instrumented with OpenTelemetry")

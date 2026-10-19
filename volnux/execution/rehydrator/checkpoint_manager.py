@@ -5,7 +5,7 @@ import typing
 import random
 from collections import defaultdict
 
-from .protocol import Monitorable, Snapshot
+from .protocol import Monitorable, Persistable
 
 if typing.TYPE_CHECKING:
     from ..resilience.protocols import TaskInfo
@@ -59,9 +59,9 @@ class VolnuxCheckPointManager:
 
         # Push Queue
         maxsize = max_queue_size if max_queue_size > 0 else 0
-        self._queue: PeekableQueue[Snapshot] = PeekableQueue(maxsize=maxsize)
+        self._queue: PeekableQueue[Persistable] = PeekableQueue(maxsize=maxsize)
 
-        # Monitored Set: For periodic snapshotting
+        # Monitored Set: objects saved periodically as they are
         self._monitored_contexts: weakref.WeakSet[Monitorable] = weakref.WeakSet()
         self._context_error_counts: defaultdict[str, int] = defaultdict(int)
         self._max_context_errors = 5
@@ -71,10 +71,10 @@ class VolnuxCheckPointManager:
         self._monitor_task: typing.Optional[asyncio.Task] = None
         self._running = False
 
-    def enqueue(self, snapshot: Snapshot):
+    def enqueue(self, snapshot: Persistable):
         """
-        Enqueue a snapshot for persistence.
-        :param snapshot: The snapshot data to be enqueued.
+        Enqueue a snapshot (or any persistable model) for persistence.
+        :param snapshot: The object to be saved.
         :return: None
         """
         self._queue.put_nowait(snapshot)
@@ -148,9 +148,8 @@ class VolnuxCheckPointManager:
             for context in list(self._monitored_contexts):
                 context_id = getattr(context, "id", id(context))
                 try:
-                    # Offload the work to the queue
-                    snapshot = await context.create_snapshot()
-                    self.enqueue(snapshot)
+                    # Monitored objects are persistable models; queue them as-is
+                    self.enqueue(context)
 
                     # Reset error count
                     self._context_error_counts.pop(context_id, None)
@@ -159,7 +158,7 @@ class VolnuxCheckPointManager:
                     error_count = self._context_error_counts[context_id]
 
                     logger.error(
-                        f"Failed to snapshot context {context_id} "
+                        f"Failed to queue context {context_id} "
                         f"({error_count}/{self._max_context_errors}): {e}"
                     )
 
@@ -172,45 +171,58 @@ class VolnuxCheckPointManager:
                         self.unmonitor(context)
                         self._context_error_counts.pop(context_id, None)
 
-    async def get_latest_snapshot(self) -> typing.Optional[Snapshot]:
+    async def get_latest_snapshot(self) -> typing.Optional[Persistable]:
         """
-        Get the latest snapshot from the queue, skipping duplicates.
+        Non-blocking: take the latest queued object, skipping consecutive
+        duplicates (same ``id``).
 
         Returns:
-            Snapshot: The latest snapshot is available, or None if the queue is empty.
+            The latest queued object, or None if the queue is empty.
         """
         if self._queue.empty():
             return None
-
-        latest = await self._queue.get()
-        self._queue.task_done()
-
-        while not self._queue.empty():
-            next_snapshot = await self._queue.peek()
-
-            if next_snapshot.id == latest.id:
-                latest = await self._queue.get()
-                self._queue.task_done()
-            else:
-                break
-
+        latest, taken = await self._take_latest()
+        for _ in range(taken):
+            self._queue.task_done()
         return latest
+
+    async def _take_latest(self) -> typing.Tuple[Persistable, int]:
+        """Wait for the next item, then coalesce consecutive items with the
+        same ``id`` (only the newest needs saving).
+
+        Returns the item and how many queue entries it consumed; the caller
+        must call ``task_done()`` that many times.
+        """
+        latest = await self._queue.get()
+        taken = 1
+        while not self._queue.empty():
+            next_item = await self._queue.peek()
+            if next_item.id != latest.id:
+                break
+            latest = await self._queue.get()
+            taken += 1
+        return latest, taken
 
     async def _persistence_loop(self):
         """The single consumer for all persistence requests."""
         while self._running:
-            snapshot = await self.get_latest_snapshot()
-            if snapshot is None:
-                continue
-            async with self._semaphore:
-                await self._persist_with_retry(snapshot)
+            # Blocks while the queue is empty instead of spinning the event loop
+            item, taken = await self._take_latest()
+            try:
+                async with self._semaphore:
+                    await self._persist_with_retry(item)
+            finally:
+                # Mark done only after saving, so flush() (queue.join) really
+                # waits for pending saves.
+                for _ in range(taken):
+                    self._queue.task_done()
 
-    async def _persist_with_retry(self, snapshot: Snapshot):
+    async def _persist_with_retry(self, snapshot: Persistable):
         """Implements your original retry logic with backoff."""
         last_error = None
         for attempt in range(1, self.retry_attempts + 1):
             try:
-                await snapshot.save_async(ttl=self.snapshot_ttl)
+                await snapshot.save(ttl=self.snapshot_ttl)
                 return
             except asyncio.CancelledError:
                 raise

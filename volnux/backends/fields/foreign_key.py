@@ -46,13 +46,15 @@ def _build_cascade_step(
     snapshots: Dict[str, Dict[str, Any]] = {}
 
     async def action() -> None:
-        objects = await referencing_model.filter(id__in=record_ids)
-        async for obj in objects:
+        objects = [
+            obj async for obj in await referencing_model.filter(id__in=record_ids)
+        ]
+        for obj in objects:
             snapshots[obj.id] = obj.__getstate__()
         if hasattr(referencing_model, "bulk_delete"):
             await referencing_model.bulk_delete(record_ids)
         else:
-            await asyncio.gather(*(obj.delete() async for obj in objects))
+            await asyncio.gather(*(obj.delete() for obj in objects))
         logger.info(
             "Saga CASCADE: deleted %d %s (%s)",
             len(record_ids),
@@ -91,11 +93,13 @@ def _build_set_null_step(
     original_values: Dict[str, Any] = {}
 
     async def action() -> None:
-        objects = await referencing_model.filter(id__in=record_ids)
-        async for obj in objects:
+        objects = [
+            obj async for obj in await referencing_model.filter(id__in=record_ids)
+        ]
+        for obj in objects:
             original_values[obj.id] = getattr(obj, field_name)
             setattr(obj, field_name, None)
-        await asyncio.gather(*(obj.save() async for obj in objects))
+        await asyncio.gather(*(obj.save() for obj in objects))
         logger.info(
             "Saga SET_NULL: cleared %s on %d %s (%s)",
             field_name,
@@ -105,13 +109,18 @@ def _build_set_null_step(
         )
 
     async def compensation() -> None:
-        objects = await referencing_model.filter(id__in=list(original_values.keys()))
-        async for obj in objects:
+        objects = [
+            obj
+            async for obj in await referencing_model.filter(
+                id__in=list(original_values.keys())
+            )
+        ]
+        for obj in objects:
             original = original_values.get(obj.id)
             if original is not None:
                 setattr(obj, field_name, original)
         if objects:
-            await asyncio.gather(*(obj.save() async for obj in objects))
+            await asyncio.gather(*(obj.save() for obj in objects))
         logger.info(
             "Saga SET_NULL compensated: restored %s on %d %s",
             field_name,
@@ -158,11 +167,13 @@ def _build_set_default_step(
     original_values: Dict[str, Any] = {}
 
     async def action() -> None:
-        objects = await referencing_model.filter(id__in=record_ids)
-        async for obj in objects:
+        objects = [
+            obj async for obj in await referencing_model.filter(id__in=record_ids)
+        ]
+        for obj in objects:
             original_values[obj.id] = getattr(obj, field_name)
             setattr(obj, field_name, default_value)
-        await asyncio.gather(*(obj.save() async for obj in objects))
+        await asyncio.gather(*(obj.save() for obj in objects))
         logger.info(
             "Saga SET_DEFAULT: set %s on %d %s (%s)",
             field_name,
@@ -172,12 +183,16 @@ def _build_set_default_step(
         )
 
     async def compensation() -> None:
-        objects = await referencing_model.filter(id__in=list(original_values.keys()))
-        async for obj in objects:
-            original = original_values.get(obj.id)
-            setattr(obj, field_name, original)
+        objects = [
+            obj
+            async for obj in await referencing_model.filter(
+                id__in=list(original_values.keys())
+            )
+        ]
+        for obj in objects:
+            setattr(obj, field_name, original_values.get(obj.id))
         if objects:
-            await asyncio.gather(*(obj.save() async for obj in objects))
+            await asyncio.gather(*(obj.save() for obj in objects))
         logger.info(
             "Saga SET_DEFAULT compensated: restored %s on %d %s",
             field_name,
@@ -367,6 +382,13 @@ class ForeignKey:
             return None
         if isinstance(value, ForeignKey):
             return value
+        if isinstance(value, dict):
+            # Payload produced by serialize(): {"type": "foreignkey", "object_id": ...}
+            object_id = value.get("object_id")
+            if object_id is None:
+                logger.warning("ForeignKey payload missing 'object_id': %r", value)
+                return None
+            value = str(object_id)
         if isinstance(value, str):
             return cls(
                 object_id=value,

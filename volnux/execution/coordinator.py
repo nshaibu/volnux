@@ -219,7 +219,7 @@ class ExecutionCoordinator:
             "Persisting checkpoint for suspended task '%s' before suspension wait",
             task_id,
         )
-        await self.execution_context.persist()
+        await self.execution_context.save()
         return self.execution_context.state_id
 
     def _compute_timeout(

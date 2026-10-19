@@ -60,4 +60,9 @@ async def as_coroutine(
     """
     if inspect.iscoroutinefunction(fn):
         return await fn(*args, **kwargs)
-    return to_thread(fn, *args, **kwargs)
+    result = await to_thread(fn, *args, **kwargs)
+    # Sync wrappers around async code (e.g. ``lambda: coro_fn()``, objects
+    # with an async ``__call__``) hand back an awaitable; finish it here.
+    if inspect.isawaitable(result):
+        return await result
+    return result
