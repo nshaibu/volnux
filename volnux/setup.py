@@ -43,6 +43,7 @@ async def initialise_workflows(
         WorkflowConfigExecutor,
         BaseWorkflowConfigExecutor,
     )
+    from volnux.reporting import ensure_pipeline_reporters_installed
 
     # Load project configuration
     volnux_config = VolnuxConfig.get_instance()
@@ -58,6 +59,12 @@ async def initialise_workflows(
 
     # Configure logging from project settings
     logging.config.dictConfig(volnux_config.LOGGING_CONFIG)
+
+    # Install the configured pipeline reporters (``PIPELINE_REPORTERS``) now
+    # that the project's own configuration — init.py — has been loaded, so the
+    # list is read after the deployment has had a chance to set it. At most
+    # once per process; a no-op when nothing is configured.
+    ensure_pipeline_reporters_installed()
 
     # Handle the existing trigger engine (e.g., hot reload)
     trigger_engine = get_trigger_engine()

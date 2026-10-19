@@ -321,6 +321,13 @@ event_execution_resumed = SoftSignal(
     provide_args=["task_profiles", "execution_context", "state"],
 )
 
+# Fired when a task suspends for human input (HITL). Lets an out-of-process
+# governance layer learn a request is pending without the engine knowing about it.
+hitl_requested = SoftSignal(
+    "hitl_requested",
+    provide_args=["execution_context", "request"],
+)
+
 # Batch Pipeline signals
 batch_pipeline_started = SoftSignal(
     name="batch_pipeline_started",
