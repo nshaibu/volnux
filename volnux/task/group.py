@@ -17,6 +17,10 @@ class PipelineTaskGrouping(TaskBase):
             else GroupingStrategy.SINGLE_CHAIN
         )
 
+    @property
+    def is_grouping(self) -> bool:
+        return True
+
     def get_event_name(self) -> str:
         return "TaskGrouping"
 

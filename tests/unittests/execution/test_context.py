@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from volnux import EventBase
 from volnux.exceptions import StopProcessingError, SuspendTask, SwitchTask
 from volnux.execution import context as context_module
 from volnux.execution.context import (
@@ -14,9 +15,12 @@ from volnux.execution.context import (
     ExecutionMetrics,
     preformat_task_profile,
 )
+from volnux.execution.codecs import PipelineReference
+from volnux.execution.pipeline import Pipeline
 from volnux.execution.status import ExecutionStatus
 from volnux.parser.operator import PipeType
 from volnux.parser.options import ResultEvaluationStrategy
+from volnux.result import EventResult
 from volnux.result_evaluators import EventEvaluator, ResultEvaluationStrategies
 from volnux.task import PipelineTask, PipelineTaskGrouping
 
@@ -37,13 +41,13 @@ def task():
 
 @pytest.fixture
 def pipeline():
-    return MagicMock(name="pipeline")
+    return MagicMock(spec=Pipeline)
 
 
 def make_context(task=None, pipeline=None, **kwargs):
     return ExecutionContext(
         task_profiles=task if task is not None else make_task(),
-        pipeline=pipeline if pipeline is not None else MagicMock(name="pipeline"),
+        pipeline=pipeline if pipeline is not None else MagicMock(spec=Pipeline),
         **kwargs,
     )
 
@@ -56,9 +60,18 @@ def link(*contexts):
     return contexts
 
 
-class FakeResult:
-    def __init__(self, id):
-        self.id = id
+class _Result(EventResult):
+    def should_persist(self):
+        return False
+
+
+def FakeResult(id):
+    """A real (non-persisting) EventResult with the given id."""
+    result = _Result(
+        error=False, event_name="event", content=None, workflow_id=None, task_id=None
+    )
+    result.change_object_id(id)
+    return result
 
 
 class TestExecutionMetrics:
@@ -124,13 +137,11 @@ class TestConstruction:
         assert a.results is not b.results
         assert a.metrics is not b.metrics
 
-    def test_explicit_none_metrics_gets_default(self):
-        context = make_context(metrics=None)
-        assert isinstance(context.metrics, ExecutionMetrics)
-
     def test_rejects_invalid_task_profiles(self, pipeline):
-        with pytest.raises(Exception, match="task_profiles must be"):
+        # formax wraps pre-formatter failures; the cause carries the reason
+        with pytest.raises(RuntimeError) as exc_info:
             ExecutionContext(task_profiles=42, pipeline=pipeline)
+        assert "task_profiles must be" in str(exc_info.value.__cause__)
 
     @pytest.mark.asyncio
     async def test_create_context(self, task, pipeline):
@@ -530,11 +541,35 @@ class TestPersistence:
         assert not hasattr(ExecutionContext, "persist")
 
 
+class StateEvent(EventBase):
+    def process(self, *args, **kwargs):
+        return True, None
+
+
+class StatePipeline(Pipeline):
+    class Meta:
+        pointy = "A"
+
+
+def roundtrip(context):
+    """Persist and reload through the JSON path the key-value stores use."""
+    state = json.loads(json.dumps(context.__getstate__(), default=str))
+    record_id = state.pop("id")
+    restored = ExecutionContext.hydrate_formax_model(state)
+    restored.change_object_id(record_id)
+    return restored
+
+
 class TestState:
+    """The context is persisted through its fields; there is no hand-written
+    serialization on the model."""
+
     @pytest.fixture
     def populated(self):
         parent, prev, nxt, child = (make_context() for _ in range(4))
         context = make_context(
+            task=PipelineTask(event=StateEvent),
+            pipeline=StatePipeline(),
             workflow_id="wf",
             workflow_name="flow",
             previous_context=prev,
@@ -546,64 +581,60 @@ class TestState:
         )
         context.status = ExecutionStatus.RUNNING
         context.errors.append(ValueError("bad"))
-        context.results.add(FakeResult("r1"))
+        context.results.append(FakeResult("r1"))
         context.aggregated_result = FakeResult("agg")
         context.set_task_checkpoint({"step": 1})
         return context, parent, prev, nxt, child
 
-    def test_get_state_is_json_serializable(self, populated):
-        context = populated[0]
-        json.dumps(context.get_state())
+    def test_state_is_json_serializable(self, populated):
+        json.dumps(populated[0].get_state())
 
-    def test_get_state_contents(self, populated):
+    def test_state_contents(self, populated):
         context, parent, prev, nxt, child = populated
         state = context.get_state()
-        assert state["id"] == context.id
+
+        assert context.__getstate__()["id"] == context.id
         assert state["status"] == "running"
         assert state["errors"][0]["type"] == "ValueError"
         assert state["errors"][0]["message"] == "bad"
-        assert state["result_ids"] == ["r1"]
-        assert state["aggregated_result_id"] == "agg"
+        assert [r["object_id"] for r in state["results"]] == ["r1"]
+        assert state["aggregated_result"] == {
+            "type": "foreignkey",
+            "object_id": "agg",
+        }
         assert state["workflow_id"] == "wf"
         assert state["workflow_name"] == "flow"
         assert state["persist_state"] is True
         assert state["metrics"] == {"start_time": 1.0, "end_time": 2.0}
         assert state["task_checkpoint"] == {"step": 1}
-        assert state["parent_context_id"] == parent.id
-        assert state["previous_context_id"] == prev.id
-        assert state["next_context_id"] == nxt.id
-        assert state["child_context_ids"] == [child.id]
+        assert state["parent_context"] == {"type": "foreignkey", "object_id": parent.id}
+        assert state["previous_context"]["object_id"] == prev.id
+        assert state["next_context"]["object_id"] == nxt.id
+        assert [c["object_id"] for c in state["child_contexts"]] == [child.id]
+        assert state["pipeline"] == {
+            "id": context.pipeline.id,
+            "class_path": f"{StatePipeline.__module__}.StatePipeline",
+        }
+        assert state["task_profiles"][0]["event_name"] == "StateEvent"
 
-    def test_get_state_excludes_transient_graph(self, populated):
+    def test_state_excludes_runtime_attributes(self, populated):
         state = populated[0].get_state()
-        for key in (
-            "pipeline",
-            "task_profiles",
-            "_context_lock",
-            "_engine_ref",
-            "parent_context",
-            "child_contexts",
-        ):
-            assert key not in state
+        # runtime-only (underscore) fields are never persisted
+        assert not [key for key in state if key.startswith("_")]
 
-    def test_get_state_is_idempotent(self, populated):
+    def test_state_is_idempotent(self, populated):
+        context = populated[0]
+        assert context.get_state() == context.get_state()
+
+    def test_flattened_errors_survive_a_second_save(self, populated):
         context = populated[0]
         first = context.get_state()
-        context.errors = first["errors"]  # already-serialized errors
+        context.errors = first["errors"]  # already-flattened errors
         assert context.get_state()["errors"] == first["errors"]
-
-    def test_link_ids_accept_references_and_strings(self):
-        reference = MagicMock(spec=["id"])
-        reference.id = "ref-1"
-        context = make_context(parent_context=reference, previous_context="prev-1")
-        state = context.get_state()
-        assert state["parent_context_id"] == "ref-1"
-        assert state["previous_context_id"] == "prev-1"
 
     def test_round_trip(self, populated):
         context, parent, prev, nxt, child = populated
-        restored = ExecutionContext.__new__(ExecutionContext)
-        restored.__setstate__(json.loads(json.dumps(context.__getstate__())))
+        restored = roundtrip(context)
 
         assert restored.id == context.id
         assert restored.status == ExecutionStatus.RUNNING
@@ -611,38 +642,70 @@ class TestState:
         assert restored.workflow_id == "wf"
         assert restored.workflow_name == "flow"
         assert restored.persist_state is True
-        assert restored.metrics.start_time == 1.0
-        assert restored.metrics.end_time == 2.0
+        assert restored.metrics == ExecutionMetrics(start_time=1.0, end_time=2.0)
         assert restored.get_task_checkpoint() == {"step": 1}
-        assert restored._parent_context_id == parent.id
-        assert restored._previous_context_id == prev.id
-        assert restored._next_context_id == nxt.id
-        assert restored._child_context_ids == [child.id]
-        assert restored._result_ids == ["r1"]
-        assert restored._aggregated_result_id == "agg"
+
+    def test_round_trip_links_are_lazy_references(self, populated):
+        context, parent, prev, nxt, child = populated
+        restored = roundtrip(context)
+
+        assert not restored.parent_context.is_resolved
+        assert restored.parent_context.id == parent.id
+        assert restored.previous_context.id == prev.id
+        assert restored.next_context.id == nxt.id
+        assert [c.id for c in restored.child_contexts] == [child.id]
+        assert [r.id for r in restored.results] == ["r1"]
+        assert restored.aggregated_result.id == "agg"
+
+    def test_round_trip_task_graph_and_pipeline_reference(self, populated):
+        restored = roundtrip(populated[0])
+
+        task = restored.get_task_profiles()[0]
+        assert isinstance(task, PipelineTask)
+        assert task.event is StateEvent
+        assert task.id == populated[0].get_task_profiles()[0].id
+        assert restored.pipeline == PipelineReference(
+            id=populated[0].pipeline.id,
+            class_path=f"{StatePipeline.__module__}.StatePipeline",
+        )
 
     @pytest.mark.asyncio
     async def test_restored_context_is_usable(self, populated):
         context = populated[0]
-        restored = ExecutionContext.__new__(ExecutionContext)
-        restored.__setstate__(context.get_state())
+        restored = roundtrip(context)
 
-        assert restored.parent_context is None
-        assert restored.child_contexts == []
-        assert len(restored.results) == 0
         assert restored.get_engine() is None
         restored.add_result(FakeResult("new"))
         await restored.add_error_async(ValueError())
-        assert len(restored.results) == 1
+        assert len(restored.results) == 2
         assert restored == context
 
-    def test_set_state_defaults(self):
-        restored = ExecutionContext.__new__(ExecutionContext)
-        restored.__setstate__({})
+    def test_state_defaults(self):
+        restored = ExecutionContext.hydrate_formax_model({})
         assert restored.status == ExecutionStatus.PENDING
         assert restored.errors == []
+        assert restored.results == []
+        assert restored.child_contexts == []
+        assert restored.parent_context is None
         assert restored.metrics.end_time == 0.0
-        assert restored._child_context_ids == []
+
+    @pytest.mark.asyncio
+    async def test_save_persists_state_and_result_records(self, populated):
+        context = populated[0]
+        saved = AsyncMock()
+        record = MagicMock(spec=EventResult, id="r2", save=saved)
+        context.results.append(record)
+
+        with patch.object(
+            context_module.KeyValueStoreIntegrationMixin, "save", AsyncMock()
+        ) as persist:
+            await context.save()
+
+        saved.assert_awaited_once()
+        # the class-level save also serves the other result records
+        # (r1 and the aggregate) and, last, the context itself
+        assert persist.await_count == 3
+        assert persist.await_args_list[-1].args == ()
 
 
 class TestControlFlowRequests:

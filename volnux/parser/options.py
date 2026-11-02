@@ -72,7 +72,9 @@ class Options(BaseModel):
     executor: typing.Optional[str]
 
     # Configuration dictionaries
-    executor_config: ExecutorInitializerConfig
+    executor_config: MiniAnnotated[
+        ExecutorInitializerConfig, Attrib(default_factory=ExecutorInitializerConfig)
+    ]
     extras: MiniAnnotated[dict, Attrib(default_factory=dict)]
 
     # Execution state and control
@@ -93,9 +95,7 @@ class Options(BaseModel):
 
     @preformat(["result_evaluation_strategy"])
     def preformat_result_evaluation_strategy(self, val: typing.Any) -> typing.Any:
-        return (
-            resolve_str_to_enum(ResultEvaluationStrategy, val, use_lower_case=False),
-        )
+        return resolve_str_to_enum(ResultEvaluationStrategy, val, use_lower_case=False)
 
     @preformat(["stop_condition"])
     def preformat_stop_condition(self, val: typing.Any) -> typing.Any:

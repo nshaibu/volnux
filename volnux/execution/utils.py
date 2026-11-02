@@ -43,4 +43,4 @@ def evaluate_context_execution_results(
     evaluator = context.get_result_evaluator()
     if evaluator is None:
         return None
-    return evaluator.evaluate(context.results)
+    return evaluator.evaluate(context.get_results())

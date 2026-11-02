@@ -1,5 +1,3 @@
-import importlib
-import importlib.util
 import typing
 from os import environ
 from abc import ABC, abstractmethod
@@ -7,18 +5,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from .__version__ import __version__ as version
-from .task_namespace import VALID_NAMESPACES
 from .protocols import GroupingStrategy
 
 if typing.TYPE_CHECKING:
     from .visitor import ASTVisitorInterface as ASTVisitor
-
-
-STANDARD_EXECUTORS = {
-    "threadpoolexecutor": "event_pipeline.executors.ThreadPoolExecutor",
-    "processpoolexecutor": "event_pipeline.executors.ProcessPoolExecutor",
-    "defaultexecutor": "event_pipeline.executors.DefaultExecutor",
-}
 
 
 class LiteralType(Enum):
@@ -48,10 +38,9 @@ class LiteralType(Enum):
 
     @classmethod
     def _is_import_string(cls, value: str) -> bool:
-        if not cls._looks_like_import_path(value):
-            return False
-
-        return cls._is_actually_importable(value)
+        # Purely syntactic: whether the path can be imported is a runtime
+        # concern, and parsing must never import (and so execute) user modules.
+        return cls._looks_like_import_path(value)
 
     @classmethod
     def _looks_like_import_path(cls, value: str) -> bool:
@@ -69,15 +58,6 @@ class LiteralType(Enum):
                 not part.startswith("__") or part.endswith("__") for part in parts
             )  # Allow __init__ etc
         )
-
-    @classmethod
-    def _is_actually_importable(cls, value: str) -> bool:
-        """Check if the string can actually be imported."""
-        try:
-            spec = importlib.util.find_spec(value)
-            return spec is not None
-        except (ImportError, ModuleNotFoundError, ValueError, AttributeError):
-            return False
 
 
 class ASTNode(ABC):
@@ -99,6 +79,11 @@ class ProgramNode(ASTNode):
     _version: str = field(repr=False, default=version)
     global_variables: typing.Dict[str, ASTNode] = field(default_factory=dict)
     directives: typing.Dict[str, ASTNode] = field(default_factory=dict)
+    # Custom descriptor label -> integer value, assigned by the parser from
+    # ``@descriptor`` (built-in ``failure``/``success`` are not included).
+    descriptors: typing.Dict[str, int] = field(default_factory=dict)
+    author: typing.Optional[str] = None
+    description: typing.Optional[str] = None
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_program(self)
@@ -184,7 +169,9 @@ class VariableDeclNode(ASTNode):
 @dataclass
 class ConditionalNode(ASTNode):
     __slots__ = ("task", "branches")
-    task: "TaskNode"
+    # None for a conditional written without a subject task, e.g.
+    # ``(failure -> A, success -> B)``; semantic analysis reports it.
+    task: typing.Optional["TaskNode"]
     branches: typing.List["BranchNode"]
 
     def accept(self, visitor: "ASTVisitor"):
@@ -196,15 +183,9 @@ class TaskNode(ASTNode):
     # __slots__ = ("task", "options")
     task: str
     options: typing.List["AttributeNode"]
+    # Namespaces are user-defined and only resolved at runtime, so the parser
+    # accepts any identifier here.
     namespace: str = field(default="local")
-
-    def __post_init__(self):
-        """Validate namespace if provided"""
-        if self.namespace and self.namespace not in VALID_NAMESPACES:
-            raise ValueError(
-                f"Invalid task namespace '{self.namespace}'. "
-                f"Valid namespaces: {', '.join(VALID_NAMESPACES)}"
-            )
 
     @property
     def fully_qualified_name(self) -> str:
@@ -222,12 +203,19 @@ class TaskNode(ASTNode):
         return visitor.visit_task(self)
 
 
+# Descriptors with a fixed meaning; every other descriptor is user-defined.
+BUILTIN_DESCRIPTORS: typing.Dict[str, int] = {"failure": 0, "success": 1}
+
+
 @dataclass
 class DescriptorNode(ASTNode):
     """AST for descriptor nodes."""
 
     __slots__ = ("value",)
     value: int
+    # The name used in the source (``failure``, ``success`` or a custom label);
+    # None when the descriptor was written as a number.
+    label: typing.Optional[str] = None
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_descriptor(self)

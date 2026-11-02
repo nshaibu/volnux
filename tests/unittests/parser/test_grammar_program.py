@@ -239,7 +239,8 @@ class TestProgram(unittest.TestCase):
         self.assertEqual(program.directives["recursive_depth"].value, 1500)
 
         self.assertIsNotNone(program.chain)
-        # With equal precedence all operators are left-associative, final top op becomes '|->'
+        # '||' binds tighter than '->' / '|->':
+        # ((Fetch -> Validate) -> (Enrich || Totals)) |-> Invoice
         self.assertEqual(program.chain.op, "|->")
         right = program.chain.right
         self.assertIsInstance(right, TaskNode)
@@ -248,31 +249,23 @@ class TestProgram(unittest.TestCase):
 
         left = program.chain.left
         self.assertIsInstance(left, BinOpNode)
-        self.assertEqual(left.op, "||")
+        self.assertEqual(left.op, "->")
 
-        # right side of the '||' should be the local::CalculateTotals task
-        self.assertIsInstance(left.right, TaskNode)
-        self.assertEqual(left.right.namespace, "local")
-        self.assertEqual(left.right.task, "CalculateTotals")
+        parallel = left.right
+        self.assertIsInstance(parallel, BinOpNode)
+        self.assertEqual(parallel.op, "||")
+        self.assertEqual(parallel.left.namespace, "github")
+        self.assertEqual(parallel.left.task, "EnrichWithCustomerData")
+        self.assertEqual(parallel.right.namespace, "local")
+        self.assertEqual(parallel.right.task, "CalculateTotals")
 
-        # left side of the '||' is the chained '->' operations: ((FetchOrders -> ValidateOrders) -> EnrichWithCustomerData)
-        self.assertIsInstance(left.left, BinOpNode)
-        self.assertEqual(left.left.op, "->")
-
-        # outer '->' has right = github::EnrichWithCustomerData
-        self.assertIsInstance(left.left.right, TaskNode)
-        self.assertEqual(left.left.right.namespace, "github")
-        self.assertEqual(left.left.right.task, "EnrichWithCustomerData")
-
-        # outer '->' has left = inner '->' (FetchOrders -> ValidateOrders)
-        self.assertIsInstance(left.left.left, BinOpNode)
-        self.assertEqual(left.left.left.op, "->")
-        self.assertIsInstance(left.left.left.left, TaskNode)
-        self.assertEqual(left.left.left.left.namespace, "local")
-        self.assertEqual(left.left.left.left.task, "FetchOrders")
-        self.assertIsInstance(left.left.left.right, TaskNode)
-        self.assertEqual(left.left.left.right.namespace, "pypi")
-        self.assertEqual(left.left.left.right.task, "ValidateOrders")
+        inner = left.left
+        self.assertIsInstance(inner, BinOpNode)
+        self.assertEqual(inner.op, "->")
+        self.assertEqual(inner.left.namespace, "local")
+        self.assertEqual(inner.left.task, "FetchOrders")
+        self.assertEqual(inner.right.namespace, "pypi")
+        self.assertEqual(inner.right.task, "ValidateOrders")
 
     def test_variables_with_meta_events(self):
         program = pointy_parser(
@@ -543,9 +536,9 @@ class TestProgram(unittest.TestCase):
         @data_batch = {"type_a": [], "type_b": [], "type_c": []}
     
         SplitDataByType -> (
-            ExtractTypeA |-> MAP<ProcessTypeA>[concurrent=true] ||
-            ExtractTypeB |-> MAP<ProcessTypeB>[concurrent=true] ||
-            ExtractTypeC |-> FLATMAP<ProcessTypeC>[concurrent=true]
+            (ExtractTypeA |-> MAP<ProcessTypeA>[concurrent=true]) ||
+            (ExtractTypeB |-> MAP<ProcessTypeB>[concurrent=true]) ||
+            (ExtractTypeC |-> FLATMAP<ProcessTypeC>[concurrent=true])
         ) |-> MergeResults |-> FinalValidation
         """
         )
@@ -568,47 +561,32 @@ class TestProgram(unittest.TestCase):
         self.assertIsInstance(left_chain.left, BinOpNode)
         self.assertEqual(left_chain.left.op, "->")
 
+        # '||' joins the three parenthesised pipelines left-to-right
         block = left_chain.left.right
         self.assertIsInstance(block, BinOpNode)
+        self.assertEqual(block.op, "||")
 
-        # With equal precedence and left-associative parsing the parenthesized
-        # expression folds left-to-right. Final top op becomes '|->'.
-        self.assertEqual(block.op, "|->")
+        third = block.right
+        self.assertIsInstance(third, BinOpNode)
+        self.assertEqual(third.op, "|->")
+        self.assertEqual(third.left.task, "ExtractTypeC")
+        self.assertIsInstance(third.right, MetaTaskNode)
+        self.assertEqual(third.right.mode, "FLATMAP")
+        self.assertEqual(third.right.template_task, "ProcessTypeC")
 
-        # Rightmost operation applies FLATMAP to the accumulated left expression
-        self.assertIsInstance(block.right, MetaTaskNode)
-        self.assertEqual(block.right.mode, "FLATMAP")
-        self.assertEqual(block.right.template_task, "ProcessTypeC")
-
-        # Left of the final '|->' is a '||' combining previous results with ExtractTypeC
         self.assertIsInstance(block.left, BinOpNode)
         self.assertEqual(block.left.op, "||")
-        self.assertIsInstance(block.left.right, TaskNode)
-        self.assertEqual(block.left.right.task, "ExtractTypeC")
+        second = block.left.right
+        self.assertEqual(second.op, "|->")
+        self.assertEqual(second.left.task, "ExtractTypeB")
+        self.assertEqual(second.right.mode, "MAP")
+        self.assertEqual(second.right.template_task, "ProcessTypeB")
 
-        # The left side of that '||' is itself a '|->' where MAP<ProcessTypeB> was applied
-        self.assertIsInstance(block.left.left, BinOpNode)
-        self.assertEqual(block.left.left.op, "|->")
-        self.assertIsInstance(block.left.left.right, MetaTaskNode)
-        self.assertEqual(block.left.left.right.mode, "MAP")
-        self.assertEqual(block.left.left.right.template_task, "ProcessTypeB")
-
-        # That '|->' has a left child which is a '||' combining the A branch and ExtractTypeB
-        self.assertIsInstance(block.left.left.left, BinOpNode)
-        self.assertEqual(block.left.left.left.op, "||")
-
-        # Left part of that '||' is the original A branch: ExtractTypeA |-> MAP<ProcessTypeA>
-        self.assertIsInstance(block.left.left.left.left, BinOpNode)
-        self.assertEqual(block.left.left.left.left.op, "|->")
-        self.assertIsInstance(block.left.left.left.left.left, TaskNode)
-        self.assertEqual(block.left.left.left.left.left.task, "ExtractTypeA")
-        self.assertIsInstance(block.left.left.left.left.right, MetaTaskNode)
-        self.assertEqual(block.left.left.left.left.right.mode, "MAP")
-        self.assertEqual(block.left.left.left.left.right.template_task, "ProcessTypeA")
-
-        # Right part of that inner '||' is ExtractTypeB
-        self.assertIsInstance(block.left.left.left.right, TaskNode)
-        self.assertEqual(block.left.left.left.right.task, "ExtractTypeB")
+        first = block.left.left
+        self.assertEqual(first.op, "|->")
+        self.assertEqual(first.left.task, "ExtractTypeA")
+        self.assertEqual(first.right.mode, "MAP")
+        self.assertEqual(first.right.template_task, "ProcessTypeA")
 
     def test_fan_out_to_multiple_services(self):
         program = pointy_parser(

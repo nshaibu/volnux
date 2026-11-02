@@ -1,13 +1,27 @@
 import logging
+import re
 
 from ply.lex import lex
 
 logger = logging.getLogger(__name__)
 
+_STRING_ESCAPES = {
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    '"': '"',
+    "'": "'",
+    "\\": "\\",
+}
+
+
+def find_column(data: str, lexpos: int) -> int:
+    """Return the 1-based column of ``lexpos`` within its line."""
+    return lexpos - data.rfind("\n", 0, lexpos)
+
 
 class PointyLexer(object):
     directives = (
-        "recursive-depth",
         "mode",
         "trigger",
         "descriptor",
@@ -20,7 +34,6 @@ class PointyLexer(object):
     reserved = {
         "true": "BOOLEAN",
         "false": "BOOLEAN",
-        "RETRY": "RETRY",
         # Meta event
         "MAP": "MAP",
         "FILTER": "FILTER",
@@ -28,15 +41,11 @@ class PointyLexer(object):
         "FOREACH": "FOREACH",
         "FLATMAP": "FLATMAP",
         "FANOUT": "FANOUT",
+        # Built-in descriptors (0 and 1)
+        "failure": "FAILURE",
+        "success": "SUCCESS",
         # Other
-        "env": "env",
         "null": "NULL",
-        # Executor
-        "THREADPOOL_EXECUTOR": "EXECUTOR",
-        "PROCESSPOOL_EXECUTOR": "EXECUTOR",
-        "DEFAULT_EXECUTOR": "EXECUTOR",
-        "GRPC_EXECUTOR": "EXECUTOR",
-        "TCP_EXECUTOR": "EXECUTOR",
     }
 
     builtin_event_token = (
@@ -47,14 +56,6 @@ class PointyLexer(object):
         "FOREACH",
         "FLATMAP",
         "FANOUT",
-    )
-
-    builtin_executors_token = (
-        "THREADPOOL_EXECUTOR",
-        "PROCESSPOOL_EXECUTOR",
-        "DEFAULT_EXECUTOR",
-        "GRPC_EXECUTOR",
-        "TCP_EXECUTOR",
     )
 
     builtins = ("NULL",)
@@ -75,7 +76,6 @@ class PointyLexer(object):
             "IDENTIFIER",
             "VAR_DECL",  # @ prefix for declaration
             "VAR_ACCESS",  # $ prefix for variable value access
-            "COMMENT",
             "LPAREN",
             "RPAREN",
             "LBRACKET",
@@ -87,6 +87,8 @@ class PointyLexer(object):
             "INT",
             "FLOAT",
             "BOOLEAN",
+            "FAILURE",
+            "SUCCESS",
             # Operators
             "NULLCOALESCE",  # ??
             "EQ",  # ==
@@ -110,7 +112,6 @@ class PointyLexer(object):
         )
         + builtin_event_token
         + builtins
-        + builtin_executors_token
     )
 
     t_QUESTION = r"\?"
@@ -174,24 +175,19 @@ class PointyLexer(object):
         return t
 
     def t_STRING_LITERAL(self, t):
-        r'"([^"\\]|\\[ntr"\'\\])*"'  # Matches double-quoted string with escape sequences
-        t.value = bytes(t.value[1:-1], "utf-8").decode(
-            "unicode_escape"
-        )  # Unescape the string
-        return t
-
-    def t_BOOLEAN(self, t):
-        r"(true|false)"
-        t.value = t.value == "true"
+        r'"([^"\\]|\\[ntr"\'\\])*"'  # double-quoted string with escape sequences
+        raw = t.value[1:-1]
+        t.lexer.lineno += raw.count("\n")
+        t.value = re.sub(r"\\(.)", lambda m: _STRING_ESCAPES[m.group(1)], raw)
         return t
 
     def t_VAR_DECL(self, t):
-        r"@[a-zA-Z_*][a-zA-Z0-9_*]*"
+        r"@[a-zA-Z_][a-zA-Z0-9_]*"
         t.value = t.value[1:]  # Remove @ prefix
         return t
 
     def t_VAR_ACCESS(self, t):
-        r"\$[a-zA-Z_*][a-zA-Z0-9_*]*"
+        r"\$[a-zA-Z_][a-zA-Z0-9_]*"
         t.value = t.value[1:]  # Remove $ prefix
         return t
 
@@ -212,8 +208,10 @@ class PointyLexer(object):
         t.lexer.lineno += len(t.value)
 
     def t_error(self, t):
-        print(f"Illegal character '{t.value[0]}' on line '{t.lexer.lineno}'")
-        t.lexer.skip(1)
+        raise SyntaxError(
+            f"Illegal character {t.value[0]!r} at line {t.lexer.lineno}, "
+            f"column {find_column(t.lexer.lexdata, t.lexpos)}"
+        )
 
     def __init__(self, **kwargs):
         self.lexer = lex(module=self, **kwargs)

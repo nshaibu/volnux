@@ -25,6 +25,7 @@ from typing import (
 )
 from concurrent.futures import ThreadPoolExecutor
 from formax import Attrib
+from formax.typing import MISSING
 from formax.typing import get_type_hints, evaluate_forward_ref
 
 from volnux.backends.store import KeyValueStoreBackendBase
@@ -352,6 +353,77 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
                     foreign_key_field=field_name,
                 ),
             )
+
+    @classmethod
+    def _field_attribs(cls) -> Dict[str, Attrib]:
+        """Attrib (field definition) of every annotated field, by field name."""
+        attribs: Dict[str, Attrib] = {}
+        for klass in reversed(cls.__mro__):
+            for name, annotation in getattr(klass, "__annotations__", {}).items():
+                for meta in getattr(annotation, "__metadata__", ()):
+                    if isinstance(meta, Attrib):
+                        attribs[name] = meta
+        return attribs
+
+    def get_state(self) -> Dict[str, Any]:
+        """
+        Persistable state of a formax model, built from its declared fields.
+
+        Each field owns its serialization: ``ForeignKeyField``, ``ListField`` and
+        ``ObjectField`` keep live values in memory and carry a ``to_state``
+        codec in ``Attrib.metadata`` that turns the value into a JSON-safe one
+        here; fields without a codec are stored as they are. Fields whose name
+        starts with ``_`` are runtime-only and are never persisted.
+        """
+        if not hasattr(self, "__get_formax_state__"):
+            return super().get_state()
+
+        raw = self.__get_formax_state__()  # type: ignore[attr-defined]
+        attribs = self._field_attribs()
+        state: Dict[str, Any] = {}
+        for name in getattr(self, "__dataclass_fields__", {}):
+            if name.startswith("_") or name not in raw:
+                continue
+            to_state = (attribs[name].metadata or {}).get("to_state") if name in attribs else None
+            state[name] = to_state(self, raw[name]) if to_state else raw[name]
+        return state
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Inverse of ``get_state``: each field's ``from_state`` codec rebuilds
+        its value (references come back as lazy ``ForeignKey`` objects)."""
+        if not hasattr(self, "__set_formax_state__"):
+            return super().set_state(state)
+
+        attribs = self._field_attribs()
+        restored: Dict[str, Any] = {}
+        for name, value in state.items():
+            if name == "id" or name.startswith("_"):
+                continue
+            from_state = (attribs[name].metadata or {}).get("from_state") if name in attribs else None
+            restored[name] = from_state(self, value) if from_state else value
+
+        # Fields missing from the stored state (e.g. added since it was saved)
+        # get their defaults, built the same way a new instance builds them.
+        declared = getattr(self, "__dataclass_fields__", {})
+        for name, attrib in attribs.items():
+            if name.startswith("_") or name in restored or name not in declared:
+                continue
+            if not attrib.has_default():
+                continue
+            default = (
+                attrib.default
+                if attrib.default is not MISSING
+                else attrib.default_factory()
+            )
+            if attrib.has_pre_formatter():
+                default = attrib.pre_formatter(self, default)
+            restored[name] = default
+
+        self.__set_formax_state__(restored)  # type: ignore[attr-defined]
+
+        record_id = state.get("id") or state.get("_id")
+        if record_id:
+            self._id = record_id
 
     def _after_backend_init(self, **kwargs: Any) -> None:
         self._loaded_from_backend = False

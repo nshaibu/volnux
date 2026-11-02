@@ -1,8 +1,12 @@
 __all__ = ["pointy_parser"]
-import logging, typing
+import logging
+import threading
+import typing
+
 from ply.yacc import YaccError, yacc
 
 from . import lexer
+from .lexer import find_column
 from .ast import (
     BinOpNode,
     ConditionalNode,
@@ -25,6 +29,7 @@ from .ast import (
     NullCoalesceExprNode,
     AttributeNode,
     BranchNode,
+    BUILTIN_DESCRIPTORS,
     IndexExprNode,
     RetryNode,
 )
@@ -36,25 +41,51 @@ logger = logging.getLogger("volnux.parser")
 pointy_lexer = lexer.PointyLexer()
 tokens = pointy_lexer.tokens
 
-variables = {}
+# Name accepted after ``$`` for environment variable access: ``$env.NAME``
+ENV_ACCESSOR = "env"
 
-precedence = (
-    ("left", "RETRY", "POINTER", "PPOINTER", "PARALLEL"),
-    ("right", "TERNARY"),
-    ("left", "NULLCOALESCE"),  # ??
-)
+# Variables declared in the program currently being parsed. Reset at the start
+# of every ``pointy_parser`` call; access is serialised by ``_parse_lock``.
+variables: typing.Dict[str, typing.Any] = {}
+# Descriptors written as labels (``A(out_of_balance -> B)``); their values are
+# only known once every ``@descriptor`` directive has been seen.
+_pending_descriptors: typing.List[typing.Tuple[DescriptorNode, int, int]] = []
+_parse_lock = threading.RLock()
+
+# Chain operators are layered in the grammar (``->``/``|->`` bind looser than
+# ``||``) and expressions are layered too, so no precedence table is needed.
+precedence = ()
+
+
+def _position(p, index: int) -> typing.Tuple[int, int]:
+    """Return the (line, column) of the token at ``p[index]``."""
+    lexdata = getattr(p.lexer, "lexdata", "")
+    return p.lineno(index), find_column(lexdata, p.lexpos(index))
 
 
 def p_program(p):
-    """program : statement_list"""
+    """
+    program : declaration_list
+            | declaration_list chain_declaration declaration_list
+    """
+    chain_expression = p[2] if len(p) == 4 else None
+    statements = p[1] + (p[3] if len(p) == 4 else [])
+
     variable_declarations = {}
     directives = {}
-    chain_expression = None
+    descriptors: typing.Dict[str, int] = {}
 
-    for statement in p[1]:
+    for statement in statements:
         if isinstance(statement, VariableDeclNode):
             variable_declarations[statement.name] = statement.value
-        elif isinstance(statement, DirectiveNode):
+        elif statement.name == "descriptor":
+            # Several @descriptor directives accumulate; values are assigned
+            # sequentially starting after the built-ins.
+            _define_descriptors(statement, descriptors)
+            directives["descriptor"] = ListNode(
+                [LiteralNode(label, type=LiteralType.STRING) for label in descriptors]
+            )
+        else:
             # Check for duplicate directives
             if statement.name in directives:
                 logger.warning(
@@ -62,15 +93,14 @@ def p_program(p):
                     f"using last value: {statement.value}"
                 )
             directives[statement.name] = statement.value
-        else:
-            # Only one chain expression allowed
-            if chain_expression is not None:
-                raise YaccError("Multiple workflow expressions not allowed")
-            chain_expression = statement
 
-    # Validate DAG mode if specified
-    mode = directives.get("mode", ParserMode.CFG)
-    if mode == ParserMode.DAG and chain_expression is not None:
+    _resolve_descriptors(descriptors)
+
+    # Validate DAG mode if specified (invalid values are reported by sema)
+    mode = directives.get("mode")
+    mode_value = getattr(mode, "value", mode)
+    is_dag = isinstance(mode_value, str) and mode_value.upper() == ParserMode.DAG.value
+    if is_dag and chain_expression is not None:
         cycle_detector = CycleDetectionVisitor()
         cycle_path = cycle_detector.has_cycle(chain_expression)
 
@@ -81,26 +111,54 @@ def p_program(p):
         global_variables=variable_declarations,
         directives=directives,
         chain=chain_expression,
+        descriptors=descriptors,
+        author=_string_directive(directives.get("author")),
+        description=_string_directive(directives.get("description")),
     )
 
 
-def p_statement_list(p):
+def _string_directive(value) -> typing.Optional[str]:
+    """Plain string of a directive value; non-string values are left to sema."""
+    if isinstance(value, LiteralNode) and isinstance(value.value, str):
+        return value.value
+    return None
+
+
+def _define_descriptors(directive: DirectiveNode, descriptors: typing.Dict[str, int]):
+    next_value = len(BUILTIN_DESCRIPTORS) + len(descriptors)
+    for item in directive.value.value:
+        label = item.value
+        if label in descriptors:
+            raise YaccError(f"Duplicate descriptor '{label}' in '@descriptor'")
+        descriptors[label] = next_value
+        next_value += 1
+
+
+def _resolve_descriptors(descriptors: typing.Dict[str, int]) -> None:
+    for node, line, column in _pending_descriptors:
+        if node.label not in descriptors:
+            raise YaccError(
+                f"Unknown descriptor '{node.label}'. Declare it with "
+                f"'@descriptor: {node.label}'. Line: {line}, Column: {column}"
+            )
+        node.value = descriptors[node.label]
+
+
+def p_declaration_list(p):
     """
-    statement_list : statement
-                   | statement_list statement
-                   | empty
+    declaration_list : empty
+                     | declaration_list declaration
     """
     if len(p) == 2:
-        p[0] = [p[1]]
+        p[0] = []
     else:
         p[0] = p[1] + [p[2]]
 
 
-def p_statement(p):
+def p_declaration(p):
     """
-    statement : variable_declaration
-              | chain_declaration
-              | directive
+    declaration : variable_declaration
+                | directive
     """
     p[0] = p[1]
 
@@ -114,12 +172,9 @@ def p_chain_declaration(p):
 
 def p_conditional(p):
     """
-    conditional : meta LPAREN branch_list RPAREN
+    conditional : retry LPAREN branch_list RPAREN
     """
-    if len(p) == 2:
-        p[0] = p[1]
-    else:
-        p[0] = ConditionalNode(task=p[1], branches=p[3])
+    p[0] = ConditionalNode(task=p[1], branches=p[3])
 
 
 def p_branch_list(p):
@@ -129,13 +184,8 @@ def p_branch_list(p):
     """
     if len(p) == 2:
         p[0] = [p[1]]
-    elif len(p) == 4:
-        if isinstance(p[1], list):
-            p[0] = p[1] + [p[3]]
-        else:
-            p[0] = [p[1], p[3]]
     else:
-        p[0] = []  # No branches
+        p[0] = p[1] + [p[3]]
 
 
 def p_branch(p):
@@ -146,12 +196,23 @@ def p_branch(p):
     p[0] = BranchNode(condition=p[1], operator=p[2], task=p[3])
 
 
+def p_headless_branch_list(p):
+    """
+    headless_branch_list : builtin_descriptor POINTER chain
+                         | builtin_descriptor PPOINTER chain
+                         | headless_branch_list SEPARATOR branch
+    """
+    if len(p) == 4 and isinstance(p[1], DescriptorNode):
+        p[0] = [BranchNode(condition=p[1], operator=p[2], task=p[3])]
+    else:
+        p[0] = p[1] + [p[3]]
+
+
 def p_chain(p):
     """
-    chain : retry
-          | chain POINTER retry
-          | chain PPOINTER retry
-          | chain PARALLEL retry
+    chain : parallel_chain
+          | chain POINTER parallel_chain
+          | chain PPOINTER parallel_chain
     """
     if len(p) == 2:
         p[0] = p[1]
@@ -159,53 +220,54 @@ def p_chain(p):
         p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
 
 
-def p_meta(p):
+def p_parallel_chain(p):
     """
-    meta : task
-         | meta_task
-         | grouped
-         | conditional
-         | LPAREN chain RPAREN
+    parallel_chain : retry
+                   | parallel_chain PARALLEL retry
     """
     if len(p) == 2:
         p[0] = p[1]
     else:
-        p[0] = p[2]
-
-
-def p_meta(p):
-    """
-    meta : task
-         | meta_task
-         | grouped
-         | conditional
-         | LPAREN chain RPAREN
-    """
-    if len(p) == 2:
-        p[0] = p[1]
-    else:
-        p[0] = p[2]
+        p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
 
 
 def p_retry(p):
     """
-    retry : meta
-          | task RETRY INT
+    retry : unit
+          | unit RETRY INT
+          | conditional
+    """
+    if len(p) != 4:
+        p[0] = p[1]
+        return
+
+    retry_count = p[3]
+    if retry_count < 2:
+        line, column = _position(p, 3)
+        raise YaccError(
+            f"Task cannot be retried less than 2 times. "
+            f"Line: {line}, Column: {column}, Offending Token: {retry_count}"
+        )
+    p[0] = RetryNode(
+        job=p[1], attempts=LiteralNode(retry_count, type=LiteralType.NUMBER)
+    )
+
+
+def p_unit(p):
+    """
+    unit : task
+         | meta_task
+         | grouped
+         | LPAREN chain RPAREN
+         | LPAREN headless_branch_list RPAREN
     """
     if len(p) == 2:
         p[0] = p[1]
+    elif isinstance(p[2], list):
+        # Branches without a subject task; reported by semantic analysis.
+        p[0] = ConditionalNode(task=None, branches=p[2])
     else:
-        retry_count = p[3]
-        if retry_count < 2:
-            line = p.lineno(3) if hasattr(p, "lineno") else "unknown line"
-            column = p.lexpos(3) if hasattr(p, "lexpos") else "unknown column"
-            raise YaccError(
-                f"Task cannot be retried less than 2 times. "
-                f"Line: {line}, Column: {column}, Offending Token: {p[3]}"
-            )
-        p[0] = RetryNode(
-            job=p[1], attempts=LiteralNode(retry_count, type=LiteralType.NUMBER)
-        )
+        p[0] = p[2]
 
 
 def p_task(p):
@@ -288,33 +350,41 @@ def p_mode(p):
 
 def p_grouped(p):
     """
-    grouped : LCURLY_BRACKET chain RCURLY_BRACKET
-            | LCURLY_BRACKET chain RCURLY_BRACKET attribute_list
+    grouped : LCURLY_BRACKET chain RCURLY_BRACKET attribute_list
     """
-    if len(p) == 4:
-        p[0] = PipelineGroupingNode([p[2]])
-    else:
-        p[0] = PipelineGroupingNode([p[2]], options=p[4])
-
-
-def p_expression_ternary(p):
-    """ternary_expression : arithmetic_expr QUESTION expression COLON expression %prec TERNARY"""
-    p[0] = TernaryExprNode(condition=p[1], true_expr=p[3], false_expr=p[5])
-
-
-def p_expression_null_coalesce(p):
-    """null_coalesce_expression : expression NULLCOALESCE expression"""
-    p[0] = NullCoalesceExprNode(left=p[1], right=p[3])
+    p[0] = PipelineGroupingNode([p[2]], options=p[4] or None)
 
 
 def p_directive(p):
-    """directive : VAR_DECL COLON expression"""
-    if p[1] == "mode":
-        # validate cfg and dag text
-        if p[3] in ParserMode.DAG.modes:
-            raise YaccError("Unknown parser mode '%s'" % p[3])
+    """
+    directive : VAR_DECL COLON expression
+              | VAR_DECL COLON identifier_list
+    """
+    name, value = p[1], p[3]
+    if name == "descriptor":
+        if not isinstance(value, ListNode) or not value.value:
+            raise YaccError(
+                "Directive '@descriptor' expects comma-separated names, "
+                "e.g. '@descriptor: out_of_balance, foreign_bank_not_supported'"
+            )
+    elif isinstance(value, ListNode) and getattr(value, "_identifiers", False):
+        raise YaccError(f"Directive '@{name}' expects an expression, not bare names")
+    p[0] = DirectiveNode(name=name, value=value)
 
-    p[0] = DirectiveNode(name=p[1], value=p[3])
+
+class _IdentifierList(ListNode):
+    """List of bare names; only valid as the value of ``@descriptor``."""
+
+    _identifiers = True
+
+
+def p_identifier_list(p):
+    """
+    identifier_list : IDENTIFIER
+                    | identifier_list SEPARATOR IDENTIFIER
+    """
+    label = LiteralNode(p[len(p) - 1], type=LiteralType.STRING)
+    p[0] = _IdentifierList([label]) if len(p) == 2 else _IdentifierList(p[1].value + [label])
 
 
 def p_variable_declaration(p):
@@ -331,12 +401,34 @@ def p_variable_declaration(p):
 
 def p_expression(p):
     """
-    expression : list
-               | map
-               | arithmetic_expr
-               | null_value
+    expression : coalesce_expression
                | ternary_expression
-               | null_coalesce_expression
+    """
+    p[0] = p[1]
+
+
+def p_expression_ternary(p):
+    """ternary_expression : arithmetic_expr QUESTION expression COLON expression"""
+    p[0] = TernaryExprNode(condition=p[1], true_expr=p[3], false_expr=p[5])
+
+
+def p_coalesce_expression(p):
+    """
+    coalesce_expression : coalesce_expression NULLCOALESCE operand
+                        | operand
+    """
+    if len(p) == 4:
+        p[0] = NullCoalesceExprNode(left=p[1], right=p[3])
+    else:
+        p[0] = p[1]
+
+
+def p_operand(p):
+    """
+    operand : list
+            | map
+            | arithmetic_expr
+            | null_value
     """
     p[0] = p[1]
 
@@ -415,7 +507,7 @@ def p_variable_reference(p):
     """
     if len(p) == 4:
         accessor = p[1]
-        if accessor != pointy_lexer.reserved["env"]:
+        if accessor != ENV_ACCESSOR:
             raise YaccError(f"Unknown variable accessor '{accessor}'")
         p[0] = EnvironmentVariableAccessNode(name=p[3])
     elif len(p) == 5:
@@ -441,17 +533,28 @@ def p_variable_reference(p):
 
 def p_descriptor(p):
     """
-    descriptor : INT
+    descriptor : builtin_descriptor
+               | IDENTIFIER
     """
-    if 0 <= p[1] < 10:
+    if isinstance(p[1], DescriptorNode):
+        p[0] = p[1]
+        return
+    # Custom label: its value is assigned once all directives are parsed.
+    node = DescriptorNode(value=None, label=p[1])
+    _pending_descriptors.append((node, *_position(p, 1)))
+    p[0] = node
+
+
+def p_builtin_descriptor(p):
+    """
+    builtin_descriptor : INT
+                       | FAILURE
+                       | SUCCESS
+    """
+    if isinstance(p[1], int):
         p[0] = DescriptorNode(p[1])
     else:
-        line = p.lineno(1) if hasattr(p, "lineno") else "unknown line"
-        column = p.lexpos(1) if hasattr(p, "lexpos") else "unknown column"
-        raise YaccError(
-            f"Descriptors cannot be either greater 9 or less than 0. "
-            f"Line: {line}, Column: {column}, Offending token: {p[1]}"
-        )
+        p[0] = DescriptorNode(BUILTIN_DESCRIPTORS[p[1]], label=p[1])
 
 
 def p_arithmetic_expr(p):
@@ -620,22 +723,19 @@ def p_error(p):
     if p is None:
         raise SyntaxError("Syntax error: Unexpected end of input!")
 
-    # Extract error position information
-    line = getattr(p, "lineno", "unknown")
-    column = getattr(p, "lexpos", "unknown")
-    token_value = getattr(p, "value", "unknown token")
-    token_type = getattr(p, "type", "unknown type")
+    lexdata = getattr(getattr(p, "lexer", None), "lexdata", "")
+    line = p.lineno
+    column = find_column(lexdata, p.lexpos)
 
-    # Build basic error message
     error_message = (
         f"Syntax error at line {line}, column {column}\n"
-        f"Unexpected token: '{token_value}' (type: {token_type})"
+        f"Unexpected token: '{p.value}' (type: {p.type})"
     )
 
     # Add context if lexer is available
-    if hasattr(p, "lexer") and p.lexer and hasattr(p.lexer, "lexdata"):
+    if lexdata:
         try:
-            context = get_error_context(p.lexer.lexdata, p.lexpos)
+            context = get_error_context(lexdata, p.lexpos)
             if context:
                 error_message += f"\nContext: {context}"
         except Exception:
@@ -687,11 +787,18 @@ def get_error_context(input_data, error_pos, context_size=50):
     return " ".join(line.strip() for line in context_lines if line.strip())
 
 
-parser = yacc()
+# Tables are rebuilt in memory on import: nothing is written next to the source.
+parser = yacc(debug=False, write_tables=False)
 
 
 def pointy_parser(code: str) -> ProgramNode:
-    try:
-        return parser.parse(code, lexer=pointy_lexer.lexer)
-    except YaccError as e:
-        raise SyntaxError(f"Parsing error: {str(e)}")
+    # The lexer, parser and ``variables`` are module-level singletons, so
+    # parses are serialised and per-parse state is reset on entry.
+    with _parse_lock:
+        variables.clear()
+        _pending_descriptors.clear()
+        pointy_lexer.lexer.lineno = 1
+        try:
+            return parser.parse(code, lexer=pointy_lexer.lexer)
+        except YaccError as e:
+            raise SyntaxError(f"Parsing error: {str(e)}")

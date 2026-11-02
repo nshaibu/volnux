@@ -167,9 +167,9 @@ class TestGrammarPiped(unittest.TestCase):
         with self.assertRaises(SyntaxError):
             pointy_parser("Worker[retries = 3 |-> TaskB")
 
-    def test_piped_invalid_namespace_raises(self):
-        with self.assertRaises(ValueError):
-            pointy_parser("unknown::Task |-> TaskB")
+    def test_piped_user_defined_namespace(self):
+        node = pointy_parser("unknown::Task |-> TaskB").chain
+        self.assertEqual(node.left.namespace, "unknown")
 
 
 if __name__ == "__main__":

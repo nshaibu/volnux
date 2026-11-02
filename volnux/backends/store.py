@@ -375,7 +375,12 @@ class YoyoMigrationsMixin:
                     continue
 
                 # Type mapping configurations across target backends
-                if meta_field_type == "list":
+                if meta_field_type == "object":
+                    # ObjectField values are stored as their JSON payload
+                    sql_type = (
+                        "JSONB" if self.dialect == SQLDialect.POSTGRES else "TEXT"
+                    )
+                elif meta_field_type == "list":
                     sql_type = "TEXT"
                     # Add database native inverted indexing rules for Postgres JSON payloads
                     if self.dialect == SQLDialect.POSTGRES:
@@ -421,7 +426,7 @@ class YoyoMigrationsMixin:
                 is_text_primitive = (
                     sql_type == "TEXT" or sql_type.startswith("VARCHAR")
                 ) and not (
-                    meta_field_type in ("list", "datetime", "date")
+                    meta_field_type in ("list", "object", "datetime", "date")
                     or _is_collection_type(field_type)
                 )
 
@@ -1041,6 +1046,11 @@ class KeyValueStoreBackendBase(abc.ABC):
             Dictionary of field names to values.
         """
         record_data: Dict[str, Any] = {"id": record_key}
+        fk_fields = {
+            name
+            for name, attrib in record._field_attribs().items()
+            if (attrib.metadata or {}).get("type") == "foreignkey"
+        }
 
         for field_name, value in record.__getstate__().items():
             # Private attributes have no column (compile_schema skips them), and
@@ -1052,7 +1062,10 @@ class KeyValueStoreBackendBase(abc.ABC):
             ):
                 continue
 
-            if isinstance(value, (dict, list)):
+            if value is None and field_name in fk_fields:
+                # an empty reference is stored in the key's own column
+                record_data[f"{field_name}_object_id"] = None
+            elif isinstance(value, (dict, list)):
                 if isinstance(value, dict):
                     field_type = value.get("type", "")
 

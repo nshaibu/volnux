@@ -2,6 +2,7 @@ import typing
 from collections import deque
 
 from volnux.mixins import ObjectIdentityMixin
+from volnux.parser.ast import BUILTIN_DESCRIPTORS
 from volnux.parser.conditional import ConditionalNode
 from volnux.parser.operator import PipeType
 from volnux.parser.options import Options
@@ -16,6 +17,16 @@ class TaskBase(ObjectIdentityMixin):
 
         # options specified in pointy scripts for tasks are kept here
         self.options: typing.Optional[Options] = None
+
+        # Namespace the task was written in (``billing::ChargeCard``). Namespaces
+        # are user defined and resolved at runtime.
+        self.namespace: str = "local"
+
+        # Custom descriptor label -> value, copied from the program's
+        # ``@descriptor`` directive so the orchestrator can translate in both
+        # directions. The built-in ``failure``/``success`` are not stored here;
+        # use ``get_descriptor_name`` / ``get_descriptor_value``.
+        self.descriptors: typing.Dict[str, int] = {}
 
         # Use for identify the order of a task.
         # This will be passed to events during initialization
@@ -54,8 +65,8 @@ class TaskBase(ObjectIdentityMixin):
             raise ValueError("Descriptor cannot be None")
         if not isinstance(value, int):
             raise TypeError("Descriptor must be an integer")
-        if 0 > value or value > 9:
-            raise ValueError("Descriptor must be between 0 and 9")
+        if isinstance(value, bool) or value < 0:
+            raise ValueError("Descriptor must be a non-negative integer")
         self._descriptor = value
 
     @property
@@ -65,6 +76,11 @@ class TaskBase(ObjectIdentityMixin):
     @descriptor_pipe.setter
     def descriptor_pipe(self, value: "PipeType") -> None:
         self._descriptor_pipe = value
+
+    @property
+    def is_grouping(self) -> bool:
+        """True for task groupings, which have chains instead of an event."""
+        return False
 
     @property
     def is_conditional(self) -> bool:
@@ -189,6 +205,22 @@ class TaskBase(ObjectIdentityMixin):
         root = self.get_root()
         nodes = list(self.df_traversal(root))
         return len(nodes)
+
+    def get_descriptor_name(self, value: int) -> typing.Optional[str]:
+        """Label for a descriptor value (``0`` -> ``failure``), or None if unnamed."""
+        for label, builtin in BUILTIN_DESCRIPTORS.items():
+            if builtin == value:
+                return label
+        for label, custom in self.descriptors.items():
+            if custom == value:
+                return label
+        return None
+
+    def get_descriptor_value(self, label: str) -> typing.Optional[int]:
+        """Value for a descriptor label (``failure`` -> ``0``), or None if unknown."""
+        if label in BUILTIN_DESCRIPTORS:
+            return BUILTIN_DESCRIPTORS[label]
+        return self.descriptors.get(label)
 
     def get_descriptor(self, descriptor: int) -> typing.Optional[TaskType]:
         target = self.condition_node.get_descriptor_config(descriptor)

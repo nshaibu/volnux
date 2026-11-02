@@ -258,6 +258,27 @@ class TestSemaUnknownDirective(unittest.TestCase):
         err = result.errors[0]
         self.assertIn("mode", err.message)
 
+    def test_recursive_depth_is_no_longer_known(self):
+        with self.assertRaises(SyntaxError):
+            _analyse("@recursive-depth: 100 FetchData")
+        result = _analyse("@recursive_depth: 100 FetchData")
+        self.assertTrue(_has_error_containing(result, "Unknown directive"))
+
+    def test_new_directives_are_known(self):
+        result = _analyse(
+            '@author: "Jane" @description: "Does things" @descriptor: oops\n'
+            "FetchData (oops -> Handle)"
+        )
+        self.assertFalse(result.has_errors, [d.message for d in result.errors])
+
+    def test_author_must_be_string(self):
+        result = _analyse("@author: 5 FetchData")
+        self.assertTrue(_has_error_containing(result, "'@author' must be a string"))
+
+    def test_description_must_be_string(self):
+        result = _analyse("@description: true FetchData")
+        self.assertTrue(_has_error_containing(result, "'@description' must be a string"))
+
     def test_known_directive_mode_no_error(self):
         result = _analyse('@mode: "CFG" FetchData')
         errors = [d for d in result.errors if "Unknown directive" in d.message]
@@ -358,9 +379,11 @@ class TestSemaTypeMismatch(unittest.TestCase):
         self.assertTrue(_has_warning_containing(result, "executor"))
         self.assertTrue(_has_warning_containing(result, "str"))
 
-    def test_executor_string_no_warning(self):
-        result = _analyse('Worker[executor = "DEFAULT_EXECUTOR"]')
-        self.assertFalse(_has_warning_containing(result, "executor"))
+    def test_executor_names_are_not_validated(self):
+        # executors are resolved at runtime, so any string is accepted
+        for name in ("DEFAULT_EXECUTOR", "my_runtime_executor", "acme.executors.Custom"):
+            result = _analyse(f'Worker[executor = "{name}"]')
+            self.assertFalse(_has_warning_containing(result, "executor"), name)
 
     def test_stop_condition_string_no_warning(self):
         result = _analyse('Worker[stop_condition = "on_error"]')
@@ -1029,6 +1052,46 @@ class TestSemaExpressions(unittest.TestCase):
         self.assertTrue(result.has_warnings)
         w = [d for d in result.warnings if "always false" in d.message][0]
         self.assertEqual(w.level, SemanticLevel.WARNING)
+
+
+class TestSemaNamespaces(unittest.TestCase):
+    """Namespaces are user-defined and resolved at runtime, so sema accepts any."""
+
+    def test_custom_namespaces_are_not_errors(self):
+        for source in ("acme::FetchData", "MAP<acme::FetchData>", "my_ns::A -> other::B"):
+            result = _analyse(source)
+            self.assertFalse(result.has_errors, (source, [d.message for d in result.errors]))
+
+
+class TestSemaConditionalExpressions(unittest.TestCase):
+    """Malformed conditional expressions are reported by sema."""
+
+    def test_valid_conditionals_are_clean(self):
+        for source in (
+            "A (failure -> B, success -> C)",
+            "A (0 -> B, 1 -> C, 25 -> D)",
+            "A * 2 (failure -> B, success -> C)",
+            "A (failure -> B * 2, success |-> C * 3)",
+        ):
+            result = _analyse(source)
+            self.assertFalse(result.has_errors, (source, [d.message for d in result.errors]))
+
+    def test_conditional_without_subject_task(self):
+        result = _analyse("(failure -> C, success -> B)")
+        self.assertTrue(_has_error_containing(result, "no subject task"))
+
+    def test_retry_on_conditional_expression(self):
+        result = _analyse("(failure -> C, success -> B) * 2")
+        self.assertTrue(result.has_errors)
+        self.assertTrue(_has_error_containing(result, "Retry cannot be applied"))
+
+    def test_retry_after_conditional_with_subject_is_rejected(self):
+        with self.assertRaises(SyntaxError):
+            _analyse("A (failure -> C, success -> B) * 3")
+
+    def test_duplicate_named_descriptor(self):
+        result = _analyse("A (failure -> B, 0 -> C)")
+        self.assertTrue(_has_error_containing(result, "Duplicate descriptor 'failure' (0)"))
 
 
 if __name__ == "__main__":

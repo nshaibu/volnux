@@ -15,6 +15,12 @@ class TaskProtocolMixin(typing.Protocol):
     # options specified in pointy scripts for tasks are kept here
     options: typing.Optional["Options"]
 
+    # namespace the task was written in; "local" when none was given
+    namespace: str
+
+    # custom descriptor label -> value copied from the program's @descriptor
+    descriptors: typing.Dict[str, int]
+
     sequence_number: typing.Optional[int]
 
     parent_node: typing.Optional["TaskType"]
@@ -43,6 +49,9 @@ class TaskProtocolMixin(typing.Protocol):
     def descriptor_pipe(self, value: "PipeType") -> None: ...
 
     @property
+    def is_grouping(self) -> bool: ...
+
+    @property
     def is_conditional(self) -> bool: ...
 
     @property
@@ -63,6 +72,10 @@ class TaskProtocolMixin(typing.Protocol):
     def get_last_task_in_parallel_execution_mode(
         self,
     ) -> typing.Optional["TaskType"]: ...
+
+    def get_descriptor_name(self, value: int) -> typing.Optional[str]: ...
+
+    def get_descriptor_value(self, label: str) -> typing.Optional[int]: ...
 
     def get_descriptor(self, descriptor: int) -> "TaskType": ...
 

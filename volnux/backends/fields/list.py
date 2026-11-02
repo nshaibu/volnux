@@ -16,11 +16,12 @@ from typing import (
 )
 
 from formax import MiniAnnotated, Attrib
+from formax.typing import MISSING
 from volnux.utils import get_obj_klass_import_str
 from volnux.import_utils import import_string
 from volnux.backends.db_utils import ModelResolverMixin
 from .foreign_key import ForeignKey
-from .utils import formax_null_validator
+from .utils import UNSET, formax_null_validator, unwrap_optional
 
 if TYPE_CHECKING:
     from volnux.mixins import KeyValueStoreIntegrationMixin
@@ -39,6 +40,11 @@ class ListConfig:
     unique_items: bool = False
     nullable: bool = True
     item_nullable: bool = False
+    # Value used when none is given. By default a field gets a fresh empty list;
+    # ``ListField[Optional[T]]`` defaults to None. ``default_factory`` builds
+    # the default (a list, or None) for each model.
+    default: Any = UNSET
+    default_factory: Any = UNSET
 
 
 class ManagedList(Generic[T]):
@@ -176,6 +182,15 @@ class ManagedList(Generic[T]):
     def __contains__(self, item: Any) -> bool:
         return self.contains(item)
 
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, ManagedList):
+            other = list(other)
+        if isinstance(other, (list, tuple)):
+            return list(self) == list(other)
+        return NotImplemented
+
+    __hash__ = None  # type: ignore[assignment]
+
     def __repr__(self) -> str:
         model = self._item_model
         if isinstance(model, ForwardRef):
@@ -246,8 +261,13 @@ class ManagedList(Generic[T]):
 class ListField:
     """Create a MiniAnnotated field definition for a governed, mutable list.
 
-    Returns a ManagedList proxy that supports add(), remove(), len(),
-    iteration, and automatic serialization governance.
+    The field holds a ``ManagedList``: it supports add(), remove(), len() and
+    iteration, keeps live model instances live, and is turned into reference
+    payloads only when the model's state is persisted. A list loaded from
+    storage yields lazy ``ForeignKey`` references for its model items.
+
+    A field without a value gets a fresh empty list each time;
+    ``ListField[Optional[T]]`` (or ``ListConfig(default=None)``) defaults to None.
 
     Example:
         >>> class WorkflowDef(GovernanceModel):
@@ -256,7 +276,7 @@ class ListField:
         >>> wf = WorkflowDef.get("wf-123")
         >>> wf.tags.add(Tag(name="production"))
         >>> wf.tags.len()  # 1
-        >>> await wf.kv_save()  # pre_formatter serializes automatically
+        >>> await wf.save()
     """
 
     def __init_subclass__(cls, **kwargs):
@@ -288,6 +308,9 @@ class ListField:
         if config.max_length is not None and config.max_length < config.min_length:
             raise ValueError("max_length cannot be less than min_length")
 
+        item_model, optional = unwrap_optional(item_model)
+        nullable = config.nullable or optional
+
         if isinstance(item_model, str):
             try:
                 module_path, class_name = item_model.rsplit(".", 1)
@@ -295,21 +318,35 @@ class ListField:
                 module_path, class_name = None, item_model
             item_model = ForwardRef(class_name, module=module_path, is_class=True)
 
+        default, default_factory = config.default, config.default_factory
+        if default is UNSET and default_factory is UNSET:
+            if optional:
+                default = None
+            elif config.min_length == 0:
+                default_factory = list
+        default = MISSING if default is UNSET else default
+        default_factory = MISSING if default_factory is UNSET else default_factory
+
         validators = []
-        if not config.nullable:
+        if not nullable:
             validators.append(formax_null_validator)
 
-        # Resolved lazily by post_fmt (the Attrib isn't bound to a field yet)
+        # Resolved lazily (the Attrib isn't bound to a field yet)
         field_name_cache: Dict[str, str] = {}
+
+        def field_name_of(instance) -> str:
+            if "name" not in field_name_cache and instance is not None:
+                field_name_cache["name"] = _find_field_name(type(instance), attrib)
+            return field_name_cache.get("name", "")
 
         def pre_fmt(instance, value):
             if value is None:
-                if not config.nullable:
+                if not nullable:
                     raise ValueError("ListField cannot be None")
                 return None
 
             if isinstance(value, ManagedList):
-                items = value.to_serializable()
+                items = list(value._items)
             elif isinstance(value, (list, tuple)):
                 items = list(value)
             else:
@@ -351,37 +388,47 @@ class ListField:
                         raise ValueError(f"List item [{i}] is a duplicate")
                     seen.add(key)
 
-            return items
-
-        def post_fmt(instance, value):
-            if value is None:
-                return None
-
             if isinstance(value, ManagedList):
                 return value
-
-            if "name" not in field_name_cache:
-                field_name_cache["name"] = _find_field_name(type(instance), attrib)
-
-            return ManagedList.from_serializable(
-                raw=value,
+            return ManagedList(
+                items=items,
                 item_model=item_model,
                 parent_instance=instance,
-                field_name=field_name_cache["name"],
+                field_name=field_name_of(instance),
+            )
+
+        def to_state(instance, value):
+            if value is None:
+                return None
+            if not isinstance(value, ManagedList):
+                value = ManagedList(items=list(value))
+            return value.to_serializable()
+
+        def from_state(instance, raw):
+            if raw is None:
+                return None
+            return ManagedList.from_serializable(
+                raw=raw,
+                item_model=item_model,
+                parent_instance=instance,
+                field_name=field_name_of(instance),
             )
 
         attrib = Attrib(
             pre_formatter=pre_fmt,
-            post_formatter=post_fmt,
             validators=validators,
+            default=default,
+            default_factory=default_factory,
             metadata={
                 "type": "list",
                 "item_model": item_model,
                 "max_length": config.max_length,
                 "min_length": config.min_length,
                 "unique_items": config.unique_items,
-                "nullable": config.nullable,
+                "nullable": nullable,
                 "item_nullable": config.item_nullable,
+                "to_state": to_state,
+                "from_state": from_state,
             },
         )
         return MiniAnnotated[Any, attrib]

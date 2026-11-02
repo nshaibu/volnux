@@ -276,11 +276,11 @@ class TestGrammarChainPrimary(unittest.TestCase):
     #     with self.assertRaises(SyntaxError):
     #         pointy_parser('')
 
-    def test_invalid_namespace_raises_value_error(self):
-        # TaskNode __post_init__ validates namespace membership and raises ValueError
-        with self.assertRaises(ValueError):
-            # 'unknown' is not in VALID_NAMESPACES
-            pointy_parser("unknown::DoIt")
+    def test_user_defined_namespace_accepted(self):
+        # namespaces are user-defined and only resolved at runtime
+        node = pointy_parser("unknown::DoIt").chain
+        self.assertEqual(node.namespace, "unknown")
+        self.assertEqual(node.fully_qualified_name, "unknown::DoIt")
 
 
 class TestGrammarRetry(unittest.TestCase):

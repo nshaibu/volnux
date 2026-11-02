@@ -309,10 +309,10 @@ class TestGrammarSequential(unittest.TestCase):
         with self.assertRaises(SyntaxError):
             pointy_parser("Worker[timeout = 30 -> DoIt")
 
-    def test_seq_invalid_namespace_raises(self):
-        # invalid (unknown) namespace used in a sequential chain should raise ValueError
-        with self.assertRaises(ValueError):
-            pointy_parser("unknown::Task -> DoIt")
+    def test_seq_user_defined_namespace(self):
+        # namespaces are resolved at runtime, so any identifier is accepted
+        node = pointy_parser("unknown::Task -> DoIt").chain
+        self.assertEqual(node.left.namespace, "unknown")
 
     def test_seq_retry_invalid_count_in_chain_raises(self):
         with self.assertRaises(SyntaxError):

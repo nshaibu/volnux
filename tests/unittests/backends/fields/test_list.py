@@ -1,4 +1,4 @@
-from typing import ForwardRef
+from typing import ForwardRef, Optional
 
 import pytest
 from formax import BaseModel
@@ -33,8 +33,12 @@ def _pre(annotation):
     return _attrib(annotation).pre_formatter
 
 
-def _post(annotation):
-    return _attrib(annotation).post_formatter
+def _to_state(annotation):
+    return _attrib(annotation).metadata["to_state"]
+
+
+def _from_state(annotation):
+    return _attrib(annotation).metadata["from_state"]
 
 
 def _ref(object_id, model_path="tests.Tag", backend_alias="default"):
@@ -368,10 +372,24 @@ class TestListFieldPreFormatter:
         assert pre(None, tags) == tags
         assert pre(None, tuple(tags)) == tags
 
-    def test_managed_list_is_serialized(self):
+    def test_optional_list_accepts_none(self):
+        assert _pre(ListField[Optional[Tag]])(None, None) is None
+
+    def test_holds_a_managed_list_of_the_live_items(self):
         pre = _pre(ListField[Tag])
-        result = pre(None, ManagedList(items=[Tag(1)]))
-        assert result[0]["object_id"] == "1"
+        tags = [Tag(1), Tag(2)]
+        result = pre(None, tags)
+        assert isinstance(result, ManagedList)
+        assert list(result) == tags
+        assert all(a is b for a, b in zip(result, tags))
+
+    def test_managed_list_is_kept_live(self):
+        pre = _pre(ListField[Tag])
+        tag = Tag(1)
+        managed = ManagedList(items=[tag])
+        result = pre(None, managed)
+        assert result is managed
+        assert list(result)[0] is tag
 
     def test_rejects_non_list(self):
         pre = _pre(ListField[Tag])
@@ -398,7 +416,8 @@ class TestListFieldPreFormatter:
     def test_dicts_and_foreign_keys_skip_type_check(self):
         pre = _pre(ListField[Tag])
         fk = ForeignKey(object_id="1", model_path="tests.Tag")
-        assert pre(None, [_ref("1"), fk]) == [_ref("1"), fk]
+        items = list(pre(None, [_ref("1"), fk]))
+        assert [item.object_id for item in items] == ["1", "1"]
 
     def test_none_item_not_allowed_by_default(self):
         pre = _pre(ListField[Tag])
@@ -411,7 +430,7 @@ class TestListFieldPreFormatter:
 
     def test_unresolvable_forward_ref_skips_type_check(self):
         pre = _pre(ListField["DoesNotExist"])
-        assert pre(None, ["anything", 1]) == ["anything", 1]
+        assert list(pre(None, ["anything", 1])) == ["anything", 1]
 
     def test_unique_items_rejects_duplicate_model_ids(self):
         pre = _pre(ListField[Tag, ListConfig(unique_items=True)])
@@ -441,30 +460,62 @@ class TestListFieldPreFormatter:
         assert pre(None, [tag, tag]) == [tag, tag]
 
 
-class TestListFieldPostFormatter:
-    def test_none_passthrough(self):
-        assert _post(ListField[Tag])(None, None) is None
+class TestListFieldDefaults:
+    def test_empty_list_by_default(self):
+        attrib = _attrib(ListField[Tag])
+        assert attrib.default_factory is list
+        assert attrib.has_default()
 
-    def test_wraps_list_in_managed_list(self):
+    def test_optional_defaults_to_none(self):
+        attrib = _attrib(ListField[Optional[Tag]])
+        assert attrib.default is None
+        assert attrib.metadata["nullable"] is True
+        assert attrib.metadata["item_model"] is Tag
+
+    def test_explicit_default_none(self):
+        assert _attrib(ListField[Tag, ListConfig(default=None)]).default is None
+
+    def test_explicit_default_factory(self):
+        factory = lambda: [Tag(1)]
+        attrib = _attrib(ListField[Tag, ListConfig(default_factory=factory)])
+        assert attrib.default_factory is factory
+
+    def test_min_length_makes_the_field_required(self):
+        attrib = _attrib(ListField[Tag, ListConfig(min_length=1)])
+        assert not attrib.has_default()
+
+
+class TestListFieldToState:
+    def test_none(self):
+        assert _to_state(ListField[Tag])(None, None) is None
+
+    def test_live_items_become_reference_payloads(self):
+        to_state = _to_state(ListField[Tag])
+        state = to_state(None, ManagedList(items=[Tag(1), "x"]))
+        assert state == [_ref("1", get_obj_klass_import_str(Tag)), "x"]
+
+    def test_plain_list(self):
+        assert _to_state(ListField[Tag])(None, [Tag(2)])[0]["object_id"] == "2"
+
+
+class TestListFieldFromState:
+    def test_none(self):
+        assert _from_state(ListField[Tag])(None, None) is None
+
+    def test_builds_a_managed_list_of_lazy_references(self):
         annotation = ListField[Tag]
 
         class Host:
             __annotations__ = {"tags": annotation}
 
         host = Host()
-        stored = [_ref("1")]
-        ml = _post(annotation)(host, stored)
+        ml = _from_state(annotation)(host, [_ref("1")])
         assert isinstance(ml, ManagedList)
         assert ml._item_model is Tag
         assert ml._parent_instance is host
         assert ml._field_name == "tags"
-        ml.add(Tag(2))
-        assert len(stored) == 2
-
-    def test_managed_list_returned_as_is(self):
-        annotation = ListField[Tag]
-        ml = ManagedList()
-        assert _post(annotation)(object(), ml) is ml
+        assert isinstance(ml[0], ForeignKey)
+        assert ml[0].object_id == "1"
 
     def test_field_name_found_on_base_class(self):
         annotation = ListField[Tag]
@@ -475,7 +526,13 @@ class TestListFieldPostFormatter:
         class Child(Base):
             __annotations__ = {"other": int}
 
-        assert _post(annotation)(Child(), [])._field_name == "tags"
+        assert _from_state(annotation)(Child(), [])._field_name == "tags"
+
+    def test_round_trip(self):
+        annotation = ListField[Tag]
+        state = _to_state(annotation)(None, [Tag(1), Tag(2)])
+        restored = _from_state(annotation)(None, state)
+        assert [fk.object_id for fk in restored] == ["1", "2"]
 
 
 class TestHelpers:
@@ -523,3 +580,39 @@ class TestListFieldOnModel:
         with pytest.raises(RuntimeError) as exc_info:
             Holder(tags=["bad"])
         assert isinstance(exc_info.value.__cause__, TypeError)
+
+    def test_empty_list_default_is_not_shared(self):
+        class Holder(BaseModel):
+            tags: ListField[Tag]
+
+        first, second = Holder(), Holder()
+        first.tags.add(Tag(1))
+        assert len(first.tags) == 1
+        assert len(second.tags) == 0
+
+    def test_optional_list_defaults_to_none(self):
+        class Holder(BaseModel):
+            tags: ListField[Optional[Tag]]
+
+        assert Holder().tags is None
+
+    def test_live_items_stay_live_on_the_model(self):
+        class Holder(BaseModel):
+            tags: ListField[Tag]
+
+        tag = Tag(1)
+        holder = Holder(tags=[tag])
+        assert list(holder.tags)[0] is tag
+
+        extra = Tag(2)
+        holder.tags.add(extra)
+        assert list(holder.tags)[1] is extra
+
+
+class TestManagedListEquality:
+    def test_equals_a_plain_list_of_the_same_items(self):
+        tag = Tag(1)
+        assert ManagedList(items=[tag]) == [tag]
+        assert ManagedList(items=[]) == []
+        assert ManagedList(items=[tag]) != [Tag(2)]
+        assert ManagedList(items=[tag]) == ManagedList(items=[tag])

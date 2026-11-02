@@ -1,61 +1,61 @@
 """Tests for rehydrator/engine/deserializer — StateDeserializer.
 
 Covers:
-  - deserialize_context (with traversal dict, without traversal, already
-    ContextSnapshot).
-  - deserialize_traversal (from dict).
-  - deserialize_task (from dict).
-  - deserialize_result (dict → from_dict, string ID → get_async, invalid type
-    → ValueError, missing ID → ObjectDoesNotExist).
+  - deserialize_engine_state (dict -> EngineStateSnapshot).
+  - deserialize_task (dict -> TaskSnapshot).
+  - rebuild_task (serialized task graph -> live tasks): options, namespace,
+    descriptor names, branches, sink subtree and groups, through JSON.
+
+An ExecutionContext needs no deserializer; its fields restore themselves.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from volnux import EventBase
 from volnux.execution.rehydrator.engine.deserializer import StateDeserializer
-from volnux.execution.rehydrator.engine.snapshot import TraversalSnapshot
+from volnux.execution.rehydrator.engine.serializer import StateSerializer
+from volnux.execution.rehydrator.engine.snapshot import (
+    EngineStateSnapshot,
+    TaskSnapshot,
+)
+from volnux.parser.operator import PipeType
+from volnux.parser.options import StopCondition
+from volnux.task import PipelineTask, PipelineTaskGrouping, build_pipeline_flow_from_pointy_code
 
 
-# ===========================================================================
-# Helpers
-# ===========================================================================
-def _make_traversal_data(**overrides: Any) -> Dict[str, Any]:
+class StepA(EventBase):
+    def process(self, *args, **kwargs):
+        return True, None
+
+
+class StepB(StepA):
+    pass
+
+
+class StepC(StepA):
+    pass
+
+
+class StepS(StepA):
+    pass
+
+
+def _make_engine_state_data(**overrides: Any) -> Dict[str, Any]:
     defaults: Dict[str, Any] = {
+        "context_id": "ctx-1",
         "engine_class_path": "volnux.engine.base.WorkflowEngine",
         "current_task": None,
-        "current_task_checkpoint": None,
         "task_queue_snapshot": [],
         "queue_index": 0,
         "current_task_queue_size": 0,
-        "current_sink_queue_size": 0,
         "sink_queue_snapshot": [],
+        "current_sink_queue_size": 0,
         "tasks_processed": 0,
-    }
-    defaults.update(overrides)
-    return defaults
-
-
-def _make_context_data(**overrides: Any) -> Dict[str, Any]:
-    defaults: Dict[str, Any] = {
-        "state_id": "deser-001",
-        "workflow_id": "wf-deser",
-        "parent_id": None,
-        "child_ids": [],
-        "depth": 0,
-        "previous_context_id": None,
-        "next_context_id": None,
-        "traversal": _make_traversal_data(),
-        "pipeline_id": "pipe-deser",
-        "pipeline_state": {},
-        "pipeline_class_path": "app.Pipeline",
-        "status": "RUNNING",
-        "errors": [],
-        "results": [],
-        "metrics": {},
     }
     defaults.update(overrides)
     return defaults
@@ -81,109 +81,35 @@ def _make_task_data(**overrides: Any) -> Dict[str, Any]:
     return defaults
 
 
-# ===========================================================================
-# deserialize_traversal
-# ===========================================================================
-class TestDeserializeTraversal:
+class TestDeserializeEngineState:
 
     def test_from_dict(self) -> None:
-        data = _make_traversal_data(tasks_processed=5)
-        traversal = StateDeserializer.deserialize_traversal(data)
+        state = StateDeserializer.deserialize_engine_state(_make_engine_state_data())
 
-        assert isinstance(traversal, TraversalSnapshot)
-        assert traversal.tasks_processed == 5
-        assert traversal.engine_class_path == "volnux.engine.base.WorkflowEngine"
+        assert isinstance(state, EngineStateSnapshot)
+        assert state.context_id == "ctx-1"
+        assert state.engine_class_path == "volnux.engine.base.WorkflowEngine"
 
-    def test_with_current_task(self) -> None:
-        data = _make_traversal_data(
-            current_task={
-                "task_id": "t-active",
-                "previous_context_id": "ctx-a",
-                "position_in_queue": 0,
-            },
+    def test_queues_stay_plain_entries(self) -> None:
+        entry = {"task_id": "t1", "previous_context_id": "c0", "position_in_queue": 0}
+        state = StateDeserializer.deserialize_engine_state(
+            _make_engine_state_data(
+                task_queue_snapshot=[entry],
+                current_task=entry,
+                current_task_queue_size=1,
+                tasks_processed=3,
+            )
         )
-        traversal = StateDeserializer.deserialize_traversal(data)
-        assert traversal.current_task["task_id"] == "t-active"
 
-    def test_with_queues(self) -> None:
-        data = _make_traversal_data(
-            task_queue_snapshot=[
-                {"task_id": "t1", "previous_context_id": "c1", "position_in_queue": 0},
-            ],
-            sink_queue_snapshot=[
-                {"task_id": "s1", "previous_context_id": "sc1", "position_in_queue": 0},
-            ],
-            current_task_queue_size=1,
-            current_sink_queue_size=1,
-        )
-        traversal = StateDeserializer.deserialize_traversal(data)
-        assert len(traversal.task_queue_snapshot) == 1
-        assert len(traversal.sink_queue_snapshot) == 1
+        assert state.task_queue_snapshot == [entry]
+        assert state.current_task == entry
+        assert state.tasks_processed == 3
 
 
-# ===========================================================================
-# deserialize_context
-# ===========================================================================
-class TestDeserializeContext:
-
-    def test_from_dict_with_traversal(self) -> None:
-        data = _make_context_data()
-        snapshot = StateDeserializer.deserialize_context(data)
-
-        from rehydrator.engine.snapshot import ContextSnapshot
-
-        assert isinstance(snapshot, ContextSnapshot)
-        assert snapshot.state_id == "deser-001"
-        assert isinstance(snapshot.traversal, TraversalSnapshot)
-
-    def test_traversal_dict_rebuilt_into_dataclass(self) -> None:
-        data = _make_context_data()
-        data["traversal"]["tasks_processed"] = 42
-
-        snapshot = StateDeserializer.deserialize_context(data)
-        assert snapshot.traversal.tasks_processed == 42
-
-    def test_does_not_mutate_input_dict(self) -> None:
-        data = _make_context_data()
-        original_status = data["status"]
-        data["status"] = "MUTATED"
-
-        StateDeserializer.deserialize_context(data)
-        # The data dict should still have the value we set
-        assert data["status"] == "MUTATED"
-
-    def test_with_parent_and_children(self) -> None:
-        data = _make_context_data(
-            parent_id="parent-x",
-            child_ids=["ch1", "ch2"],
-            depth=3,
-        )
-        snapshot = StateDeserializer.deserialize_context(data)
-        assert snapshot.parent_id == "parent-x"
-        assert snapshot.child_ids == ["ch1", "ch2"]
-        assert snapshot.depth == 3
-
-    def test_with_errors(self) -> None:
-        data = _make_context_data(
-            errors=[
-                {"type": "ValueError", "message": "oops"},
-            ],
-        )
-        snapshot = StateDeserializer.deserialize_context(data)
-        assert len(snapshot.errors) == 1
-        assert snapshot.errors[0]["type"] == "ValueError"
-
-
-# ===========================================================================
-# deserialize_task
-# ===========================================================================
 class TestDeserializeTask:
 
     def test_from_dict(self) -> None:
-        data = _make_task_data()
-        snapshot = StateDeserializer.deserialize_task(data)
-
-        from rehydrator.engine.snapshot import TaskSnapshot
+        snapshot = StateDeserializer.deserialize_task(_make_task_data())
 
         assert isinstance(snapshot, TaskSnapshot)
         assert snapshot.task_id == "task-deser"
@@ -191,87 +117,130 @@ class TestDeserializeTask:
         assert snapshot.task_type == "normal"
 
     def test_group_task(self) -> None:
-        data = _make_task_data(task_type="group")
-        snapshot = StateDeserializer.deserialize_task(data)
+        snapshot = StateDeserializer.deserialize_task(_make_task_data(task_type="group"))
         assert snapshot.task_type == "group"
 
     def test_with_checkpoint(self) -> None:
-        data = _make_task_data(task_checkpoint={"offset": 50})
-        snapshot = StateDeserializer.deserialize_task(data)
+        snapshot = StateDeserializer.deserialize_task(
+            _make_task_data(task_checkpoint={"offset": 50})
+        )
         assert snapshot.task_checkpoint == {"offset": 50}
 
 
-# ===========================================================================
-# deserialize_result
-# ===========================================================================
-class TestDeserializeResult:
+EVENTS = {"StepA": StepA, "StepB": StepB, "StepC": StepC, "StepS": StepS}
 
-    @patch("volnux.result.EventResult")
-    async def test_dict_result_calls_from_dict(
-        self, mock_result_cls: MagicMock
-    ) -> None:
-        mock_instance = MagicMock()
-        mock_result_cls.from_dict.return_value = mock_instance
 
-        data = {"data": [1, 2, 3], "status": "done"}
-        result = await StateDeserializer.deserialize_result(data)
+def build(code):
+    """Build a task graph from pointy code with the event classes attached.
 
-        mock_result_cls.from_dict.assert_called_once_with(data)
-        assert result is mock_instance
+    Tasks parsed from text only carry event names; resolving them needs the
+    global event registry, which other tests reset, so bind the classes here.
+    """
+    root, _ = build_pipeline_flow_from_pointy_code(code)
 
-    @patch("volnux.result.EventResult")
-    async def test_string_id_calls_get_async(self, mock_result_cls: MagicMock) -> None:
-        mock_instance = MagicMock()
-        mock_result_cls.get_async = AsyncMock(return_value=mock_instance)
+    def bind(task):
+        if not task.is_grouping and isinstance(task.event, str):
+            task.event = EVENTS[task.event]
+        for child in task.get_children():
+            bind(child)
+        for chain in getattr(task, "chains", []):
+            bind(chain)
 
-        result = await StateDeserializer.deserialize_result("result-id-xyz")
+    bind(root)
+    return root
 
-        mock_result_cls.get_async.assert_awaited_once_with("result-id-xyz")
-        assert result is mock_instance
 
-    @patch("volnux.result.EventResult")
-    async def test_string_id_not_found_raises(self, mock_result_cls: MagicMock) -> None:
-        from volnux.exceptions import ObjectDoesNotExist
+def through_json(task):
+    """Serialize a task graph and rebuild it from the JSON text."""
+    data = json.loads(json.dumps(StateSerializer.serialize_task(task), default=str))
+    return StateDeserializer.rebuild_task(data)
 
-        mock_result_cls.get_async = AsyncMock(
-            side_effect=ObjectDoesNotExist("result-id-missing")
+
+class TestRebuildTask:
+
+    def test_single_task(self) -> None:
+        task = PipelineTask(event=StepA)
+        task.namespace = "billing"
+        task.descriptors = {"odd": 2}
+        task.sequence_number = 4
+
+        rebuilt = through_json(task)
+
+        assert isinstance(rebuilt, PipelineTask)
+        assert rebuilt.id == task.id
+        assert rebuilt.event is StepA
+        assert rebuilt.namespace == "billing"
+        assert rebuilt.descriptors == {"odd": 2}
+        assert rebuilt.sequence_number == 4
+        assert rebuilt.options is None
+
+    def test_options_survive_json(self) -> None:
+        root = build(
+            'StepA[stop_condition = "on_error", extra = 1] * 3'
         )
 
-        with pytest.raises(ObjectDoesNotExist):
-            await StateDeserializer.deserialize_result("result-id-missing")
+        rebuilt = through_json(root)
 
-    @patch("volnux.result.EventResult")
-    async def test_string_id_not_found_logs_warning(
-        self, mock_result_cls: MagicMock, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        from volnux.exceptions import ObjectDoesNotExist
+        assert rebuilt.options.retry_attempts == 3
+        assert rebuilt.options.stop_condition == StopCondition.ON_ERROR
+        assert rebuilt.options.extras == {"extra": 1}
 
-        mock_result_cls.get_async = AsyncMock(
-            side_effect=ObjectDoesNotExist("result-id-missing")
+    def test_sequence_with_pipes(self) -> None:
+        root = build("StepA -> StepB |-> StepC")
+
+        rebuilt = through_json(root)
+
+        second = rebuilt.condition_node.on_success_event
+        third = second.condition_node.on_success_event
+        assert [t.event for t in (rebuilt, second, third)] == [StepA, StepB, StepC]
+        assert rebuilt.condition_node.on_success_pipe == PipeType.POINTER
+        assert second.condition_node.on_success_pipe == PipeType.PIPE_POINTER
+        assert second.parent_node is rebuilt
+        assert third.get_root() is rebuilt
+
+    def test_branches_and_sink(self) -> None:
+        root = build(
+            "@descriptor: odd\n"
+            "StepA (failure -> StepB, odd |-> StepC) -> StepS"
         )
 
-        with pytest.raises(ObjectDoesNotExist), caplog.at_level("WARNING"):
-            await StateDeserializer.deserialize_result("result-id-missing")
+        rebuilt = through_json(root)
 
-        assert any("result-id-missing" in r.message for r in caplog.records)
+        assert rebuilt.is_conditional
+        assert rebuilt.get_descriptor(0).event is StepB
+        odd = rebuilt.get_descriptor(2)
+        assert odd.event is StepC
+        assert odd.is_descriptor_task
+        assert odd.descriptor_pipe == PipeType.PIPE_POINTER
+        assert odd.parent_node is rebuilt
+        assert rebuilt.sink_node.event is StepS
+        assert rebuilt.sink_pipe == PipeType.POINTER
+        assert rebuilt.sink_node.is_sink
 
-    async def test_invalid_type_raises_value_error(self) -> None:
-        with pytest.raises(ValueError, match="Cannot deserialize result"):
-            await StateDeserializer.deserialize_result(42)
+    def test_group(self) -> None:
+        root = build(
+            "{ StepA -> StepB }[retry_attempts = 2] -> StepC"
+        )
 
-    async def test_invalid_type_none_raises_value_error(self) -> None:
-        with pytest.raises(ValueError, match="Cannot deserialize result"):
-            await StateDeserializer.deserialize_result(None)
+        rebuilt = through_json(root)
 
-    async def test_invalid_type_list_raises_value_error(self) -> None:
-        with pytest.raises(ValueError, match="Cannot deserialize result"):
-            await StateDeserializer.deserialize_result([1, 2, 3])
+        assert isinstance(rebuilt, PipelineTaskGrouping)
+        assert rebuilt.options.retry_attempts == 2
+        assert [chain.event for chain in rebuilt.chains] == [StepA]
+        assert rebuilt.chains[0].condition_node.on_success_event.event is StepB
+        assert rebuilt.condition_node.on_success_event.event is StepC
 
-    @patch("volnux.result.EventResult")
-    async def test_empty_dict_result(self, mock_result_cls: MagicMock) -> None:
-        mock_instance = MagicMock()
-        mock_result_cls.from_dict.return_value = mock_instance
+    def test_rebuilt_graph_serializes_identically(self) -> None:
+        root = build(
+            "StepA[x = 1] * 2 (failure -> StepB, success -> StepC) -> {StepS}"
+        )
+        first = json.loads(json.dumps(StateSerializer.serialize_task(root), default=str))
 
-        result = await StateDeserializer.deserialize_result({})
-        mock_result_cls.from_dict.assert_called_once_with({})
-        assert result is mock_instance
+        again = json.loads(
+            json.dumps(
+                StateSerializer.serialize_task(StateDeserializer.rebuild_task(first)),
+                default=str,
+            )
+        )
+
+        assert again == first

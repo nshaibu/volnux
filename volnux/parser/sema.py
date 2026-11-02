@@ -8,6 +8,9 @@ Walks a parsed ProgramNode AST and emits SemanticDiagnostic objects for:
   - Duplicate attribute names inside a task / meta-task / grouping option list.
   - Duplicate descriptor values across branches of a ConditionalNode.
   - Unknown directive names (not in the recognised set).
+  - '@author' / '@description' values that are not string literals.
+  - A conditional written without a subject task, e.g. '(failure -> A)'.
+  - Retry applied to a conditional expression, e.g. '(failure -> A) * 2'.
 
   Warnings
   --------
@@ -16,8 +19,8 @@ Walks a parsed ProgramNode AST and emits SemanticDiagnostic objects for:
   - Variable declared with @var but never referenced via $var.
   - Task / meta-task template name that is not PascalCase (recommendation).
 
-Parser-level constraints (retry >= 2, descriptor 0-9) are intentionally left
-in the parser and are NOT duplicated here.
+Parser-level constraints (retry >= 2, descriptor labels being declared) are
+intentionally left in the parser and are NOT duplicated here.
 """
 
 import typing
@@ -42,7 +45,6 @@ from .ast import (
     PipelineGroupingNode,
     ProgramNode,
     RetryNode,
-    STANDARD_EXECUTORS,
     TaskNode,
     TernaryExprNode,
     UnaryOpNode,
@@ -52,7 +54,6 @@ from .ast import (
 from .options import ResultEvaluationStrategy, StopCondition
 from .parser_mode import ParserMode
 from .sema_errors import SemanticDiagnostic, SemanticLevel, SemanticResult
-from .task_namespace import VALID_NAMESPACES
 from .visitor import ASTVisitorInterface
 
 # ---------------------------------------------------------------------------
@@ -60,7 +61,9 @@ from .visitor import ASTVisitorInterface
 # ---------------------------------------------------------------------------
 
 # Known directive names accepted by the Pointy runtime.
-_KNOWN_DIRECTIVES: typing.FrozenSet[str] = frozenset({"mode", "recursive-depth"})
+_KNOWN_DIRECTIVES: typing.FrozenSet[str] = frozenset(
+    {"mode", "author", "description", "descriptor"}
+)
 
 # Mapping of known Options field names to their acceptable raw Python types.
 # Complex fields (executor_config, extras) are skipped — their values are
@@ -93,19 +96,6 @@ _VALID_STOP_CONDITIONS: typing.FrozenSet[str] = frozenset(
     m.value for m in StopCondition
 )
 _VALID_PARSER_MODES: typing.FrozenSet[str] = frozenset(m.value for m in ParserMode)
-
-# All known executor identifiers (lower-cased for case-insensitive comparison).
-# Combines the short lexer tokens and the dotted STANDARD_EXECUTORS keys.
-_KNOWN_EXECUTOR_NAMES: typing.FrozenSet[str] = frozenset(
-    {
-        "threadpool_executor",
-        "processpool_executor",
-        "default_executor",
-        "grpc_executor",
-        "tcp_executor",
-    }
-    | {k.lower() for k in STANDARD_EXECUTORS}
-)
 
 # ---------------------------------------------------------------------------
 # Expression-level operator classification
@@ -247,24 +237,6 @@ class Sema(ASTVisitorInterface):
                                 attr,
                             )
 
-                    # executor: warn when value is a plain string that doesn't
-                    # match any known executor and has no dots (not an import path)
-                    elif name == "executor":
-                        if (
-                            isinstance(val, str)
-                            and value_node.type == LiteralType.STRING
-                            and "." not in val
-                            and val.lower() not in _KNOWN_EXECUTOR_NAMES
-                        ):
-                            self._warn(
-                                f"Option 'executor' on '{context}': "
-                                f"'{val}' is not a recognised executor name. "
-                                f"Known names: "
-                                f"{', '.join(sorted(_KNOWN_EXECUTOR_NAMES))}. "
-                                f"Use a dotted import path for custom executors.",
-                                attr,
-                            )
-
                     # result_evaluation_strategy: must be a valid enum member
                     elif name == "result_evaluation_strategy":
                         if (
@@ -359,31 +331,16 @@ class Sema(ASTVisitorInterface):
                     node,
                 )
 
-        elif name == "recursive-depth":
+        elif name in ("author", "description"):
             if isinstance(value, LiteralNode):
-                if value.type != LiteralType.NUMBER:
+                if value.type not in (LiteralType.STRING, LiteralType.IMPORT_STRING):
                     self._err(
-                        f"Directive '@recursive-depth' must be a positive integer "
-                        f"literal, got {value.type.value}",
-                        node,
-                    )
-                elif isinstance(value.value, float):
-                    self._err(
-                        f"Directive '@recursive-depth' must be an integer, "
-                        f"got float {value.value!r}",
-                        node,
-                    )
-                elif isinstance(value.value, int) and value.value <= 0:
-                    self._err(
-                        f"Directive '@recursive-depth' must be > 0, "
-                        f"got {value.value}",
+                        f"Directive '@{name}' must be a string literal, "
+                        f"got {value.type.value}",
                         node,
                     )
             elif value is not None:
-                self._warn(
-                    f"Directive '@recursive-depth' should be a positive integer literal",
-                    node,
-                )
+                self._err(f"Directive '@{name}' must be a string literal", node)
 
     def visit_task(self, node: "TaskNode") -> None:
         # PascalCase recommendation
@@ -405,14 +362,6 @@ class Sema(ASTVisitorInterface):
             if ns and ns != "local"
             else f"{node.mode}<{template}>"
         )
-
-        # Namespace validation (MetaTaskNode has no __post_init__ guard)
-        if ns and ns not in VALID_NAMESPACES:
-            self._err(
-                f"Meta-task '{label}' has an invalid namespace '{ns}'. "
-                f"Valid namespaces: {', '.join(sorted(VALID_NAMESPACES))}",
-                node,
-            )
 
         # PascalCase recommendation on template name
         if not _is_pascal_case(template):
@@ -439,12 +388,20 @@ class Sema(ASTVisitorInterface):
             self._check_options(node.options, "grouped expression")
 
     def visit_conditional(self, node: "ConditionalNode") -> None:
-        self._visit(node.task)
-
-        if not node.branches:
+        if node.task is None:
+            self._err(
+                "Conditional expression has no subject task; branches must "
+                "follow a task, e.g. 'A (failure -> B, success -> C)'",
+                node,
+            )
+            task_label = "<missing task>"
+        else:
+            self._visit(node.task)
             task_label = (
                 node.task.task if isinstance(node.task, TaskNode) else repr(node.task)
             )
+
+        if not node.branches:
             self._err(
                 f"Conditional on '{task_label}' has no branches; "
                 f"all output from this task will be silently dropped",
@@ -452,21 +409,21 @@ class Sema(ASTVisitorInterface):
             )
             return
 
-        seen_descriptors: typing.Dict[int, bool] = {}
-        task_label = (
-            node.task.task if isinstance(node.task, TaskNode) else repr(node.task)
-        )
+        seen_descriptors: typing.Dict[int, typing.Optional[str]] = {}
 
         for branch in node.branches:
             desc_val = branch.condition.value
+            label = branch.condition.label
             if desc_val in seen_descriptors:
+                label = label or seen_descriptors[desc_val]
+                shown = f"{label}' ({desc_val})" if label else f"{desc_val}'"
                 self._err(
-                    f"Duplicate descriptor '{desc_val}' in conditional "
+                    f"Duplicate descriptor '{shown} in conditional "
                     f"on '{task_label}'",
                     branch,
                 )
             else:
-                seen_descriptors[desc_val] = True
+                seen_descriptors[desc_val] = label
 
             self._visit(branch.task)
 
@@ -611,6 +568,12 @@ class Sema(ASTVisitorInterface):
                 )
 
     def visit_retry(self, node: "RetryNode") -> None:
+        if isinstance(node.job, ConditionalNode):
+            self._err(
+                "Retry cannot be applied to a conditional expression; "
+                "retry the subject task or the branch task instead",
+                node,
+            )
         self._visit(node.job)
         self._visit(node.attempts)
 

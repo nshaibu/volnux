@@ -1,7 +1,14 @@
 from typing import Set, List, Dict, Optional
 from ply.yacc import YaccError
 
-from .ast import ASTNode, BinOpNode, ConditionalNode, PipelineGroupingNode, TaskNode
+from .ast import (
+    ASTNode,
+    BinOpNode,
+    ConditionalNode,
+    PipelineGroupingNode,
+    RetryNode,
+    TaskNode,
+)
 
 
 class DAGValidationError(YaccError):
@@ -80,9 +87,12 @@ class CycleDetectionVisitor:
 
         elif isinstance(node, ConditionalNode):
             task_name = self.build_graph(node.task, parent)
-            for statement in node.branches.statements:
-                self.build_graph(statement, task_name)
+            for branch in node.branches:
+                self.build_graph(branch.task, task_name)
             return task_name
+
+        elif isinstance(node, RetryNode):
+            return self.build_graph(node.job, parent)
 
         return parent
 

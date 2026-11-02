@@ -139,7 +139,7 @@ class BaseFlow(ObjectIdentityMixin):
 
         if pointer_type == PipeType.POINTER:
             event_init_args["previous_result"] = (
-                self.context.previous_context.results
+                self.context.previous_context.get_results()
                 if self.context.previous_context
                 else EMPTY
             )

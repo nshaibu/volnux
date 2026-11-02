@@ -1,5 +1,5 @@
 import logging
-from typing import ForwardRef
+from typing import ForwardRef, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -72,6 +72,14 @@ def make_model(records=(), name="Referencing"):
 
 def _attrib(annotation):
     return annotation.__metadata__[0]
+
+
+def _to_state(annotation, instance=None):
+    return _attrib(annotation).metadata["to_state"]
+
+
+def _from_state(annotation):
+    return _attrib(annotation).metadata["from_state"]
 
 
 class TestFKConfig:
@@ -316,7 +324,8 @@ class TestForeignKeyFieldDeclaration:
                 pass
 
     def test_single_param_uses_default_config(self):
-        metadata = _attrib(ForeignKeyField[Target]).metadata
+        metadata = dict(_attrib(ForeignKeyField[Target]).metadata)
+        assert metadata.pop("to_state") and metadata.pop("from_state")
         assert metadata == {
             "type": "foreignkey",
             "target_model": Target,
@@ -325,6 +334,30 @@ class TestForeignKeyFieldDeclaration:
             "nullable": True,
             "constraint": FKConstraint.AUTO,
         }
+
+    def test_required_by_default(self):
+        assert not _attrib(ForeignKeyField[Target]).has_default()
+
+    def test_optional_target_defaults_to_none(self):
+        attrib = _attrib(ForeignKeyField[Optional[Target]])
+        assert attrib.default is None
+        assert attrib.metadata["target_model"] is Target
+        assert attrib.metadata["nullable"] is True
+
+    def test_optional_forward_ref_target(self):
+        attrib = _attrib(ForeignKeyField[Optional["Target"]])
+        assert attrib.default is None
+        assert isinstance(attrib.metadata["target_model"], ForwardRef)
+
+    def test_optional_makes_set_null_valid(self):
+        ForeignKeyField[
+            Optional[Target], FKConfig(on_delete=OnDelete.SET_NULL, nullable=False)
+        ]
+
+    def test_explicit_default(self):
+        fallback = Target(9)
+        attrib = _attrib(ForeignKeyField[Target, FKConfig(default=fallback)])
+        assert attrib.default is fallback
 
     def test_config_reflected_in_metadata(self):
         config = FKConfig(
@@ -369,19 +402,25 @@ class TestForeignKeyFieldDeclaration:
 
 
 class TestForeignKeyFieldPreFormatter:
+    """The field keeps what was assigned; serialization happens in to_state."""
+
     def test_none(self):
         assert _attrib(ForeignKeyField[Target]).pre_formatter(None, None) is None
 
-    def test_model_instance(self):
+    def test_model_instance_stays_live(self):
         pre = _attrib(ForeignKeyField[Target]).pre_formatter
-        assert pre(None, Target(3)) == {"type": "foreignkey", "object_id": "3"}
+        target = Target(3)
+        assert pre(None, target) is target
 
-    def test_foreign_key(self):
+    def test_foreign_key_stays_a_reference(self):
         pre = _attrib(ForeignKeyField[Target]).pre_formatter
-        assert pre(None, ForeignKey("3", "a.T")) == {
-            "type": "foreignkey",
-            "object_id": "3",
-        }
+        reference = ForeignKey("3", "a.T")
+        assert pre(None, reference) is reference
+
+    def test_payload_dict_accepted(self):
+        pre = _attrib(ForeignKeyField[Target]).pre_formatter
+        payload = {"type": "foreignkey", "object_id": "3"}
+        assert pre(None, payload) is payload
 
     def test_wrong_type(self):
         pre = _attrib(ForeignKeyField[Target]).pre_formatter
@@ -390,21 +429,43 @@ class TestForeignKeyFieldPreFormatter:
 
     def test_unresolvable_forward_ref_skips_type_check(self):
         pre = _attrib(ForeignKeyField["DoesNotExist"]).pre_formatter
-        assert pre(None, Other(1)) == {"type": "foreignkey", "object_id": "1"}
-
-    def test_unresolvable_forward_ref_still_requires_id(self):
-        pre = _attrib(ForeignKeyField["DoesNotExist"]).pre_formatter
-        with pytest.raises(TypeError, match="Cannot serialize"):
-            pre(None, "no-id")
+        other = Other(1)
+        assert pre(None, other) is other
 
 
-class TestForeignKeyFieldPostFormatter:
+class TestForeignKeyFieldToState:
     def test_none(self):
-        assert _attrib(ForeignKeyField[Target]).post_formatter(None, None) is None
+        assert _to_state(ForeignKeyField[Target])(None, None) is None
+
+    def test_model_instance(self):
+        to_state = _to_state(ForeignKeyField[Target])
+        assert to_state(None, Target(3)) == {"type": "foreignkey", "object_id": "3"}
+
+    def test_foreign_key(self):
+        to_state = _to_state(ForeignKeyField[Target])
+        assert to_state(None, ForeignKey("3", "a.T")) == {
+            "type": "foreignkey",
+            "object_id": "3",
+        }
+
+    def test_payload_passes_through(self):
+        to_state = _to_state(ForeignKeyField[Target])
+        payload = {"type": "foreignkey", "object_id": "3"}
+        assert to_state(None, payload) == payload
+
+    def test_object_without_id_is_rejected(self):
+        to_state = _to_state(ForeignKeyField["DoesNotExist"])
+        with pytest.raises(TypeError, match="Cannot serialize"):
+            to_state(None, "no-id")
+
+
+class TestForeignKeyFieldFromState:
+    def test_none(self):
+        assert _from_state(ForeignKeyField[Target])(None, None) is None
 
     def test_plain_id(self):
-        post = _attrib(ForeignKeyField[Target]).post_formatter
-        fk = post(object(), "5")
+        from_state = _from_state(ForeignKeyField[Target])
+        fk = from_state(object(), "5")
         assert isinstance(fk, ForeignKey)
         assert fk.object_id == "5"
         assert fk.model_path == get_obj_klass_import_str(Target)
@@ -413,44 +474,49 @@ class TestForeignKeyFieldPostFormatter:
 
     def test_serialized_payload(self):
         annotation = ForeignKeyField[Target]
-        payload = _attrib(annotation).pre_formatter(None, Target(5))
-        fk = _attrib(annotation).post_formatter(object(), payload)
+        payload = _to_state(annotation)(None, Target(5))
+        fk = _from_state(annotation)(object(), payload)
         assert isinstance(fk, ForeignKey)
         assert fk.object_id == "5"
         assert fk.model_path == get_obj_klass_import_str(Target)
 
     def test_forward_ref_model_path(self):
-        post = _attrib(ForeignKeyField["app.models.Target"]).post_formatter
-        assert post(object(), "5").model_path == "app.models.Target"
+        from_state = _from_state(ForeignKeyField["app.models.Target"])
+        assert from_state(object(), "5").model_path == "app.models.Target"
+
+    def test_module_less_forward_ref_uses_the_owning_models_module(self):
+        from_state = _from_state(ForeignKeyField["Target"])
+        owner = Target(1)  # defined in this module
+        assert from_state(owner, "5").model_path == f"{Target.__module__}.Target"
 
     def test_join_pushdown_tuple(self):
-        post = _attrib(ForeignKeyField[Target]).post_formatter
+        from_state = _from_state(ForeignKeyField[Target])
         hydrated = Target("5", name="joined")
         with patch.object(fk_module, "hydrate_model", return_value=hydrated) as hydrate:
-            fk = post(object(), ("5", {"id": "5", "name": "joined"}))
+            fk = from_state(object(), ("5", {"id": "5", "name": "joined"}))
         hydrate.assert_called_once_with(Target, {"id": "5", "name": "joined"})
         assert fk.is_resolved
         assert fk._is_native_fk is True
         assert fk.name == "joined"
 
     def test_join_pushdown_without_data(self):
-        post = _attrib(ForeignKeyField[Target]).post_formatter
-        fk = post(object(), ("5", None))
+        from_state = _from_state(ForeignKeyField[Target])
+        fk = from_state(object(), ("5", None))
         assert fk.object_id == "5"
         assert fk._is_native_fk is True
         assert not fk.is_resolved
 
     def test_join_pushdown_hydration_failure(self):
-        post = _attrib(ForeignKeyField[Target]).post_formatter
+        from_state = _from_state(ForeignKeyField[Target])
         with patch.object(fk_module, "hydrate_model", side_effect=ValueError("bad")):
-            fk = post(object(), ("5", {"id": "5"}))
+            fk = from_state(object(), ("5", {"id": "5"}))
         assert fk.object_id == "5"
         assert not fk.is_resolved
 
     def test_join_pushdown_unresolvable_target(self):
-        post = _attrib(ForeignKeyField["DoesNotExist"]).post_formatter
+        from_state = _from_state(ForeignKeyField["DoesNotExist"])
         with patch.object(fk_module, "hydrate_model") as hydrate:
-            fk = post(object(), ("5", {"id": "5"}))
+            fk = from_state(object(), ("5", {"id": "5"}))
         hydrate.assert_not_called()
         assert not fk.is_resolved
 
@@ -743,15 +809,29 @@ class TestSagaSteps:
 
 
 class TestForeignKeyFieldOnModel:
-    def test_assignment_serializes_reference(self):
+    def test_assignment_keeps_the_live_object(self):
         class Holder(BaseModel):
             target: ForeignKeyField[Target]
 
-        holder = Holder(target=Target(5))
-        assert holder.target == {"type": "foreignkey", "object_id": "5"}
+        target = Target(5)
+        holder = Holder(target=target)
+        assert holder.target is target
 
         holder.target = None
         assert holder.target is None
+
+    def test_optional_target_defaults_to_none(self):
+        class Holder(BaseModel):
+            target: ForeignKeyField[Optional[Target]]
+
+        assert Holder().target is None
+
+    def test_required_target_must_be_given(self):
+        class Holder(BaseModel):
+            target: ForeignKeyField[Target]
+
+        with pytest.raises(Exception):
+            Holder()
 
     def test_assignment_rejects_wrong_type(self):
         class Holder(BaseModel):

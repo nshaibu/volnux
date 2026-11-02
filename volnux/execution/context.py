@@ -1,6 +1,4 @@
 import asyncio
-import threading
-import traceback
 import weakref
 import logging
 import time
@@ -36,11 +34,21 @@ from volnux.signal.signals import (
 from volnux.task import PipelineTask, PipelineTaskGrouping
 from volnux.context import get_current_node_id, get_current_project_id
 from volnux.backends.fields import (
-    ForeignKeyField,
     FKConfig,
+    ForeignKeyField,
     ListConfig,
     ListField,
+    ObjectConfig,
+    ObjectField,
     OnDelete,
+)
+from volnux.execution.codecs import (
+    deserialize_errors,
+    deserialize_pipeline,
+    deserialize_tasks,
+    serialize_errors,
+    serialize_pipeline,
+    serialize_tasks,
 )
 
 if typing.TYPE_CHECKING:
@@ -93,29 +101,6 @@ def preformat_task_profile(
     )
 
 
-def _with_default(annotation: typing.Any, **defaults: typing.Any) -> typing.Any:
-    """Give a field-factory annotation (ForeignKeyField/ListField) a default.
-
-    Formax only honours defaults declared on the field's Attrib, which these
-    factories build internally. Each ``Field[...]`` call creates a fresh Attrib,
-    so mutating it here only affects this declaration.
-    """
-    attrib = annotation.__metadata__[0]
-    for name, value in defaults.items():
-        setattr(attrib, name, value)
-    return annotation
-
-
-def _context_link() -> typing.Any:
-    return _with_default(
-        ForeignKeyField[
-            "ExecutionContext",
-            FKConfig(nullable=True, on_delete=OnDelete.SET_NULL),
-        ],
-        default=None,
-    )
-
-
 class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
     """
     Represents the execution context for a particular event in the pipeline.
@@ -152,14 +137,19 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         Contexts compare and hash by identity (``id``), never by field values.
     """
 
-    task_profiles: MiniAnnotated[
+    task_profiles: ObjectField[
         typing.Deque[TaskType],
-        Attrib(pre_formatter=preformat_task_profile),
+        ObjectConfig(
+            coerce=preformat_task_profile,
+            serializer=serialize_tasks,
+            deserializer=deserialize_tasks,
+        ),
     ]
-    pipeline: Pipeline
-    metrics: MiniAnnotated[
-        ExecutionMetrics, Attrib(default_factory=lambda: ExecutionMetrics())
+    pipeline: ObjectField[
+        Pipeline,
+        ObjectConfig(serializer=serialize_pipeline, deserializer=deserialize_pipeline),
     ]
+    metrics: ObjectField[ExecutionMetrics, ObjectConfig(default_factory=ExecutionMetrics)]
 
     # project identity
     node_id: MiniAnnotated[str, Attrib(default_factory=lambda: get_current_node_id())]
@@ -168,40 +158,44 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
     ]
 
     # Horizontal Links (Linked list)
-    previous_context: _context_link()
-    next_context: _context_link()
+    previous_context: ForeignKeyField[
+        typing.Optional["ExecutionContext"], FKConfig(on_delete=OnDelete.SET_NULL)
+    ]
+    next_context: ForeignKeyField[
+        typing.Optional["ExecutionContext"], FKConfig(on_delete=OnDelete.SET_NULL)
+    ]
 
     # Vertical Links (The Tree)
-    parent_context: _context_link()
-    child_contexts: _with_default(
-        ListField["ExecutionContext", ListConfig(unique_items=True)],
-        default_factory=list,
-    )
+    parent_context: ForeignKeyField[
+        typing.Optional["ExecutionContext"], FKConfig(on_delete=OnDelete.SET_NULL)
+    ]
+    child_contexts: ListField["ExecutionContext", ListConfig(unique_items=True)]
 
     # Workflow identifier for grouping contexts
     workflow_id: MiniAnnotated[typing.Optional[str], Attrib(default=None)]
     workflow_name: MiniAnnotated[typing.Optional[str], Attrib(default=None)]
 
-    # Hot execution state. Persisted through KeyValueStoreIntegrationMixin
-    # (see get_state/set_state) so it can be shared across workers/machines.
-    status: MiniAnnotated[ExecutionStatus, Attrib(default=ExecutionStatus.PENDING)]
-    errors: typing.List[Exception] = field(default_factory=list)
-    results: "ResultSet[EventResult]" = field(
-        default_factory=lambda: ResultSet[EventResult]()
-    )
+    # Hot execution state. Persisted with the context itself through
+    # KeyValueStoreIntegrationMixin so it can be shared across workers/machines.
+    status: ObjectField[ExecutionStatus, ObjectConfig(default=ExecutionStatus.PENDING)]
+    errors: ObjectField[
+        typing.List[Exception],
+        ObjectConfig(
+            default_factory=list,
+            serializer=serialize_errors,
+            deserializer=deserialize_errors,
+        ),
+    ]
+    # Results are their own records; the context holds references to them.
+    results: ListField[EventResult, ListConfig(unique_items=True)]
 
     # Usually used by Reduce meta-event
-    aggregated_result: typing.Optional[EventResult] = None
-
-    _context_lock: asyncio.Lock = field(
-        default_factory=lambda: asyncio.Lock()
-    )  # Protects concurrent append ops
-
-    # Weak reference to the engine (not persisted)
-    _engine_ref: typing.Optional[weakref.ReferenceType] = None
+    aggregated_result: ForeignKeyField[
+        typing.Optional[EventResult], FKConfig(on_delete=OnDelete.SET_NULL)
+    ]
 
     # Checkpoint data for idempotency
-    _task_checkpoint: typing.Optional[typing.Dict[str, typing.Any]] = None
+    task_checkpoint: ObjectField[typing.Optional[typing.Dict[str, typing.Any]]]
 
     # Opt-in: when True, mutators persist to the configured backend after
     # every change. Default False keeps the common one-context-per-task case
@@ -209,19 +203,17 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
     # (or explicit persist()/checkpointing) can still save on demand.
     persist_state: bool = False
 
-    class Config:
-        validation = ValidationFlags.NONE
-        init_strategy = InitStrategy.DATACLASS
+    # Runtime-only (leading underscore: never persisted)
+    _context_lock: asyncio.Lock = field(
+        default_factory=lambda: asyncio.Lock()
+    )  # Protects concurrent append ops
+    _engine_ref: typing.Optional[weakref.ReferenceType] = None
+    # Strong refs to fire-and-forget saves scheduled by sync mutators
+    _pending_saves: typing.Set[asyncio.Task] = field(default_factory=set)
 
-    def __post_init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
-        super().__post_init__(*args, **kwargs)
-        # Formax skips pre-formatters under ValidationFlags.NONE, so normalise
-        # here: callers (e.g. the engine) pass a single task as often as a deque.
-        self.task_profiles = preformat_task_profile(self.task_profiles)
-        if self.metrics is None:
-            self.metrics = ExecutionMetrics()
-        # Strong refs to fire-and-forget saves scheduled by sync mutators
-        self._pending_saves: typing.Set[asyncio.Task] = set()
+    class Config:
+        validation = ValidationFlags.COERCE
+        init_strategy = InitStrategy.DATACLASS
 
     # Identity
 
@@ -241,115 +233,18 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
 
     # Persistence
 
-    def get_state(self) -> typing.Dict[str, typing.Any]:
-        """Persisted slice of the context: hot execution state plus enough
-        hierarchy/identity to look records back up, excluding the transient,
-        non-serializable orchestration graph (pipeline, task_profiles, engine
-        ref, locks). Links are stored as ids; resolving them is the
-        rehydrator's job. Safe to call repeatedly (idempotent)."""
-        return {
-            "id": self.id,
-            "status": self.status.value,
-            "errors": [self._serialize_error(error) for error in self.errors],
-            "result_ids": [self._result_id(result) for result in self.results],
-            "aggregated_result_id": self._result_id(self.aggregated_result),
-            "workflow_id": self.workflow_id,
-            "workflow_name": self.workflow_name,
-            "node_id": self.node_id,
-            "project_id": self.project_id,
-            "persist_state": self.persist_state,
-            "metrics": {
-                "start_time": self.metrics.start_time,
-                "end_time": self.metrics.end_time,
-            },
-            "task_checkpoint": self._task_checkpoint,
-            "parent_context_id": self._link_id(self.parent_context),
-            "previous_context_id": self._link_id(self.previous_context),
-            "next_context_id": self._link_id(self.next_context),
-            "child_context_ids": [
-                self._link_id(child) for child in self.child_contexts
-            ],
-        }
-
-    def set_state(self, state: typing.Dict[str, typing.Any]) -> None:
-        """Restore from ``get_state()`` output.
-
-        Live objects (pipeline, tasks, linked contexts, results) are not part of
-        the persisted state; the rehydrator re-attaches them. Their ids are kept
-        on ``_*_id(s)`` attributes for that purpose.
-        """
-        self._objectid_lock = threading.Lock()
-
-        if "id" in state:
-            self._id = state["id"]
-
-        self.status = ExecutionStatus(
-            state.get("status", ExecutionStatus.PENDING.value)
+    async def save(
+        self, force_insert: bool = False, ttl: typing.Optional[int] = None
+    ) -> None:
+        # Results are separate records that the context only references.
+        await asyncio.gather(
+            *(
+                result.save()
+                for result in (*self.results, self.aggregated_result)
+                if hasattr(result, "save")
+            )
         )
-        # Persisted errors are flattened dicts, not live Exception instances -
-        # sentinel scanning (get_switch_request et al.) only matters during
-        # live execution, never after a cold reload/rehydration.
-        self.errors = list(state.get("errors", []))
-        self.results = ResultSet[EventResult]()
-        self.aggregated_result = None
-        self.workflow_id = state.get("workflow_id")
-        self.workflow_name = state.get("workflow_name")
-        self.node_id = state.get("node_id")
-        self.project_id = state.get("project_id")
-        self.persist_state = state.get("persist_state", False)
-        metrics = state.get("metrics") or {}
-        self.metrics = ExecutionMetrics(
-            start_time=metrics.get("start_time", 0.0),
-            end_time=metrics.get("end_time", 0.0),
-        )
-        self._task_checkpoint = state.get("task_checkpoint")
-
-        # Transient orchestration graph: re-attached by the rehydrator
-        self.task_profiles = deque()
-        self.pipeline = None
-        self.previous_context = None
-        self.next_context = None
-        self.parent_context = None
-        self.child_contexts = []
-        self._context_lock = asyncio.Lock()
-        self._engine_ref = None
-        self._pending_saves = set()
-
-        self._result_ids = list(state.get("result_ids", []))
-        self._aggregated_result_id = state.get("aggregated_result_id")
-        self._parent_context_id = state.get("parent_context_id")
-        self._child_context_ids = list(state.get("child_context_ids", []))
-        self._previous_context_id = state.get("previous_context_id")
-        self._next_context_id = state.get("next_context_id")
-
-    @staticmethod
-    def _serialize_error(
-        error: typing.Union[Exception, typing.Dict[str, typing.Any]],
-    ) -> typing.Dict[str, typing.Any]:
-        # `error` may already be a previously-serialized dict (state round trips)
-        if isinstance(error, dict):
-            return error
-        return {
-            "type": error.__class__.__name__,
-            "message": str(error),
-            "traceback": "".join(
-                traceback.format_exception(type(error), error, error.__traceback__)
-            ),
-        }
-
-    @staticmethod
-    def _result_id(
-        result: typing.Union["EventResult", str, None],
-    ) -> typing.Optional[str]:
-        # `result` may already be a plain id from a prior round trip
-        return getattr(result, "id", result)
-
-    @staticmethod
-    def _link_id(context: typing.Any) -> typing.Optional[str]:
-        """Id of a linked context, a ForeignKey reference, or an id string."""
-        if context is None:
-            return None
-        return getattr(context, "id", context)
+        await super().save(force_insert=force_insert, ttl=ttl)
 
     def _maybe_persist(self) -> None:
         """Persist from sync code paths (no-op unless ``persist_state``).
@@ -388,11 +283,11 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         Args:
             checkpoint_data: Arbitrary data marking progress within a task
         """
-        self._task_checkpoint = checkpoint_data
+        self.task_checkpoint = checkpoint_data
 
     def get_task_checkpoint(self) -> typing.Optional[typing.Dict[str, typing.Any]]:
         """Checkpoint data recorded for the current task, if any."""
-        return self._task_checkpoint
+        return self.task_checkpoint
 
     # Control-flow requests raised by events
 
@@ -610,12 +505,24 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         self.errors.append(error)
         await self._maybe_persist_async()
 
+    def get_results(self) -> "ResultSet[EventResult]":
+        """The results of this context as a ``ResultSet``."""
+        return ResultSet[EventResult](list(self.results))
+
+    def _add_results(self, results: typing.Iterable[EventResult]) -> None:
+        # results are a set: adding one that is already present is a no-op
+        known = {getattr(item, "id", item) for item in self.results}
+        for result in results:
+            if getattr(result, "id", result) not in known:
+                self.results.append(result)
+                known.add(getattr(result, "id", result))
+
     def add_result(self, result: EventResult) -> None:
-        self.results.add(result)
+        self._add_results([result])
         self._maybe_persist()
 
     async def add_result_async(self, result: EventResult) -> None:
-        self.results.add(result)
+        self._add_results([result])
         await self._maybe_persist_async()
 
     def _apply_bulk(
@@ -629,7 +536,7 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         if errors is not None:
             self.errors.extend(errors)
         if results is not None:
-            self.results.extend(results)
+            self._add_results(results)
 
     def bulk_update(
         self,

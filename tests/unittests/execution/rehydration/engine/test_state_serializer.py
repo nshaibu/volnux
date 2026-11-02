@@ -2,10 +2,10 @@
 
 Covers:
   - serialize_task (normal task, group task, optional fields).
-  - serialize_result (persisted via as_dict, lightweight via id).
   - serialize_queue_task (position, task_id, previous_context_id).
-  - serialize_exception (type, message, traceback fields).
-  - serialize_pipeline_ref (id and class_path tuple).
+
+Context state (errors, results, pipeline reference) is serialized by the
+ExecutionContext fields themselves, not by this class.
 """
 
 from __future__ import annotations
@@ -40,6 +40,8 @@ def _make_mock_task(**overrides: Any) -> MagicMock:
     task.descriptor = None
     task.descriptor_pipe = None
     task.is_grouping = False
+    task.namespace = "local"
+    task.descriptors = {}
 
     mock_options = MagicMock()
     mock_options.as_dict.return_value = {"batch_size": 100}
@@ -90,7 +92,7 @@ class TestSerializeTask:
         assert result["task_type"] == "group"
 
     def test_task_with_sink(self) -> None:
-        mock_sink = MagicMock()
+        mock_sink = _make_mock_task()
         mock_sink.get_id.return_value = "sink-001"
         mock_pipe = MagicMock()
         mock_pipe.value = "PIPE_FILTER"
@@ -99,6 +101,7 @@ class TestSerializeTask:
         result = StateSerializer.serialize_task(task)
 
         assert result["sink_task_id"] == "sink-001"
+        assert result["sink_task"]["task_id"] == "sink-001"
         assert result["sink_task_pipe"] == "PIPE_FILTER"
 
     def test_task_with_descriptor(self) -> None:
@@ -114,39 +117,86 @@ class TestSerializeTask:
         assert result["descriptor_pipe_type"] == "PIPE_MAP"
         assert result["sequence_number"] == 5
 
+    def test_namespace_and_descriptor_map(self) -> None:
+        task = _make_mock_task(
+            namespace="billing", descriptors={"out_of_balance": 2, "unsupported": 3}
+        )
+        result = StateSerializer.serialize_task(task)
+
+        assert result["namespace"] == "billing"
+        assert result["descriptors"] == {"out_of_balance": 2, "unsupported": 3}
+
+    def test_descriptor_map_is_a_copy(self) -> None:
+        task = _make_mock_task(descriptors={"a": 2})
+        result = StateSerializer.serialize_task(task)
+        result["descriptors"]["b"] = 3
+        assert task.descriptors == {"a": 2}
+
+    def test_task_without_options(self) -> None:
+        task = _make_mock_task(options=None)
+        assert StateSerializer.serialize_task(task)["options"] == {}
+
+    def test_group_serializes_chains_and_strategy(self) -> None:
+        chain = _make_mock_task()
+        chain.get_id.return_value = "chain-1"
+        strategy = MagicMock()
+        strategy.name = "SINGLE_CHAIN"
+        group = _make_mock_task(is_grouping=True, chains=[chain], strategy=strategy)
+
+        result = StateSerializer.serialize_task(group)
+
+        assert [c["task_id"] for c in result["chains"]] == ["chain-1"]
+        assert result["strategy"] == "SINGLE_CHAIN"
+
+    def test_plain_task_has_no_chains(self) -> None:
+        result = StateSerializer.serialize_task(_make_mock_task())
+        assert result["chains"] is None
+        assert result["strategy"] is None
+        assert result["sink_task"] is None
+
+    def test_options_are_json_safe(self) -> None:
+        from volnux.parser.options import Options
+
+        task = _make_mock_task(
+            options=Options.from_dict({"stop_condition": "on_error", "x": 1})
+        )
+        options = StateSerializer.serialize_task(task)["options"]
+
+        assert options["stop_condition"] == "on_error"
+        assert options["extras"] == {"x": 1}
+        import json
+
+        json.dumps(options)
+
+    def test_group_has_no_event_class(self) -> None:
+        task = _make_mock_task(is_grouping=True)
+        result = StateSerializer.serialize_task(task)
+
+        assert result["event_class_import_path"] is None
+        task.get_event_class.assert_not_called()
+
+    def test_real_task_and_group_types(self) -> None:
+        from volnux import EventBase
+        from volnux.task import PipelineTask, PipelineTaskGrouping
+
+        class SerializedEvent(EventBase):
+            def process(self, *args, **kwargs):
+                return True, None
+
+        normal = PipelineTask(event=SerializedEvent)
+        group = PipelineTaskGrouping([normal])
+        group.namespace = "ns"
+
+        assert StateSerializer.serialize_task(normal)["task_type"] == "normal"
+        result = StateSerializer.serialize_task(group)
+        assert result["task_type"] == "group"
+        assert result["namespace"] == "ns"
+        assert result["event_class_import_path"] is None
+
     def test_get_id_called(self) -> None:
         task = _make_mock_task()
         StateSerializer.serialize_task(task)
         task.get_id.assert_called_once()
-
-
-# ===========================================================================
-# serialize_result
-# ===========================================================================
-class TestSerializeResult:
-
-    def test_persisted_result_returns_dict(self) -> None:
-        result = MagicMock()
-        result.should_persist.return_value = True
-        result.as_dict.return_value = {"data": [1, 2, 3], "count": 3}
-
-        serialized = StateSerializer.serialize_result(result)
-        assert serialized == {"data": [1, 2, 3], "count": 3}
-        assert isinstance(serialized, dict)
-
-    def test_lightweight_result_returns_id_string(self) -> None:
-        result = MagicMock()
-        result.should_persist.return_value = False
-        result.id = "result-abc-123"
-
-        serialized = StateSerializer.serialize_result(result)
-        assert serialized == "result-abc-123"
-        assert isinstance(serialized, str)
-
-    def test_should_persist_checked(self) -> None:
-        result = MagicMock()
-        StateSerializer.serialize_result(result)
-        result.should_persist.assert_called_once()
 
 
 # ===========================================================================
@@ -161,7 +211,7 @@ class TestSerializeQueueTask:
         task_node.previous_context = MagicMock()
         task_node.previous_context.state_id = "prev-ctx-001"
 
-        result = StateSerializer.serialize_queue_task(3, task_node)
+        result = StateSerializer.serialise_queue_task(3, task_node)
 
         assert result["position_in_queue"] == 3
         assert result["task_id"] == "task-xyz"
@@ -172,85 +222,5 @@ class TestSerializeQueueTask:
         task_node.task.get_id.return_value = "task-0"
         task_node.previous_context.state_id = "root-ctx"
 
-        result = StateSerializer.serialize_queue_task(0, task_node)
+        result = StateSerializer.serialise_queue_task(0, task_node)
         assert result["position_in_queue"] == 0
-
-
-# ===========================================================================
-# serialize_exception
-# ===========================================================================
-class TestSerializeException:
-
-    def test_basic_exception(self) -> None:
-        exc = ValueError("invalid input value")
-        result = StateSerializer.serialize_exception(exc)
-
-        assert result["type"] == "ValueError"
-        assert result["message"] == "invalid input value"
-        assert "traceback" in result
-        assert isinstance(result["traceback"], str)
-
-    def test_runtime_error(self) -> None:
-        exc = RuntimeError("something broke")
-        result = StateSerializer.serialize_exception(exc)
-
-        assert result["type"] == "RuntimeError"
-        assert "something broke" in result["message"]
-
-    def test_custom_exception(self) -> None:
-        class CustomError(Exception):
-            pass
-
-        exc = CustomError("custom fault")
-        result = StateSerializer.serialize_exception(exc)
-
-        assert result["type"] == "CustomError"
-        assert result["message"] == "custom fault"
-
-    def test_traceback_contains_exception_type(self) -> None:
-        exc = TypeError("wrong type")
-        result = StateSerializer.serialize_exception(exc)
-        assert "TypeError" in result["traceback"]
-
-    def test_exception_with_multiline_message(self) -> None:
-        exc = ValueError("line1\nline2\nline3")
-        result = StateSerializer.serialize_exception(exc)
-        assert result["message"] == "line1\nline2\nline3"
-
-
-# ===========================================================================
-# serialize_pipeline_ref
-# ===========================================================================
-class TestSerializePipelineRef:
-
-    def test_returns_id_and_class_path(self) -> None:
-        pipeline = MagicMock()
-        pipeline.__class__.__module__ = "myapp.pipelines"
-        pipeline.__class__.__name__ = "DataProcessingPipeline"
-        pipeline.id = "pipe-001"
-
-        pid, class_path = StateSerializer.serialize_pipeline_ref(pipeline)
-
-        assert pid == "pipe-001"
-        assert class_path == "myapp.pipelines.DataProcessingPipeline"
-
-    def test_nested_module_path(self) -> None:
-        pipeline = MagicMock()
-        pipeline.__class__.__module__ = "app.workflows.internal.pipelines"
-        pipeline.__class__.__name__ = "ETLPipeline"
-        pipeline.id = "pipe-etl-42"
-
-        pid, class_path = StateSerializer.serialize_pipeline_ref(pipeline)
-
-        assert pid == "pipe-etl-42"
-        assert class_path == "app.workflows.internal.pipelines.ETLPipeline"
-
-    def test_returns_tuple(self) -> None:
-        pipeline = MagicMock()
-        pipeline.__class__.__module__ = "app.pipe"
-        pipeline.__class__.__name__ = "P"
-        pipeline.id = "id-1"
-
-        result = StateSerializer.serialize_pipeline_ref(pipeline)
-        assert isinstance(result, tuple)
-        assert len(result) == 2

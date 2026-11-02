@@ -104,20 +104,28 @@ class TestTask(unittest.TestCase):
         self.assertEqual(len(p1.get_children()), 1)
 
     def test_pipeline_retry_syntax(self):
-        p, _ = build_pipeline_flow_from_pointy_code("2 * A -> B * 4 ->C")
+        p, _ = build_pipeline_flow_from_pointy_code("A * 2 -> B * 4 -> C")
         self.assertEqual(p.options.retry_attempts, 2)
         self.assertEqual(p.condition_node.on_success_event.options.retry_attempts, 4)
         self.assertIsNone(
             p.condition_node.on_success_event.condition_node.on_success_event.options
         )
 
+    def test_descriptors_are_not_limited_to_nine(self):
+        p, _ = build_pipeline_flow_from_pointy_code("A(10->C,40->B)")
+        self.assertEqual(p.get_descriptor(10).event, "C")
+        self.assertEqual(p.get_descriptor(40).event, "B")
+
     def test_syntax_error_wrong_descriptor(self):
         with self.assertRaises(SyntaxError):
-            build_pipeline_flow_from_pointy_code("A(10->C,40->B)")
+            build_pipeline_flow_from_pointy_code("A(-1->C)")
 
     def test_syntax_error_wrong_retry_factor(self):
         with self.assertRaises(SyntaxError):
-            build_pipeline_flow_from_pointy_code("1 * A -> B * 0")
+            build_pipeline_flow_from_pointy_code("A -> B * 1")
+
+        with self.assertRaises(SyntaxError):
+            build_pipeline_flow_from_pointy_code("A * 0")
 
         with self.assertRaises(SyntaxError):
             build_pipeline_flow_from_pointy_code("-1 * A")

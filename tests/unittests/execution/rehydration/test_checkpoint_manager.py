@@ -5,6 +5,7 @@ import pytest
 import pytest_asyncio
 
 from volnux.execution.context import ExecutionContext
+from volnux.execution.pipeline import Pipeline
 from volnux.execution.rehydrator.checkpoint_manager import VolnuxCheckPointManager
 from volnux.task import PipelineTask
 
@@ -148,7 +149,7 @@ class TestMonitoring:
         task = MagicMock(spec=PipelineTask)
         task.options = None
         task.condition_node = MagicMock()
-        context = ExecutionContext(task_profiles=task, pipeline=MagicMock())
+        context = ExecutionContext(task_profiles=task, pipeline=MagicMock(spec=Pipeline))
 
         with patch.object(ExecutionContext, "save", new=AsyncMock()) as save:
             manager.monitor(context)

@@ -19,11 +19,12 @@ from typing import (
 )
 
 from formax import Attrib, MiniAnnotated
+from formax.typing import MISSING
 
 from volnux.import_utils import import_string
 from volnux.utils import get_obj_klass_import_str
 from volnux.exceptions import ObjectProtectedError
-from .utils import formax_null_validator
+from .utils import UNSET, formax_null_validator, unwrap_optional
 from volnux.utils import hydrate_model
 from volnux.backends.db_utils import ModelResolverMixin
 
@@ -315,6 +316,9 @@ class FKConfig:
     on_delete: OnDelete = OnDelete.PROTECT
     nullable: bool = True
     constraint: FKConstraint = FKConstraint.AUTO
+    # Value used when none is given. ``ForeignKeyField[Optional[T]]`` defaults to
+    # None; otherwise the field is required.
+    default: Any = UNSET
 
 
 class ForeignKey:
@@ -480,8 +484,15 @@ class ForeignKey:
 class ForeignKeyField(ModelResolverMixin):
     """Create a MiniAnnotated field definition for a foreign key reference.
 
+    The field holds whatever was assigned: the live model instance, a lazy
+    ``ForeignKey`` reference or None. It becomes a ``{"type": "foreignkey",
+    "object_id": ...}`` payload only when the model's state is persisted, and
+    comes back from storage as a lazy ``ForeignKey``.
+
     Args:
-        target_model: Optional model class for type hinting and validation.
+        target_model: Model class (or "module.Name" / "Name" string) the key
+            points to. Wrap it in ``Optional[...]`` to allow None with a default
+            of None.
         nullable: Whether the foreign key can be None.
         reverse_name: Optional name for the reverse relation.
         on_delete: Action to perform when the referenced object is deleted.
@@ -490,6 +501,7 @@ class ForeignKeyField(ModelResolverMixin):
                     - NATIVE: Database-level constraint only
                     - SOFTWARE: Software-level constraint only
                     - BOTH: Both native and software constraints
+        default: Value used when none is given.
 
     Returns:
         A MiniAnnotated type annotation suitable for use in Formax models.
@@ -497,7 +509,7 @@ class ForeignKeyField(ModelResolverMixin):
     Example:
         >>> class Workflow(GovernanceModel):
         ...     created_by: ForeignKeyField[User]
-        ...     approved_by: ForeignKeyField[User, FKConfig(nullable=True, reverse_name='approved_workflows')]
+        ...     approved_by: ForeignKeyField[Optional[User], FKConfig(reverse_name='approved_workflows')]
     """
 
     def __init_subclass__(cls, **kwargs):
@@ -527,11 +539,18 @@ class ForeignKeyField(ModelResolverMixin):
                 f"ForeignKeyField[...] expects 1 or 2 arguments, got {len(params)}"
             )
 
-        if config.on_delete == OnDelete.SET_NULL and not config.nullable:
+        target_model, optional = unwrap_optional(target_model)
+        nullable = config.nullable or optional
+
+        if config.on_delete == OnDelete.SET_NULL and not nullable:
             raise ValueError("on_delete=SET_NULL requires nullable=True.")
 
+        default = config.default
+        if default is UNSET:
+            default = None if optional else MISSING
+
         validators: List[Any] = []
-        if not config.nullable:
+        if not nullable:
             validators.append(formax_null_validator)
 
         if isinstance(target_model, str):
@@ -544,6 +563,8 @@ class ForeignKeyField(ModelResolverMixin):
         if isinstance(target_model, ForwardRef):
             _model_path = (
                 f"{target_model.__forward_module__}.{target_model.__forward_arg__}"
+                if target_model.__forward_module__
+                else ""  # resolved from the owning model's module when loading
             )
         elif hasattr(target_model, "__module__"):
             _model_path = get_obj_klass_import_str(target_model)
@@ -554,27 +575,42 @@ class ForeignKeyField(ModelResolverMixin):
         # (will be set by Formax when the Attrib is bound to a field)
         _field_name: Optional[str] = None
 
-        def pre_fmt(
-            instance: "KeyValueStoreIntegrationMixin", value: Any
-        ) -> Optional[Dict[str, Any]]:
+        def model_path_for(instance: Any) -> str:
+            if _model_path or not isinstance(target_model, ForwardRef):
+                return _model_path
+            owner = type(instance).__module__ if instance is not None else ""
+            return f"{owner}.{target_model.__forward_arg__}" if owner else ""
+
+        def pre_fmt(instance: "KeyValueStoreIntegrationMixin", value: Any) -> Any:
             if value is None:
                 return None
+
+            # references and persisted payloads are accepted as they are
+            if isinstance(value, (ForeignKey, dict)):
+                return value
 
             if target_model is not None:
                 try:
                     model_class = cls._resolve_target_model(target_model)
-                    if not isinstance(value, (model_class, ForeignKey)):
+                    if not isinstance(value, model_class):
                         raise TypeError(
                             f"Expected {model_class.__name__} or ForeignKey, got {type(value).__name__}"
                         )
                 except NameError:
                     pass  # ForwardRef not yet resolvable; skip validation
 
+            return value
+
+        def to_state(instance: Any, value: Any) -> Optional[Dict[str, Any]]:
+            if value is None or isinstance(value, dict):
+                return value
             return ForeignKey.serialize(value)
 
-        def post_fmt(instance: "KeyValueStoreIntegrationMixin", value: Any) -> Any:
+        def from_state(instance: Any, value: Any) -> Any:
             if value is None:
                 return None
+
+            model_path = model_path_for(instance)
 
             # Join pushdown: value is (raw_id, resolved_column_dict) tuple
             if isinstance(value, tuple) and len(value) == 2:
@@ -596,7 +632,7 @@ class ForeignKeyField(ModelResolverMixin):
                         )
                 return ForeignKey.deserialize(
                     value=raw_id,
-                    model_path=_model_path,
+                    model_path=model_path,
                     backend_alias="default",
                     is_native_fk=True,  # Join pushdown implies native resolution
                     resolved_instance=resolved_instance,
@@ -607,7 +643,7 @@ class ForeignKeyField(ModelResolverMixin):
 
             return ForeignKey.deserialize(
                 value=value,
-                model_path=_model_path,
+                model_path=model_path,
                 backend_alias="default",
                 is_native_fk=is_native,
             )
@@ -616,15 +652,17 @@ class ForeignKeyField(ModelResolverMixin):
             Any,
             Attrib(
                 pre_formatter=pre_fmt,
-                post_formatter=post_fmt,
                 validators=validators,
+                default=default,
                 metadata={
                     "type": "foreignkey",
                     "target_model": target_model,
                     "reverse_name": config.reverse_name,
                     "on_delete": config.on_delete,
-                    "nullable": config.nullable,
+                    "nullable": nullable,
                     "constraint": config.constraint,
+                    "to_state": to_state,
+                    "from_state": from_state,
                 },
             ),
         ]
