@@ -379,7 +379,10 @@ class EventCheckpointingMixin:
 
     @phase_step(EventPhase.PROCESSING)
     async def _process(self: _BaseEvent, *args, **kwargs):
-        if self.retry_policy is None:
+        # A streaming event is never retried on its own: a second attempt would
+        # replay chunks into a consumer that already read the first. (The whole
+        # stream is retried as a unit, e.g. ``{ A |-> B } * 3``.)
+        if self.retry_policy is None or getattr(self, "_volnux_streaming", False):
             try:
                 self.exec_status, self.exec_result = await self._process_wrapper(
                     *args, **kwargs

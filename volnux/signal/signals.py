@@ -479,3 +479,63 @@ pipeline_metrics_updated = SoftSignal(
         "timestamp",
     ],
 )
+
+
+# AI agent signals (AgentEventBase). Emitted through ``get_signal(name)``.
+agent_execution_start = SoftSignal(
+    "agent_execution_start",
+    provide_args=[
+        "agent_class",
+        "llm_provider",
+        "llm_model",
+        "prompt_version",
+        "max_steps",
+        "tool_count",
+        "resume_step",
+    ],
+)
+agent_step_complete = SoftSignal(
+    "agent_step_complete",
+    provide_args=[
+        "agent_class",
+        "step_index",
+        "action",
+        "token_usage",
+        "latency_ms",
+        "total_tokens",
+    ],
+)
+agent_tool_call_start = SoftSignal(
+    "agent_tool_call_start",
+    provide_args=["agent_class", "tool_name", "tool_args", "step_index"],
+)
+agent_tool_call_end = SoftSignal(
+    "agent_tool_call_end",
+    provide_args=["agent_class", "tool_name", "success", "latency_ms", "step_index"],
+)
+agent_step_limit_exceeded = SoftSignal(
+    "agent_step_limit_exceeded",
+    provide_args=["agent_class", "steps_taken", "total_tokens"],
+)
+agent_hallucination_detected = SoftSignal(
+    "agent_hallucination_detected",
+    provide_args=["agent_class", "step_index", "error"],
+)
+agent_governance_violation = SoftSignal(
+    "agent_governance_violation",
+    provide_args=["agent_class", "step_index", "violation", "severity"],
+)
+agent_protocol_violation = SoftSignal(
+    "agent_protocol_violation",
+    provide_args=["agent_class", "step_index", "violation", "count"],
+)
+agent_execution_end = SoftSignal(
+    "agent_execution_end",
+    provide_args=[
+        "agent_class",
+        "success",
+        "steps_taken",
+        "total_tokens",
+        "total_latency_ms",
+    ],
+)

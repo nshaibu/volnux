@@ -7,6 +7,7 @@ from volnux.backends.connection import BackendConnectorBase, ConnectionConfig
 from volnux.backends.messaging.stores.inmemory import (
     InMemoryPubSubMixin,
     InMemoryPushPopMixin,
+    InMemoryStreamMixin,
 )
 from volnux.exceptions import ObjectDoesNotExist, ObjectExistError
 
@@ -54,7 +55,10 @@ class DummyConnector(BackendConnectorBase):
 
 
 class InMemoryKeyValueStoreBackend(
-    InMemoryPubSubMixin, InMemoryPushPopMixin, KeyValueStoreBackendBase
+    InMemoryPubSubMixin,
+    InMemoryPushPopMixin,
+    InMemoryStreamMixin,
+    KeyValueStoreBackendBase,
 ):
     """
     In-memory implementation of the KeyValueStoreBackend.
@@ -96,6 +100,7 @@ class InMemoryKeyValueStoreBackend(
         # Initialize messaging mixins
         self.__post_init_pubsub__()
         self.__post_init_queues__()
+        self.__post_init_streams__()
 
     def close(self) -> None:
         with self._acquire_lock():

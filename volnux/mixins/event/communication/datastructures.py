@@ -121,7 +121,14 @@ class ExternalCommunicationQueueEntry(KeyValueStoreIntegrationMixin, BaseModel):
     response: Optional[Dict[str, Any]] = None
     attempts: int = 0
     last_error: Optional[str] = None
-    enqueued_at: MiniAnnotated[str, Attrib(default_factory=_now_iso)]
+    enqueued_at: MiniAnnotated[Optional[str], Attrib(default=None)]
+
+    def __post_init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__post_init__(*args, **kwargs)
+        # Stamped per instance here: a ``default_factory`` is evaluated once, so
+        # every entry would carry the moment the module was imported.
+        if self.enqueued_at is None:
+            self.enqueued_at = _now_iso()
 
     @classmethod
     def get_storage_route(cls) -> StorageRoute:
@@ -156,7 +163,14 @@ class ExternalCommunicationResponse(MessagingBackendIntegrationMixin, BaseModel)
     data: MiniAnnotated[Dict[str, Any], Attrib(default_factory=dict)]
     reviewer: str = ""
     source: str = "human"
-    responded_at: MiniAnnotated[str, Attrib(default_factory=_now_iso)]
+    responded_at: MiniAnnotated[Optional[str], Attrib(default=None)]
+
+    def __post_init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__post_init__(*args, **kwargs)
+        # Stamped per instance here: a ``default_factory`` is evaluated once, so
+        # every response would carry the moment the module was imported.
+        if self.responded_at is None:
+            self.responded_at = _now_iso()
 
     @classmethod
     def get_storage_route(cls) -> StorageRoute:

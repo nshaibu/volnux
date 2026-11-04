@@ -54,5 +54,10 @@ EVENT_EXCLUDED_ATTRS: frozenset[str] = frozenset(
         "_execution_context",  # the real attribute name (the entry above never matched)
         "_active_phase",
         "_event_result",
+        # --- AgentEventBase run-time handles (rebuilt on resume) ---
+        "_provider_adapter",
+        "_tool_index",
+        "_active_tool_channels",
+        "_agent_start_time",
     }
 )

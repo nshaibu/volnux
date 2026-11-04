@@ -1,4 +1,5 @@
 import abc
+import inspect
 import logging
 import typing
 import asyncio
@@ -26,6 +27,7 @@ from volnux.exceptions import (
 )
 from volnux.event.registry import Registry
 from volnux.result import EventResult
+from volnux.mixins.stream.mixin import StreamingMixin
 from volnux.mixins.event import (
     RetryMixin,
     RetryPolicy,
@@ -167,6 +169,16 @@ class EventMeta(abc.ABCMeta):
         """
         cls = super().__new__(mcs, name, bases, namespace)
 
+        # A generator process() makes the event a streaming one (see StreamingMixin)
+        process = getattr(cls, "process", None)
+        cls._volnux_streaming = bool(
+            process is not None
+            and (
+                inspect.isasyncgenfunction(process)
+                or inspect.isgeneratorfunction(process)
+            )
+        )
+
         # Register it if it's not the base EventBase class
         if name not in ["EventBase", "ControlFlowEvent"] and any(
             isinstance(base, EventMeta) for base in bases
@@ -227,6 +239,7 @@ class EventMeta(abc.ABCMeta):
 class EventBase(
     RetryMixin,
     ExecutorInitializerMixin,
+    StreamingMixin,
     EventCheckpointingMixin,
     EventCommandMixin,
     ExternalCommunicationMixin,

@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
 from ..base import TriggerActivation, TriggerBase, TriggerType
+from ..condition import ConditionalTrigger
 from ..event import EventTrigger
 from ...event_filters.timestamp import TimestampFilter
 
@@ -45,12 +46,13 @@ SinkConditionFn = Callable[[Dict[str, List[Any]]], Union[bool, Awaitable[bool]]]
 _INTERNAL_WORKFLOW = "_windowed_internal"
 
 
-class WindowSink(TriggerBase):
+class WindowSink(ConditionalTrigger):
     """
     Polling sink for ``WindowedTrigger``.
 
-    Behaves like ``ConditionalTrigger`` but its ``condition_fn`` receives the
-    live ``window_state`` dict instead of taking no arguments. The
+    A ``ConditionalTrigger`` (it inherits its polling, edge detection and error
+    handling) whose ``condition_fn`` receives the live ``window_state`` dict
+    instead of taking no arguments. The
     ``WindowedTrigger`` injects the state-reader via ``_inject_state_reader``
     before arming the sink each window cycle.
 
@@ -79,8 +81,6 @@ class WindowSink(TriggerBase):
         )
     """
 
-    trigger_type = TriggerType.CONDITION
-
     def __init__(
         self,
         condition_fn: SinkConditionFn,
@@ -90,99 +90,37 @@ class WindowSink(TriggerBase):
         enabled: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
     ):
+        if not callable(condition_fn):
+            raise TypeError("condition_fn must be callable")
+        self.window_condition_fn: SinkConditionFn = condition_fn
+        # Injected by WindowedTrigger before each window cycle.
+        self._state_reader: Optional[Callable[[], Dict[str, List[Any]]]] = None
+
         # WindowSink is always owned by a WindowedTrigger; workflow_name is
         # a dummy value — the parent trigger drives the actual workflow activation.
         super().__init__(
             _INTERNAL_WORKFLOW,
+            self._evaluate_window,
+            poll_interval=poll_interval,
+            edge_trigger=edge_trigger,
             workflow_params=workflow_params,
             enabled=enabled,
             metadata=metadata,
         )
-        self.condition_fn: SinkConditionFn = condition_fn
-        self.poll_interval = poll_interval
-        self.edge_trigger = edge_trigger
 
-        self._task: Optional[asyncio.Task] = None
-        self._last_state: bool = False
-        # Injected by WindowedTrigger before each window cycle.
-        self._state_reader: Optional[Callable[[], Dict[str, List[Any]]]] = None
+    def _evaluate_window(self) -> Any:
+        """The no-argument condition the polling loop calls: ``condition_fn`` applied
+        to the current window state (``False`` until a window has been injected)."""
+        if self._state_reader is None:
+            return False
+        return self.window_condition_fn(self._state_reader())
 
     def _inject_state_reader(self, reader: Callable[[], Dict[str, List[Any]]]) -> None:
         """Called by WindowedTrigger before arming this sink each cycle."""
         self._state_reader = reader
 
         # Reset edge-detection state for the new window.
-        self._last_state = False
-
-    async def start(self) -> None:
-        """Start the polling loop (idempotent)."""
-        if self._task and not self._task.done():
-            logger.debug(
-                "WindowSink %s already polling; skipping start", self.trigger_id
-            )
-            return
-        logger.debug(
-            "WindowSink %s starting (poll_interval=%.1fs)",
-            self.trigger_id,
-            self.poll_interval,
-        )
-        self._task = asyncio.create_task(
-            self._poll_loop(),
-            name=f"WindowSink.{self.trigger_id}",
-        )
-
-    async def stop(self) -> None:
-        """Cancel the polling loop."""
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        self._task = None
-
-    async def _poll_loop(self) -> None:
-        first_tick = True
-        while True:
-            try:
-                if not first_tick:
-                    await asyncio.sleep(self.poll_interval)
-                first_tick = False
-
-                if not self.enabled or self._state_reader is None:
-                    continue
-
-                condition_met = await self._evaluate()
-
-                should_fire = condition_met and (
-                    not self.edge_trigger or not self._last_state
-                )
-                self._last_state = condition_met
-
-                if should_fire:
-                    await self.activate(sink_fired=True)
-
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                self.state.error_count += 1
-                await self.state.save_async()
-                logger.exception(
-                    "WindowSink %s: error during poll (total errors: %d)",
-                    self.trigger_id,
-                    self.state.error_count,
-                )
-
-    async def _evaluate(self) -> bool:
-        state = self._state_reader()
-        try:
-            result = self.condition_fn(state)
-            if asyncio.iscoroutine(result):
-                return bool(await result)
-            return bool(result)
-        except Exception:
-            logger.exception("WindowSink %s: condition_fn raised", self.trigger_id)
-            return False
+        self._last_condition_state = False
 
 
 class WindowedTrigger(TriggerBase):
@@ -292,12 +230,23 @@ class WindowedTrigger(TriggerBase):
     ):
         if not aggregators:
             raise ValueError("WindowedTrigger requires at least one aggregator.")
+        seen_names = set()
         for agg in aggregators:
             if not getattr(agg, "name", None):
                 raise ValueError(
                     f"Every aggregator must have a non-empty 'name' attribute. "
                     f"Got: {agg!r}"
                 )
+            if agg.name in seen_names:
+                # two aggregators would silently share (and mix) one slot
+                raise ValueError(
+                    f"Aggregator names must be unique; '{agg.name}' repeats."
+                )
+            seen_names.add(agg.name)
+        if not isinstance(sink, WindowSink):
+            raise TypeError(f"'sink' must be a WindowSink, got {type(sink).__name__}.")
+        if window_timeout is not None and window_timeout <= 0:
+            raise ValueError("window_timeout must be positive when given.")
 
         super().__init__(
             workflow_name,
@@ -319,6 +268,17 @@ class WindowedTrigger(TriggerBase):
         self._timeout_task: Optional[asyncio.Task] = None
         self._running: bool = False
         self._lock: asyncio.Lock = asyncio.Lock()
+        # Bumped each time a window opens, so a close scheduled for an earlier
+        # window (a late sink firing, a timeout racing it) is recognised as stale.
+        self._generation: int = 0
+        # Strong references: the loop only keeps weak ones to running tasks.
+        self._background: set = set()
+
+    def _spawn(self, coro, name: str) -> asyncio.Task:
+        task = asyncio.create_task(coro, name=name)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        return task
 
     async def start(self) -> None:
         """Open the first window: stamp epoch, arm aggregators + sink."""
@@ -329,13 +289,25 @@ class WindowedTrigger(TriggerBase):
             f"{self.window_timeout:.1f}s" if self.window_timeout else "none",
         )
         self._running = True
-        await self._open_window()
+        try:
+            await self._open_window()
+        except BaseException:
+            self._running = False
+            self._cancel_timeout()
+            await self._disarm_all()
+            raise
 
     async def stop(self) -> None:
         """Disarm all aggregators and the sink; cancel any pending timeout."""
         logger.info("WindowedTrigger '%s' stopping", self.trigger_id)
         self._running = False
         self._cancel_timeout()
+        current = asyncio.current_task()
+        pending = [t for t in self._background if t is not current and not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         await self._disarm_all()
 
     async def _open_window(self) -> None:
@@ -346,6 +318,8 @@ class WindowedTrigger(TriggerBase):
         """
         epoch = datetime.now(timezone.utc)
         self._window_epoch = epoch
+        self._generation += 1
+        generation = self._generation
 
         # Reset each aggregator's buffer.
         for name in self._window_state:
@@ -366,9 +340,9 @@ class WindowedTrigger(TriggerBase):
 
         # Start the window timeout if configured.
         if self.window_timeout is not None:
-            self._timeout_task = asyncio.create_task(
-                self._run_timeout(),
-                name=f"WindowedTrigger.{self.trigger_id}.timeout",
+            self._timeout_task = self._spawn(
+                self._run_timeout(generation),
+                f"WindowedTrigger.{self.trigger_id}.timeout",
             )
 
         logger.debug(
@@ -377,14 +351,24 @@ class WindowedTrigger(TriggerBase):
             epoch.isoformat(),
         )
 
-    async def _close_window(self, *, timed_out: bool = False) -> None:
+    async def _close_window(self, generation: int, *, timed_out: bool = False) -> None:
         """
-        Close the current window: disarm everything, optionally fire the workflow.
+        Close window number ``generation``: disarm everything, optionally fire
+        the workflow, then open the next window.
+
+        Serialised, and ignored if that window is already closed (a sink firing
+        and the timeout can race) or the trigger has stopped.
 
         Args:
             timed_out: If True the window expired without the sink firing;
                        the workflow is NOT activated and the window resets silently.
         """
+        async with self._lock:
+            if not self._running or generation != self._generation:
+                return
+            await self._close_window_locked(timed_out=timed_out)
+
+    async def _close_window_locked(self, *, timed_out: bool) -> None:
         self._cancel_timeout()
         await self._disarm_all()
 
@@ -432,6 +416,7 @@ class WindowedTrigger(TriggerBase):
         try:
             await aggregator.run()
         except Exception:
+            self.state.error_count += 1
             logger.exception(
                 "WindowedTrigger '%s': failed to arm aggregator '%s'.",
                 self.trigger_id,
@@ -485,16 +470,13 @@ class WindowedTrigger(TriggerBase):
         that loop. Scheduling avoids awaiting a cancel from inside the task
         being cancelled.
         """
-        asyncio.create_task(
-            self._handle_sink_fired(),
-            name=f"WindowedTrigger.{self.trigger_id}.sink_fired",
+        self._spawn(
+            self._handle_sink_fired(self._generation),
+            f"WindowedTrigger.{self.trigger_id}.sink_fired",
         )
 
-    async def _handle_sink_fired(self) -> None:
-        async with self._lock:
-            if not self._running:
-                return
-        await self._close_window(timed_out=False)
+    async def _handle_sink_fired(self, generation: int) -> None:
+        await self._close_window(generation, timed_out=False)
 
     async def _disarm_all(self) -> None:
         """Stop all aggregators and the sink, swallowing errors."""
@@ -514,22 +496,20 @@ class WindowedTrigger(TriggerBase):
                 type(trigger).__name__,
             )
 
-    async def _run_timeout(self) -> None:
+    async def _run_timeout(self, generation: int) -> None:
         try:
             await asyncio.sleep(self.window_timeout)
         except asyncio.CancelledError:
             return
 
-        async with self._lock:
-            if not self._running:
-                return
-
-        await self._close_window(timed_out=True)
+        await self._close_window(generation, timed_out=True)
 
     def _cancel_timeout(self) -> None:
-        if self._timeout_task and not self._timeout_task.done():
-            self._timeout_task.cancel()
-        self._timeout_task = None
+        # Never cancel the task that is running this very close (the timeout
+        # closing its own window): that would abort the close half way.
+        task, self._timeout_task = self._timeout_task, None
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
 
     def _read_window_state(self) -> Dict[str, List[Any]]:
         """Return a shallow snapshot of window_state for the sink to read."""
@@ -537,13 +517,13 @@ class WindowedTrigger(TriggerBase):
 
     def _stamp_epoch(self, epoch: datetime) -> None:
         """Push the current window epoch to all TimestampFilters in aggregators."""
-        for agg in self._aggregators:
-            # EventTrigger stores its compiled filter as _filter.
-            f = getattr(agg, "_filter", None)
+
+        def stamp(f: Any) -> None:
             if isinstance(f, TimestampFilter):
                 f.set_epoch(epoch)
-            # Also check composite filters wrapping a TimestampFilter.
-            elif hasattr(f, "filters"):
-                for sub in getattr(f, "filters", []):
-                    if isinstance(sub, TimestampFilter):
-                        sub.set_epoch(epoch)
+            for sub in getattr(f, "filters", None) or ():
+                stamp(sub)
+
+        for agg in self._aggregators:
+            # EventTrigger stores its compiled filter as _filter.
+            stamp(getattr(agg, "_filter", None))

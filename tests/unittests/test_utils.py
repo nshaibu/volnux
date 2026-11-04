@@ -84,10 +84,13 @@ def test_build_event_arguments_from_pipeline():
         {
             "execution_context": None,
             "task_id": None,
+            "checkpoint_manager": None,
+            "command_channel": None,
             "previous_result": None,
             "stop_condition": StopCondition.NEVER,
             "run_bypass_event_checks": False,
             "options": None,
+            "sequence_number": None,
         },
         {"name": "nafiu", "school": "knust"},
     )

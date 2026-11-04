@@ -173,18 +173,19 @@ class TestSerializeDicts:
         restored = serializer.deserialize_exec_result(
             serializer.serialize_exec_result(data)
         )
-        assert isinstance(restored[True], str)
-        assert isinstance(restored[False], str)
+        assert restored == {True: "yes", False: "no"}
+        assert all(isinstance(k, bool) for k in restored)
 
     def test_mixed_key_types(self, serializer: ExecResultSerializer) -> None:
-        data = {1: "int", "str": "string", 2.5: "float", True: "bool"}
+        # (not ``True``: it equals ``1``, so the literal would be a single key)
+        data = {1: "int", "str": "string", 2.5: "float"}
         restored = serializer.deserialize_exec_result(
             serializer.serialize_exec_result(data)
         )
         assert restored[1] == "int"
         assert restored["str"] == "string"
         assert restored[2.5] == "float"
-        assert restored[True] == "bool"
+        assert set(map(type, restored)) == {int, str, float}
 
     def test_unsupported_key_type_raises(
         self, serializer: ExecResultSerializer
@@ -212,6 +213,32 @@ class TestSerializeDicts:
 # ===========================================================================
 # Serialization — Custom Objects
 # ===========================================================================
+# Module level: a class defined inside a test cannot be imported back by path.
+class PlainObj:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class PairObj:
+    def __init__(self, a: int, b: str) -> None:
+        self.a = a
+        self.b = b
+
+
+class Inner:
+    def __init__(self, val: str) -> None:
+        self.val = val
+
+
+class Outer:
+    def __init__(self, inner: Inner) -> None:
+        self.inner = inner
+
+
+class SlotOnly:
+    __slots__ = ()
+
+
 class TestSerializeCustomObjects:
 
     def test_object_with_getstate(self, serializer: ExecResultSerializer) -> None:
@@ -230,11 +257,7 @@ class TestSerializeCustomObjects:
         assert "__class_path__" in serialized
 
     def test_object_with_dict_fallback(self, serializer: ExecResultSerializer) -> None:
-        class MyObj:
-            def __init__(self, name: str) -> None:
-                self.name = name
-
-        obj = MyObj("test")
+        obj = PlainObj("test")
         serialized = serializer.serialize_exec_result(obj)
         assert serialized["__type__"] == "custom_object"
         assert serialized["uses_getstate"] is False
@@ -243,22 +266,11 @@ class TestSerializeCustomObjects:
     def test_object_without_getstate_or_dict_raises(
         self, serializer: ExecResultSerializer
     ) -> None:
-        class SlotOnly:
-            __slots__ = ()
-
         obj = SlotOnly()
         with pytest.raises(TypeError, match="no __getstate__ or __dict__"):
             serializer.serialize_exec_result(obj)
 
     def test_nested_object_round_trip(self, serializer: ExecResultSerializer) -> None:
-        class Inner:
-            def __init__(self, val: str) -> None:
-                self.val = val
-
-        class Outer:
-            def __init__(self, inner: Inner) -> None:
-                self.inner = inner
-
         obj = Outer(Inner("deep"))
         serialized = serializer.serialize_exec_result(obj)
         restored = serializer.deserialize_exec_result(serialized)
@@ -267,12 +279,7 @@ class TestSerializeCustomObjects:
         assert restored.inner.val == "deep"
 
     def test_object_round_trip_via_dict(self, serializer: ExecResultSerializer) -> None:
-        class MyObj:
-            def __init__(self, a: int, b: str) -> None:
-                self.a = a
-                self.b = b
-
-        obj = MyObj(10, "hello")
+        obj = PairObj(10, "hello")
         serialized = serializer.serialize_exec_result(obj)
         restored = serializer.deserialize_exec_result(serialized)
         assert restored.a == 10

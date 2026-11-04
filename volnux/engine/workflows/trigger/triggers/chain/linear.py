@@ -1,4 +1,6 @@
 import asyncio
+import inspect
+import typing
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -98,6 +100,17 @@ class LinearChainTrigger(TriggerBase):
                 "ChainedTrigger requires at least two triggers in the chain; "
                 f"got {len(triggers)}."
             )
+        for sub in triggers:
+            if not isinstance(sub, TriggerBase):
+                raise TypeError(
+                    f"Every step must be a trigger, got {type(sub).__name__}."
+                )
+        if len({id(sub) for sub in triggers}) != len(triggers):
+            raise ValueError("The same trigger cannot appear twice in a chain.")
+        if step_timeout is not None and step_timeout <= 0:
+            raise ValueError("step_timeout must be positive when given.")
+        if reducer is not None and not callable(reducer):
+            raise TypeError("reducer must be callable")
 
         super().__init__(
             workflow_name,
@@ -107,6 +120,12 @@ class LinearChainTrigger(TriggerBase):
         )
 
         self._triggers: List[TriggerBase] = list(triggers)
+        # What each step was configured with. A step's parameters are rebuilt from
+        # this on every arm, so data carried from an earlier window never leaks
+        # into the next one.
+        self._base_params: List[Dict[str, Any]] = [
+            dict(sub.workflow_params) for sub in self._triggers
+        ]
         self.step_timeout = step_timeout
         self._reducer = reducer or (lambda a, b: {**a, **b})
 
@@ -116,6 +135,14 @@ class LinearChainTrigger(TriggerBase):
         self._timeout_task: Optional[asyncio.Task] = None
         self._running: bool = False
         self._lock: asyncio.Lock = asyncio.Lock()
+        # Strong references: the loop only keeps weak ones to running tasks.
+        self._background: set = set()
+
+    def _spawn(self, coro, name: str) -> asyncio.Task:
+        task = asyncio.create_task(coro, name=name)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        return task
 
     async def start(self) -> None:
         """Arm the first trigger in the chain."""
@@ -125,8 +152,13 @@ class LinearChainTrigger(TriggerBase):
             len(self._triggers),
             f"{self.step_timeout:.1f}s" if self.step_timeout else "none",
         )
+        self._reset_state()  # a restart begins at step 0 with nothing accumulated
         self._running = True
-        await self._arm_step(0)
+        try:
+            await self._arm_step(0)
+        except BaseException:
+            self._running = False
+            raise
 
     async def stop(self) -> None:
         """Disarm the currently active step and cancel any pending timeout."""
@@ -137,9 +169,18 @@ class LinearChainTrigger(TriggerBase):
         )
         self._running = False
         self._cancel_timeout()
+        current = asyncio.current_task()
+        pending = [t for t in self._background if t is not current and not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         await self._disarm_step(self._current_step)
+        self._reset_state()
 
-    async def _arm_step(self, step: int) -> None:
+    async def _arm_step(
+        self, step: int, carried: typing.Optional[Dict[str, Any]] = None
+    ) -> None:
         """
         Install the chain callback on ``_triggers[step]`` and run it.
 
@@ -148,6 +189,9 @@ class LinearChainTrigger(TriggerBase):
         """
         self._current_step = step
         trigger = self._triggers[step]
+        # Configured parameters plus what the earlier steps handed on.
+        trigger.workflow_params = {**self._base_params[step], **(carried or {})}
+        trigger._on_activate = None  # re-armed every window: no "replacing" warning
         trigger.set_activation_callback(self._make_step_callback(step))
         await trigger.run()
 
@@ -160,9 +204,9 @@ class LinearChainTrigger(TriggerBase):
         )
 
         if self.step_timeout is not None and step > 0:
-            self._timeout_task = asyncio.create_task(
+            self._timeout_task = self._spawn(
                 self._run_timeout(step),
-                name=f"ChainedTrigger.{self.trigger_id}.timeout.step{step}",
+                f"ChainedTrigger.{self.trigger_id}.timeout.step{step}",
             )
 
     async def _disarm_step(self, step: int) -> None:
@@ -196,9 +240,9 @@ class LinearChainTrigger(TriggerBase):
         """
 
         async def callback(activation: TriggerActivation) -> None:
-            asyncio.create_task(
+            self._spawn(
                 self._advance_chain(step, activation),
-                name=f"ChainedTrigger.{self.trigger_id}.advance.step{step}",
+                f"ChainedTrigger.{self.trigger_id}.advance.step{step}",
             )
 
         return callback
@@ -242,16 +286,36 @@ class LinearChainTrigger(TriggerBase):
 
             next_step = step + 1
 
-            reduced_state = self._reducer(
-                self._accumulated_data, activation.workflow_params
-            )
-            if asyncio.iscoroutine(reduced_state):
-                reduced_state = await reduced_state
+            try:
+                reduced_state = self._reducer(
+                    self._accumulated_data, activation.workflow_params
+                )
+                if inspect.isawaitable(reduced_state):
+                    reduced_state = await reduced_state
+            except Exception:
+                logger.exception(
+                    "ChainedTrigger '%s': the reducer failed at step %d; "
+                    "restarting the chain.",
+                    self.trigger_id,
+                    step,
+                )
+                self.state.error_count += 1
+                await self.state.save()
+                await self._restart_after_failure()
+                return
 
             if next_step < len(self._triggers):
                 # Chain incomplete — arm the next step.
-                self._triggers[next_step].update_workflow_params(reduced_state)
-                await self._arm_step(next_step)
+                try:
+                    await self._arm_step(next_step, carried=reduced_state)
+                except Exception:
+                    logger.exception(
+                        "ChainedTrigger '%s': could not arm step %d; "
+                        "restarting the chain.",
+                        self.trigger_id,
+                        next_step,
+                    )
+                    await self._restart_after_failure()
                 return
 
             logger.info(
@@ -267,11 +331,17 @@ class LinearChainTrigger(TriggerBase):
 
             try:
                 await self.activate(**activation_data)
+            except Exception:
+                # activate() has already counted it; the chain must stay live.
+                logger.exception(
+                    "ChainedTrigger '%s': activation failed; re-arming.",
+                    self.trigger_id,
+                )
             finally:
                 # Re-arm for the next window even if the workflow callback
                 # raised, so the chain stays live.
                 if self._running:
-                    await self._arm_step(0)
+                    await self._restart_after_failure()
 
     async def _run_timeout(self, step: int) -> None:
         """
@@ -302,7 +372,24 @@ class LinearChainTrigger(TriggerBase):
             self._reset_state()
 
             if self._running:
-                await self._arm_step(0)
+                await self._restart_after_failure()
+
+    async def _restart_after_failure(self) -> None:
+        """Go back to step 0. If even that cannot be armed the chain is dead:
+        say so (ERROR) rather than sit running with nothing listening."""
+        self._reset_state()
+        try:
+            await self._arm_step(0)
+        except Exception:
+            self._running = False
+            logger.exception(
+                "ChainedTrigger '%s': could not re-arm step 0; chain stopped.",
+                self.trigger_id,
+            )
+            try:
+                await self.state.mark_error()
+            except Exception:
+                logger.exception("Could not record the failed chain")
 
     def _reset_state(self) -> None:
         """Clear accumulated data and return the step counter to zero."""

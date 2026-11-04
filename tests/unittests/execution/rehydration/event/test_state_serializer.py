@@ -1,4 +1,4 @@
-"""Tests for volnux.execution.checkpoint.serializer — StateSerializer.
+"""Tests for volnux.execution.rehydrator.event.serializer — StateSerializer.
 
 Covers:
   - serialize_init_args (with and without execution_context, all field paths).
@@ -7,13 +7,13 @@ Covers:
   - _serialize_stop_condition (None, single, list, nested list).
   - _build_keyword_args (nested dicts, lists, tuples, scalars).
   - serialize_attribs (exclusion of framework attrs, tracked keys, non-serializable warning).
-  - deserialize_attribs (pass-through).
 """
 
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -94,7 +94,7 @@ class TestSerializeStopCondition:
 
     def test_list_of_conditions(self) -> None:
         result = StateSerializer._serialize_stop_condition(
-            D[
+            [
                 StopCondition.NEVER,
                 StopCondition.ON_ERROR,
             ]
@@ -115,10 +115,8 @@ class TestSerializeStopCondition:
         ]
 
     def test_tuple_same_as_list(self) -> None:
-        result = StateSerializer._serialize_stop_condition(
-            (StopCondition.EXTERNAL_SIGNAL,)
-        )
-        assert result == [StopCondition.EXTERNAL_SIGNAL.value]
+        result = StateSerializer._serialize_stop_condition((StopCondition.ON_ANY,))
+        assert result == [StopCondition.ON_ANY.value]
 
 
 class TestBuildKeywordArgs:
@@ -158,20 +156,19 @@ class TestBuildKeywordArgs:
 
 class TestSerializeInitArgs:
 
-    @patch("volnux.execution.checkpoint.serializer.StateSerializer._build_keyword_args")
     @patch(
-        "volnux.execution.checkpoint.serializer.StateSerializer._serialize_stop_condition"
+        "volnux.execution.rehydrator.event.serializer.StateSerializer._build_keyword_args"
     )
-    @patch("volnux.execution.checkpoint.serializer.EngineSerializer")
+    @patch(
+        "volnux.execution.rehydrator.event.serializer.StateSerializer._serialize_stop_condition"
+    )
     def test_full_init_args(
         self,
-        mock_engine_serializer_cls: MagicMock,
         mock_stop_cond: MagicMock,
         mock_build_kwargs: MagicMock,
     ) -> None:
         mock_stop_cond.return_value = ["NEVER"]
         mock_build_kwargs.return_value = {"key": "val"}
-        mock_engine_serializer_cls.serialize_result.return_value = {"serialized": True}
 
         mock_execution_context = MagicMock()
         mock_execution_context.state_id = "ctx-001"
@@ -187,7 +184,7 @@ class TestSerializeInitArgs:
             "options": mock_options,
             "sequence_number": 5,
             "kwargs": {"key": "val"},
-            "previous_result": [{"result": "data"}],
+            "previous_result": [SimpleNamespace(id="result-1")],
         }
 
         result = StateSerializer.serialize_init_args(init_arg_dict)
@@ -199,7 +196,8 @@ class TestSerializeInitArgs:
         assert result["options"] == {"opt1": True}
         assert result["sequence_number"] == 5
         assert result["kwargs"] == {"key": "val"}
-        assert result["previous_result"] == [{"serialized": True}]
+        # EventResult is persisted: the snapshot references it by id
+        assert result["previous_result"] == ["result-1"]
 
     def test_minimal_init_args(self) -> None:
         result = StateSerializer.serialize_init_args({})
@@ -216,7 +214,7 @@ class TestSerializeInitArgs:
 class TestSerializeCallArgs:
 
     @patch(
-        "volnux.execution.checkpoint.serializer.StateSerializer.serialize_exec_result"
+        "volnux.execution.rehydrator.event.serializer.StateSerializer.serialize_exec_result"
     )
     def test_with_args_and_kwargs(self, mock_serialize: MagicMock) -> None:
         mock_serialize.side_effect = lambda x: f"serialized_{x}"
@@ -239,7 +237,7 @@ class TestSerializeCallArgs:
 
 class TestSerializeExecResult:
 
-    @patch("volnux.execution.checkpoint.serializer.ExecResultSerializer")
+    @patch("volnux.execution.rehydrator.event.serializer.ExecResultSerializer")
     def test_delegates_to_exec_result_serializer(self, mock_cls: MagicMock) -> None:
         mock_instance = MagicMock()
         mock_instance.serialize_exec_result.return_value = "serialized_result"
@@ -255,11 +253,8 @@ class TestSerializeExecResult:
 class TestSerializeAttribs:
 
     def _make_mock_event(self, attrs: Dict[str, Any]) -> MagicMock:
-        """Create a mock event with given __dict__ and controlled named attributes."""
-        event = MagicMock()
-        event.__dict__ = dict(attrs)
-        event.class_path = "test.events.MyEvent"
-        return event
+        """An event whose ``vars()`` are exactly ``attrs`` plus a class_path."""
+        return SimpleNamespace(class_path="test.events.MyEvent", **attrs)
 
     def test_captures_user_attrs(self) -> None:
         event = self._make_mock_event(
@@ -390,29 +385,3 @@ class TestSerializeAttribs:
         )
         result = StateSerializer.serialize_attribs(event)
         assert result["_optional"] is None
-
-
-class TestDeserializeAttribs:
-
-    def test_sets_attributes_on_instance(self) -> None:
-        event = MagicMock()
-        StateSerializer.deserialize_attribs(event, {"_page": 5, "_filter": "active"})
-        assert event._page == 5
-        assert event._filter == "active"
-
-    def test_empty_dict_no_mutations(self) -> None:
-        event = MagicMock()
-        StateSerializer.deserialize_attribs(event, {})
-        # Only __dict__ assignment should not occur
-        event.assert_not_called()
-
-    def test_overwrites_existing_attrs(self) -> None:
-        event = MagicMock()
-        event._page = 1
-        StateSerializer.deserialize_attribs(event, {"_page": 99})
-        assert event._page == 99
-
-    def test_none_input(self) -> None:
-        event = MagicMock()
-        StateSerializer.deserialize_attribs(event, None)
-        event.assert_not_called()

@@ -1083,7 +1083,7 @@ class TestSemaConditionalExpressions(unittest.TestCase):
             "A (failure -> B, success -> C)",
             "A (0 -> B, 1 -> C, 25 -> D)",
             "A * 2 (failure -> B, success -> C)",
-            "A (failure -> B * 2, success |-> C * 3)",
+            "A (failure -> B * 2, success -> C * 3)",
         ):
             result = _analyse(source)
             self.assertFalse(

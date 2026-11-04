@@ -7,14 +7,16 @@ import pytest
 
 from volnux.executors import DefaultExecutor, ProcessPoolExecutor, ThreadPoolExecutor
 from volnux.flows import ParallelFlow, SingleFlow, setup_execution_flow
+from volnux.flows.stream import StreamFlow
 from volnux.flows.bridge.communications.tasks import (
     LocalTaskCommunicationBridge,
     MessagingTaskCommunicationBridge,
 )
 
 
-def make_context(multitask=False):
+def make_context(multitask=False, stream=False):
     ctx = MagicMock()
+    ctx.is_stream_segment.return_value = stream
     ctx.task_profiles = deque(
         [MagicMock(), MagicMock()] if multitask else [MagicMock()]
     )
@@ -31,6 +33,11 @@ def test_flows_can_be_constructed():
 def test_setup_execution_flow_picks_the_flow_by_task_count():
     assert isinstance(setup_execution_flow(make_context()), SingleFlow)
     assert isinstance(setup_execution_flow(make_context(multitask=True)), ParallelFlow)
+
+
+def test_a_stream_segment_gets_a_stream_flow():
+    flow = setup_execution_flow(make_context(multitask=True, stream=True))
+    assert isinstance(flow, StreamFlow) and isinstance(flow, ParallelFlow)
 
 
 def test_a_flow_gets_a_unique_identity():
@@ -93,10 +100,14 @@ def test_a_bridge_failure_never_stops_the_flow(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_process_pool_created_by_the_flow_is_shut_down_on_close():
+async def test_a_process_pool_created_by_the_flow_is_shut_down_on_close(monkeypatch):
     """Process pools used to be excluded from cleanup, leaking a pool of worker
-    processes on every dispatch."""
+    processes on every dispatch. (With sharing switched off, each flow owns its pool.)
+    """
+    from volnux.executors import shared as shared_pools
     from volnux.parser.executor_config import ExecutorInitializerConfig
+
+    monkeypatch.setattr(shared_pools, "enabled", lambda: False)
 
     flow = SingleFlow(make_context())
     pool = flow._initialize_executor(

@@ -131,7 +131,12 @@ class ExecResultSerializer:
     def _serialize_object(self, obj: Any) -> Dict[str, Any]:
         class_path = get_obj_klass_import_str(obj)
 
-        if hasattr(obj, "__getstate__"):
+        # Python 3.11 gave every object a default ``__getstate__`` (``None`` for an
+        # object with no state), so only a class that defines its own counts.
+        if getattr(type(obj), "__getstate__", None) not in (
+            None,
+            getattr(object, "__getstate__", None),
+        ):
             state = self.serialize_exec_result(obj.__getstate__())
             return {
                 "__type__": "custom_object",
@@ -218,6 +223,14 @@ class ExecResultSerializer:
     @staticmethod
     def _restore_dict_key(str_key: str, type_name: str) -> Any:
         """Restore a dict key from its string representation and recorded type."""
+        if type_name == "bool":
+            # bool("False") is True: parse the text, not its truthiness
+            if str_key in ("True", "False"):
+                return str_key == "True"
+            logger.warning(
+                "Failed to restore key '%s' as bool, returning as string", str_key
+            )
+            return str_key
         key_cls = _KEY_TYPE_MAP.get(type_name)
         if key_cls is None:
             logger.warning(

@@ -21,6 +21,9 @@ def _default_extractor(event: Event) -> datetime:
         return event.timestamp
     if isinstance(raw, datetime):
         return raw
+    # Unix seconds (the numeric form the filter documents)
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return raw
     # ISO string
     return datetime.fromisoformat(str(raw))
 

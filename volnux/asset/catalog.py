@@ -278,9 +278,12 @@ class AssetCatalog:
             key: The asset to watch.
             callback: Async callable receiving the materialisation.
         """
-        if key not in self._subscribers:
-            self._subscribers[key] = []
-        self._subscribers[key].append(callback)
+        callbacks = self._subscribers.setdefault(key, [])
+        # ``==``, not ``is``: every access to a bound method makes a new object
+        if any(cb == callback for cb in callbacks):
+            logger.debug("Already subscribed to materialisation of '%s'", key)
+            return
+        callbacks.append(callback)
         logger.debug("Subscribed to materialisation of '%s'", key)
 
     async def unsubscribe(
@@ -290,8 +293,10 @@ class AssetCatalog:
     ) -> None:
         """Remove a subscription."""
         if key in self._subscribers:
+            # ``!=``, not ``is not``: ``obj.method`` is a new bound-method object
+            # on every access, so identity never matched and nothing was removed.
             self._subscribers[key] = [
-                cb for cb in self._subscribers[key] if cb is not callback
+                cb for cb in self._subscribers[key] if cb != callback
             ]
             if not self._subscribers[key]:
                 del self._subscribers[key]
@@ -303,7 +308,8 @@ class AssetCatalog:
         materialisation: AssetMaterialisation,
     ) -> None:
         """Notify all subscribers of a materialisation event."""
-        subscribers = self._subscribers.get(key, [])
+        # a copy: a callback may subscribe or unsubscribe while being notified
+        subscribers = list(self._subscribers.get(key, []))
         for callback in subscribers:
             try:
                 await callback(materialisation)

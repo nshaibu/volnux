@@ -2,12 +2,17 @@ import asyncio
 import collections
 import fnmatch
 import logging
+import time
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set, Tuple, Type
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union
 
 from volnux.backends.messaging.base import (
     PubSubCapabilityMixin,
     PushPopCapabilityMixin,
+    StreamCapabilityMixin,
+    StreamEntry,
+    StreamOffset,
     AsyncSubscriptionContext,
     QueueSide,
     Record,
@@ -337,3 +342,213 @@ class InMemoryPushPopMixin(PushPopCapabilityMixin):
 
         raws = q.range(start, stop)
         return [self._deserialize_record(r, record_class) for r in raws]  # type: ignore[attr-defined]
+
+
+@dataclass
+class _Group:
+    """A consumer group's position in one stream."""
+
+    cursor: int = 0  # sequence number of the last entry handed out
+    #: delivered but not yet acknowledged: seq -> (consumer id, delivered at)
+    pending: Dict[int, Tuple[Optional[str], float]] = field(default_factory=dict)
+
+
+class _MemoryStream:
+    """One append-only log: entries in order, plus its consumer groups."""
+
+    def __init__(self) -> None:
+        self.entries: List[Tuple[int, Any]] = []  # (sequence number, payload)
+        self.next_seq = 1
+        self.groups: Dict[str, _Group] = {}
+        self.changed = asyncio.Condition()
+
+
+def _entry_id(seq: int) -> str:
+    return f"{seq}-0"
+
+
+def _seq_of(entry_id: str) -> int:
+    return int(str(entry_id).split("-", 1)[0])
+
+
+class InMemoryStreamMixin(StreamCapabilityMixin):
+    """Append-only streams with consumer groups, held in memory (tests, single process).
+
+    Follows the contract of :class:`StreamCapabilityMixin`: appends never block, a
+    group reads each entry once until it is acknowledged, an unacknowledged entry
+    can be claimed by another consumer once idle, and a consumer can replay the
+    whole log by joining a group at the beginning.
+    """
+
+    def __post_init_streams__(self) -> None:
+        if not hasattr(self, "_streams"):
+            self._streams: Dict[str, _MemoryStream] = {}
+
+    def _stream(self, key: str, create: bool = True) -> Optional[_MemoryStream]:
+        self.__post_init_streams__()
+        stream = self._streams.get(key)
+        if stream is None and create:
+            stream = self._streams[key] = _MemoryStream()
+        return stream
+
+    @staticmethod
+    def _group(stream: _MemoryStream, name: str) -> _Group:
+        # Joining a group that was never created starts it at the beginning.
+        group = stream.groups.get(name)
+        if group is None:
+            group = stream.groups[name] = _Group()
+        return group
+
+    async def stream_append(
+        self,
+        stream_key: str,
+        record: Record,
+        max_len: Optional[int] = None,
+        approximate_trim: bool = True,
+    ) -> str:
+        payload = self._serialize_record(record)  # type: ignore[attr-defined]
+        stream = self._stream(stream_key)
+        async with stream.changed:
+            seq = stream.next_seq
+            stream.next_seq += 1
+            stream.entries.append((seq, payload))
+            if max_len is not None and len(stream.entries) > max_len:
+                del stream.entries[: len(stream.entries) - max_len]
+            stream.changed.notify_all()
+        return _entry_id(seq)
+
+    async def stream_ensure_consumer_group(
+        self,
+        stream_key: str,
+        group_name: str,
+        start_from: Union[StreamOffset, str] = StreamOffset.BEGINNING,
+    ) -> None:
+        stream = self._stream(stream_key)  # a consumer may join before the producer
+        async with stream.changed:
+            if group_name in stream.groups:
+                return
+            if start_from == StreamOffset.BEGINNING:
+                cursor = 0
+            elif start_from == StreamOffset.LATEST:
+                cursor = stream.next_seq - 1
+            else:
+                cursor = _seq_of(start_from)
+            stream.groups[group_name] = _Group(cursor=cursor)
+
+    async def stream_read(
+        self,
+        stream_key: str,
+        group_name: str,
+        record_class: Type[Record],
+        consumer_id: Optional[str] = None,
+        count: int = 1,
+        block_ms: Optional[int] = 5000,
+    ) -> List[StreamEntry[Record]]:
+        stream = self._stream(stream_key)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + block_ms / 1000 if block_ms not in (None, 0) else None
+
+        async with stream.changed:
+            group = self._group(stream, group_name)
+            while True:
+                fresh = [(q, p) for q, p in stream.entries if q > group.cursor][:count]
+                if fresh:
+                    now = time.monotonic()
+                    for seq, _payload in fresh:
+                        group.cursor = seq
+                        group.pending[seq] = (consumer_id, now)
+                    return [
+                        StreamEntry(
+                            entry_id=_entry_id(seq),
+                            record=self._deserialize_record(  # type: ignore[attr-defined]
+                                payload, record_class
+                            ),
+                            group_name=group_name,
+                            consumer_id=consumer_id,
+                        )
+                        for seq, payload in fresh
+                    ]
+                if block_ms is None:
+                    return []
+                remaining = None if deadline is None else deadline - loop.time()
+                if remaining is not None and remaining <= 0:
+                    return []
+                try:
+                    await asyncio.wait_for(stream.changed.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    return []
+
+    async def stream_ack(
+        self, stream_key: str, group_name: str, *entry_ids: str
+    ) -> int:
+        stream = self._stream(stream_key, create=False)
+        if stream is None or group_name not in stream.groups:
+            return 0
+        group = stream.groups[group_name]
+        acknowledged = 0
+        for entry_id in entry_ids:
+            if group.pending.pop(_seq_of(entry_id), None) is not None:
+                acknowledged += 1
+        return acknowledged
+
+    async def stream_claim_pending(
+        self,
+        stream_key: str,
+        group_name: str,
+        consumer_id: str,
+        record_class: Type[Record],
+        min_idle_ms: int = 30_000,
+        count: int = 100,
+    ) -> List[StreamEntry[Record]]:
+        stream = self._stream(stream_key, create=False)
+        if stream is None or group_name not in stream.groups:
+            return []
+        group = stream.groups[group_name]
+        payloads = dict(stream.entries)
+        now = time.monotonic()
+        claimed: List[StreamEntry[Record]] = []
+        for seq in sorted(group.pending):
+            if len(claimed) >= count:
+                break
+            _owner, delivered_at = group.pending[seq]
+            if (now - delivered_at) * 1000 < min_idle_ms:
+                continue
+            if seq not in payloads:  # trimmed away
+                group.pending.pop(seq)
+                continue
+            group.pending[seq] = (consumer_id, now)
+            claimed.append(
+                StreamEntry(
+                    entry_id=_entry_id(seq),
+                    record=self._deserialize_record(  # type: ignore[attr-defined]
+                        payloads[seq], record_class
+                    ),
+                    group_name=group_name,
+                    consumer_id=consumer_id,
+                )
+            )
+        return claimed
+
+    async def stream_length(self, stream_key: str) -> int:
+        stream = self._stream(stream_key, create=False)
+        return len(stream.entries) if stream else 0
+
+    async def stream_trim(
+        self, stream_key: str, max_len: int, approximate: bool = True
+    ) -> int:
+        stream = self._stream(stream_key, create=False)
+        if stream is None or len(stream.entries) <= max_len:
+            return 0
+        evicted = len(stream.entries) - max_len
+        del stream.entries[:evicted]
+        return evicted
+
+    async def stream_delete(self, stream_key: str) -> bool:
+        self.__post_init_streams__()
+        stream = self._streams.pop(stream_key, None)
+        if stream is None:
+            return False
+        async with stream.changed:
+            stream.entries.clear()
+            stream.changed.notify_all()  # wake blocked readers; they find nothing
+        return True

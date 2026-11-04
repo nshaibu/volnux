@@ -663,12 +663,20 @@ class VolnuxPoolManager:
         cancelled = 0
         skipped = 0
 
-        queued_removed = self._task_queue.remove_by_context(ctx_id)  # type: ignore[union-attr]
+        queued_removed = (
+            self._task_queue.remove_by_context(ctx_id)
+            if self._task_queue is not None
+            else []
+        )
         cancelled += len(queued_removed)
 
         in_flight = self._registry.pop_all(ctx_id)
         for future in in_flight:
-            if terminate and isinstance(self._executor, CeleryExecutor):
+            if (
+                terminate
+                and CeleryExecutor is not None
+                and isinstance(self._executor, CeleryExecutor)
+            ):
                 task_id = getattr(future, "task_id", None)
                 if task_id:
                     self._executor.revoke(task_id, terminate=True)

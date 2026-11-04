@@ -71,6 +71,10 @@ class Options(BaseModel):
     retry_attempts: MiniAnnotated[int, Attrib(default=0, ge=0)]
     executor: typing.Optional[str]
 
+    # Cooperative ``{}`` groups: how many of the group's chains may run at once
+    # (None: the ``COOPERATIVE_MAX_CONCURRENCY`` configuration value).
+    max_concurrency: MiniAnnotated[typing.Optional[int], Attrib(default=None, ge=1)]
+
     # Configuration dictionaries
     executor_config: MiniAnnotated[
         ExecutorInitializerConfig, Attrib(default_factory=ExecutorInitializerConfig)

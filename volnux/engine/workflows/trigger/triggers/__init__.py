@@ -25,6 +25,7 @@ WindowedTrigger
 """
 
 from .event import EventTrigger
+from .asset import AssetTrigger
 from .condition import ConditionalTrigger
 from .manual import ManualTrigger
 from .schedule import SchedulerTrigger
@@ -41,6 +42,7 @@ from .base import TriggerBase, TriggerLifecycle, TriggerActivation, TriggerType
 
 __all__ = [
     "EventTrigger",
+    "AssetTrigger",
     "WorkflowChainTrigger",
     "ManualTrigger",
     "ConditionalTrigger",

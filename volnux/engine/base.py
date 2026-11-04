@@ -79,6 +79,13 @@ class WorkflowEngine(ABC):
         # event that task would otherwise build (see stage_resumed_event)
         self._resumed_events: typing.Dict[str, typing.Any] = {}
 
+        # Streams wired across sub-engines (see StreamFlow). Held by the root engine
+        # and reached through ``get_root_engine()``: the streaming events that are
+        # running, by task id (so a failed consumer can ask its producer to stop),
+        # and the producers whose plain result must be published as a one-chunk stream.
+        self._stream_events: typing.Dict[str, typing.Any] = {}
+        self._stream_plain_producers: typing.Set[str] = set()
+
         self._checkpointer: typing.Optional[VolnuxCheckPointManager] = None
         # True when this engine built the manager itself (and must stop it);
         # a manager handed in through enable_checkpointing() belongs to the caller.
@@ -107,6 +114,22 @@ class WorkflowEngine(ABC):
         while engine.parent_engine is not None:
             engine = engine.parent_engine
         return engine
+
+    def register_stream_event(self, task_id: str, event: typing.Any) -> None:
+        self.get_root_engine()._stream_events[task_id] = event
+
+    def forget_stream_event(self, task_id: str) -> None:
+        self.get_root_engine()._stream_events.pop(task_id, None)
+
+    def get_stream_event(self, task_id: str) -> typing.Optional[typing.Any]:
+        return self.get_root_engine()._stream_events.get(task_id)
+
+    def mark_plain_stream_producers(self, task_ids: typing.Iterable[str]) -> None:
+        """Producers that are not generators but feed a stream consumer elsewhere."""
+        self.get_root_engine()._stream_plain_producers.update(task_ids)
+
+    def publishes_plain_stream(self, task_id: str) -> bool:
+        return task_id in self.get_root_engine()._stream_plain_producers
 
     def get_engine_depth(self) -> int:
         """Return nesting level (0 = root)."""

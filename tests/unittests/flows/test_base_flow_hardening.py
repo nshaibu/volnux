@@ -381,9 +381,12 @@ async def test_cancel_leaves_the_future_alone_when_the_channel_delivered():
 # --- 7. executor naming + thread-safe event cache ----------------------------
 
 
-def test_initialize_executor_accepts_class_or_shared_instance():
+def test_initialize_executor_accepts_class_or_shared_instance(monkeypatch):
+    from volnux.executors import shared as shared_pools
     from volnux.parser.executor_config import ExecutorInitializerConfig
 
+    # private pools: the flow-owned path (sharing is covered in test_shared_pools)
+    monkeypatch.setattr(shared_pools, "enabled", lambda: False)
     flow = make_flow()
     shared = ThreadPoolExecutor(max_workers=1)
     try:

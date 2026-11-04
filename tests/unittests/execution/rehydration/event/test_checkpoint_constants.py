@@ -1,4 +1,4 @@
-"""Tests for volnux.execution.checkpoint_constants — FRAMEWORK_EXCLUDED_ATTRS.
+"""Tests for volnux.execution.constants — FRAMEWORK_EXCLUDED_ATTRS.
 
 Validates:
   - The set is a frozenset (immutable).
@@ -57,7 +57,6 @@ class TestFrameworkExcludedAttrs:
             "_step_runner",
             "_logger",
             "_options",
-            "_event_graph",
             "_parent_context",
         }
         assert internal_attrs.issubset(

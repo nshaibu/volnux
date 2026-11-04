@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -61,6 +61,18 @@ class ReasoningStep:
     tool_result: Optional[Any] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-compatible form (the trace is checkpointed in this shape)."""
+        data = asdict(self)
+        data["step_type"] = self.step_type.value
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ReasoningStep":
+        data = dict(data)
+        data["step_type"] = ReasoningStepType(data["step_type"])
+        return cls(**data)
+
 
 @dataclass
 class AgentResult:
@@ -80,6 +92,19 @@ class AgentResult:
     steps_taken: int
     handoff_target: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-compatible form, for results that are persisted or sent on."""
+        return {
+            "success": self.success,
+            "content": self.content,
+            "reasoning_trace": [step.to_dict() for step in self.reasoning_trace],
+            "total_tokens": self.total_tokens,
+            "total_latency_ms": self.total_latency_ms,
+            "steps_taken": self.steps_taken,
+            "handoff_target": self.handoff_target,
+            "metadata": dict(self.metadata),
+        }
 
 
 @dataclass
@@ -101,3 +126,10 @@ class ToolCallRecord:
     error: Optional[str] = None
     completed_at: Optional[str] = None
     latency_ms: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ToolCallRecord":
+        return cls(**data)

@@ -1,6 +1,4 @@
-from typing import Any, Dict
 from .base import AgentEventBase
-from ._state import AgentAction
 
 
 class ReActAgentEventBase(AgentEventBase):
@@ -10,7 +8,13 @@ class ReActAgentEventBase(AgentEventBase):
     Augments the governance preamble with explicit ReAct instructions.
     Structured output makes the reasoning trace more interpretable for
     compliance review — every step clearly shows thought, action, observation.
+
+    The response is ``Thought:`` lines followed by one ``Action:`` line holding the
+    directive; text before the directive is allowed (``directive_preamble``), a second
+    directive is still a violation.
     """
+
+    directive_preamble = True
 
     def _build_governed_system_prompt(self) -> str:
         base = super()._build_governed_system_prompt()
@@ -21,15 +25,3 @@ class ReActAgentEventBase(AgentEventBase):
             "|  HANDOFF: <target> | <ctx>  |  ERROR: <description>\n"
             "\nBegin."
         )
-
-    def parse_action(self, response: Dict[str, Any]) -> AgentAction:
-        c = str(response.get("content", ""))
-        if "FINISH:" in c:
-            return AgentAction.FINISH
-        if "TOOL:" in c:
-            return AgentAction.TOOL_CALL
-        if "HANDOFF:" in c:
-            return AgentAction.HANDOFF
-        if "ERROR:" in c:
-            return AgentAction.ERROR
-        return AgentAction.THINK

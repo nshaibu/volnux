@@ -194,11 +194,25 @@ class DefaultWorkflowEngine(WorkflowEngine):
             self.tasks_processed += sub_engine.tasks_processed
             return self._resolve_sub_engine_error(sub_engine, e, error_strategy)
 
+    @staticmethod
+    def _cooperative_limit() -> int:
+        """Default cap on the chains of a ``{}`` group that run at once (0: none)."""
+        try:
+            from volnux.config import VolnuxConfig
+
+            return max(
+                0,
+                int(VolnuxConfig.get_instance().get("COOPERATIVE_MAX_CONCURRENCY", 64)),
+            )
+        except Exception:
+            return 64
+
     async def execute_subgraphs(
         self,
         root_tasks: typing.Sequence[TaskType],
         pipeline: Pipeline,
         error_strategy: SubgraphErrorStrategy = SubgraphErrorStrategy.TREAT_AS_FAILURE,
+        max_concurrency: typing.Optional[int] = None,
     ) -> typing.List[EngineResult]:
         """
         Execute multiple subgraphs concurrently, one fresh sub-engine per root task.
@@ -206,6 +220,11 @@ class DefaultWorkflowEngine(WorkflowEngine):
         Same spawn → execute → handle errors → merge task counts pattern as
         execute_subgraph(), but all sub-engines run concurrently via
         asyncio.gather() instead of one at a time.
+
+        At most ``max_concurrency`` of them run at once (default: the
+        ``COOPERATIVE_MAX_CONCURRENCY`` configuration value, 64; 0 means no limit).
+        The rest wait for a slot; none is dropped. The chains of one group are
+        independent of each other, so waiting for a slot cannot deadlock.
         """
         children = [
             await self.spawn_sub_engine(
@@ -214,11 +233,17 @@ class DefaultWorkflowEngine(WorkflowEngine):
             for task in root_tasks
         ]
 
+        limit = max_concurrency or self._cooperative_limit()
+        slots = asyncio.Semaphore(limit) if limit else None
+
+        async def run(child: "DefaultWorkflowEngine", task: TaskType) -> EngineResult:
+            if slots is None:
+                return await child.execute(task, pipeline)
+            async with slots:
+                return await child.execute(task, pipeline)
+
         raw_results = await asyncio.gather(
-            *(
-                child.execute(task, pipeline)
-                for child, task in zip(children, root_tasks)
-            ),
+            *(run(child, task) for child, task in zip(children, root_tasks)),
             return_exceptions=True,
         )
 
@@ -254,6 +279,125 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
         return results
 
+    async def _run_group_chains(
+        self, task: "PipelineTaskGrouping", pipeline: Pipeline
+    ) -> typing.List[EngineResult]:
+        """Run every chain of ``task`` concurrently; retry the whole group as a unit
+        (``{...}[retry_attempts = N]``) while any chain fails."""
+        attempts = max(1, int(getattr(task.options, "retry_attempts", 0) or 0))
+        limit = getattr(task.options, "max_concurrency", None)
+        extra = {"max_concurrency": limit} if limit else {}
+        results = await self.execute_subgraphs(task.chains, pipeline, **extra)
+        for attempt in range(2, attempts + 1):
+            if not any(self._chain_failed(r) for r in results):
+                break
+            logger.info(
+                f"[Engine:{self._engine_id}] Task grouping failed; retrying "
+                f"the whole group (attempt {attempt}/{attempts})"
+            )
+            results = await self.execute_subgraphs(task.chains, pipeline, **extra)
+        return results
+
+    @staticmethod
+    def _chain_failed(result: EngineResult) -> bool:
+        """A chain failed if its engine failed, or if the last task it ran failed
+        (a failure that a branch handled leaves a later task as the last one)."""
+        if result.status == EngineExecutionResult.FAILED:
+            return True
+        if result.final_context is None:
+            return False
+        try:
+            outcome = evaluate_context_execution_results(result.final_context)
+        except Exception:
+            # a context that holds a nested group (no event of its own) has nothing
+            # to evaluate: that group's chains were judged on their own
+            return False
+        return outcome is not None and not outcome.success
+
+    def _detect_group_stream_consumers(
+        self, group: "PipelineTaskGrouping"
+    ) -> typing.Optional[typing.List[TaskType]]:
+        """The tasks that read the streams of a ``{}`` group: ``{ A, B -> C } |-> D``
+        makes ``D`` (and whatever streams on from it) read from ``A`` and ``C``.
+
+        None when the group is not followed by ``|->`` or no chain ends on a
+        streaming event, in which case ``|->`` is just ``->``.
+        """
+        if group.condition_node.on_success_pipe != PipeType.PIPE_POINTER:
+            return None
+        first = group.condition_node.on_success_event
+        if first is None:
+            return None
+        tails = [t for chain in group.chains for t in chain.get_chain_tails()]
+        if not any(self._streams(t) for t in tails):
+            return None
+        return self._detect_stream_segment(first) or self._parallel_group(first)
+
+    async def _execute_stream_group(
+        self,
+        group: "PipelineTaskGrouping",
+        consumers: typing.List[TaskType],
+        pipeline: Pipeline,
+        previous_context: typing.Optional[ExecutionContext],
+    ) -> typing.Tuple[
+        typing.Optional[EngineResult],
+        typing.Optional[TaskType],
+        typing.Optional[ExecutionContext],
+    ]:
+        """Run a ``{}`` group together with the tasks that stream from it.
+
+        The chains run in sub-engines; the consumers run as a context of this engine,
+        at the same time. Returns ``(early_result, next_task, context)``: the next
+        task follows the last consumer, as for any stream segment.
+        """
+        tails = [t for chain in group.chains for t in chain.get_chain_tails()]
+        # a plain tail publishes its one result as a stream (the consumer reads one
+        # merged stream whatever kind each chain ends on)
+        self.mark_plain_stream_producers(
+            t.get_id() for t in tails if not self._streams(t)
+        )
+
+        context = await self._build_context(
+            task=consumers[0],
+            pipeline=pipeline,
+            previous_context=previous_context or self.final_context,
+            parallel_tasks=consumers,
+        )
+
+        chains_job = asyncio.ensure_future(self._run_group_chains(group, pipeline))
+        try:
+            await context.dispatch()
+            results = await chains_job
+        finally:
+            if not chains_job.done():
+                chains_job.cancel()
+                await asyncio.gather(chains_job, return_exceptions=True)
+        self.final_context = context
+
+        for result in results:
+            if result.status == EngineExecutionResult.SUSPENDED:
+                return (
+                    EngineResult(
+                        status=EngineExecutionResult.SUSPENDED,
+                        final_context=result.final_context or self.final_context,
+                        tasks_processed=self.tasks_processed,
+                    ),
+                    None,
+                    context,
+                )
+
+        if self._should_terminate(context):
+            return (
+                EngineResult(
+                    status=self._map_termination_status(context.status),
+                    final_context=context,
+                    tasks_processed=self.tasks_processed,
+                ),
+                None,
+                context,
+            )
+        return None, self._resolve_next_task(consumers[0], context), context
+
     async def _execute_task_grouping(
         self,
         task: "PipelineTaskGrouping",
@@ -271,7 +415,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
           branch otherwise — matching _evaluate_conditional_branch's
           success/failure selection.
         """
-        results = await self.execute_subgraphs(task.chains, pipeline)
+        results = await self._run_group_chains(task, pipeline)
 
         for result in results:
             if result.status == EngineExecutionResult.SUSPENDED:
@@ -292,9 +436,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
                     None,
                 )
 
-        any_failed = any(
-            result.status == EngineExecutionResult.FAILED for result in results
-        )
+        any_failed = any(self._chain_failed(result) for result in results)
 
         next_task = (
             task.condition_node.on_failure_event
@@ -427,18 +569,42 @@ class DefaultWorkflowEngine(WorkflowEngine):
                 try:
                     task = executable_node.task
 
-                    # {} grouping: MULTIPATH_CHAINS fans out into concurrent
-                    # sub-engines instead of the normal single-context
-                    # dispatch below. SINGLE_CHAIN falls through unchanged —
-                    # it's just executed normally like any other task.
-                    if (
-                        isinstance(task, PipelineTaskGrouping)
-                        and task.strategy == GroupingStrategy.MULTIPATH_CHAINS
-                    ):
-                        # This path bypasses _build_context(), so replicate
-                        # its sink-node collection for consistency.
+                    # ``{}`` is the cooperative paradigm: every chain of the
+                    # group runs concurrently in a sub-engine of its own (a
+                    # one-chain group is just a unit that can be retried). This
+                    # path bypasses _build_context(), so replicate its
+                    # sink-node collection.
+                    if isinstance(task, PipelineTaskGrouping):
                         if task.sink_node:
                             self.sink_queue.append(task.sink_node)
+
+                        if self.final_context is None:
+                            # Nothing has run in this engine yet, but the chains'
+                            # contexts need a parent to hang from: the group gets a
+                            # context of its own.
+                            self.final_context = await self._build_context(
+                                task=task, pipeline=pipeline, previous_context=None
+                            )
+
+                        consumers = self._detect_group_stream_consumers(task)
+                        if consumers:
+                            (
+                                early_result,
+                                next_task,
+                                stream_context,
+                            ) = await self._execute_stream_group(
+                                task,
+                                consumers,
+                                pipeline,
+                                executable_node.previous_context,
+                            )
+                            if early_result is not None:
+                                return early_result
+                            if next_task:
+                                self.task_queue.appendleft(
+                                    TaskNode(next_task, stream_context)
+                                )
+                            continue
 
                         early_result, next_task = await self._execute_task_grouping(
                             task, pipeline
@@ -447,12 +613,19 @@ class DefaultWorkflowEngine(WorkflowEngine):
                             return early_result
                         if next_task:
                             self.task_queue.appendleft(
-                                TaskNode(next_task, executable_node.previous_context)
+                                TaskNode(
+                                    next_task,
+                                    executable_node.previous_context
+                                    or self.final_context,
+                                )
                             )
                         continue
 
-                    # Detect parallelism
-                    parallel_tasks = self._detect_parallel_tasks(task)
+                    # Detect parallelism, or a ``|->`` stream segment: both run
+                    # their members together as one context
+                    parallel_tasks = self._detect_stream_segment(
+                        task
+                    ) or self._detect_parallel_tasks(task)
 
                     # Build execution context
                     execution_context = await self._build_context(
@@ -646,6 +819,66 @@ class DefaultWorkflowEngine(WorkflowEngine):
             logger.debug(f"[Engine] Detected {len(parallel_tasks)} parallel tasks")
 
         return parallel_tasks if parallel_tasks else None
+
+    @staticmethod
+    def _streams(task: TaskType) -> bool:
+        """True when ``task`` is an event whose ``process()`` is a generator."""
+        try:
+            event_class = task.get_event_class()
+        except Exception:
+            return False  # unresolved here; the run reports it
+        return bool(getattr(event_class, "_volnux_streaming", False))
+
+    @staticmethod
+    def _parallel_group(task: TaskType) -> typing.List[TaskType]:
+        """``task`` and the tasks joined to it by ``||``, in order (``[task]`` if none)."""
+        group = [task]
+        current = task
+        while current.condition_node.on_success_pipe == PipeType.PARALLELISM:
+            current = current.condition_node.on_success_event
+            if current is None:
+                break
+            group.append(current)
+        return group
+
+    def _detect_stream_segment(
+        self, task: TaskType
+    ) -> typing.Optional[typing.List[TaskType]]:
+        """Collect the tasks linked to ``task`` by ``|->`` into one segment.
+
+        * ``A |-> B |-> C`` is ``[A, B, C]``.
+        * ``A |-> (B || C)`` is a fan-out: ``[A, B, C]``.
+        * ``(A || B) |-> C`` is a fan-in: ``[A, B, C]`` (``task`` is ``A``, the head of
+          the parallel group that feeds ``C``).
+        * They combine: ``(A || B) |-> C |-> (D || E)`` is one segment of five.
+
+        The members run together, connected by streams, so an edge only counts when
+        at least one of the tasks it leaves from is a streaming event; otherwise
+        ``|->`` is just ``->`` and the segment ends there.
+
+        Returns:
+            The members in order, or None when ``task`` starts no segment.
+        """
+        group = self._parallel_group(task)
+        members: typing.List[TaskType] = list(group)
+
+        while True:
+            tail = group[-1]
+            if tail.condition_node.on_success_pipe != PipeType.PIPE_POINTER:
+                break
+            if not any(self._streams(producer) for producer in group):
+                break
+            first = tail.condition_node.on_success_event
+            if first is None:
+                break
+            group = self._parallel_group(first)
+            members.extend(group)
+
+        if len(members) == len(self._parallel_group(task)):
+            return None
+        if self.enable_debug_logging:
+            logger.debug(f"[Engine] Detected a stream segment of {len(members)} tasks")
+        return members
 
     async def _build_context(
         self,
@@ -847,6 +1080,12 @@ class DefaultWorkflowEngine(WorkflowEngine):
         Returns:
             Next task to execute, or None if the workflow ends
         """
+        if execution_context.is_multitask():
+            # a parallel group or stream segment: what follows hangs off its last task
+            decision = execution_context.get_decision_task_profile()
+            if decision is not None and decision.is_conditional:
+                return self._evaluate_conditional_branch(decision, execution_context)
+            return self._follow_sequential_flow(task, execution_context)
         if task.is_conditional:
             return self._evaluate_conditional_branch(task, execution_context)
         else:

@@ -7,17 +7,12 @@ from volnux.manager.remote_manager import RemoteTaskManager
 
 @pytest.fixture
 def mock_config_loader():
+    """The manager reads its settings from module-level constants (taken from
+    ``VolnuxConfig`` at import), so patch those rather than a config loader."""
     with patch(
-        "volnux.manager.remote_manager.ConfigLoader.get_lazily_loaded_config"
-    ) as mock_config:
-        mock_config.return_value = MagicMock(
-            DEFAULT_CONNECTION_TIMEOUT=10,
-            DATA_CHUNK_SIZE=1024,
-            CONNECTION_BACKLOG_SIZE=5,
-            DATA_QUEUE_SIZE=10,
-            PROJECT_ROOT_DIR="/mock/project/root",
-        )
-        yield mock_config
+        "volnux.manager.remote_manager.PROJECT_ROOT", "/mock/project/root"
+    ), patch("volnux.manager.remote_manager.BACKLOG_SIZE", 5):
+        yield
 
 
 @pytest.fixture

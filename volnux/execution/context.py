@@ -718,6 +718,12 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         if len(task_profiles) == 1:
             return task_profiles[0]
 
+        if self.is_stream_segment():
+            # members are listed in stream order; the last one decides
+            return task_profiles[-1]
+
+        # A task is the last of its group when it was entered by ``||``
+        # and does not continue the parallelism.
         for task_profile in task_profiles:
             if (
                 task_profile.get_pointer_to_task() == PipeType.PARALLELISM
@@ -725,6 +731,23 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
             ):
                 return task_profile
         return None
+
+    def is_stream_segment(self) -> bool:
+        """True when a task of this context reads the stream of a streaming producer.
+
+        That is a ``|->`` edge with at least one streaming producer (an event whose
+        ``process()`` is a generator) among the tasks it leaves from, whether the
+        producer is in this context (``A |-> B`` run together) or runs elsewhere (the
+        tails of a ``{}`` group). Any other ``|->`` is an ordinary ``->``.
+        """
+        for profile in self.get_task_profiles():
+            for producer in profile.get_stream_producers():
+                try:
+                    if getattr(producer.get_event_class(), "_volnux_streaming", False):
+                        return True
+                except Exception:
+                    continue
+        return False
 
     def get_result_evaluator(self) -> typing.Optional["EventEvaluator"]:
         """

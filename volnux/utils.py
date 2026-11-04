@@ -4,6 +4,7 @@ import ssl
 import sys
 import threading
 import time
+import inspect
 import typing
 import uuid
 import warnings
@@ -120,6 +121,11 @@ def validate_event_process_method(
             f"Event function '{func.__name__}' must have 'self' as first parameter. "
             f"Found: {[p.name for p in params]}"
         )
+
+    # A generator process() yields (success, data) many times; its annotation
+    # describes the generator, not a single result.
+    if inspect.isasyncgenfunction(func) or inspect.isgeneratorfunction(func):
+        return
 
     # Validate return type if specified
     return_annotation = type_hints.get("return")

@@ -71,6 +71,11 @@ def inject_event_initialisation_extra_params(
                 f"'{param_name}' for initialization."
             )
 
+        elif hasattr(event_class, param_name):
+            # The event class declares this value itself (``llm_provider = "x"``):
+            # that is the author's default, and the schema's must not replace it.
+            continue
+
         elif default_factory is not None:
             try:
                 value_to_set = default_factory()

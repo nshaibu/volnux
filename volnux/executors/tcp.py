@@ -17,7 +17,6 @@ from volnux.utils import (
     create_client_ssl_context,
 )
 
-# from volnux.telemetry.network import network_telemetry
 from volnux.executors.message import TaskMessage
 
 logger = logging.getLogger(__name__)
@@ -94,70 +93,39 @@ class RemoteExecutor(Executor):
 
     def _send_task(self, task_message: TaskMessage) -> typing.Any:
         """Send a task to the remote server and get the result"""
-        try:
-            # Start tracking network operation
-            network_telemetry.start_operation(
-                task_id=str(id(task_message)), host=self._host, port=self._port
+        task_id = task_message.task_id
+
+        with self._create_secure_connection() as sock:
+            data_size = send_data_over_socket(
+                sock, data=task_message.serialize(), chunk_size=CHUNK_SIZE
+            )
+            if data_size <= 0:
+                raise ValueError("Failed to send data to remote server")
+
+            result_data = receive_data_from_socket(sock, chunk_size=CHUNK_SIZE)
+            logger.debug(
+                "Task %s: sent %d bytes, received %d bytes (%s:%s)",
+                task_id,
+                data_size,
+                len(result_data),
+                self._host,
+                self._port,
             )
 
-            with self._create_secure_connection() as sock:
-                # Track sent data
-                data_size = send_data_over_socket(
-                    sock, data=task_message.serialize(), chunk_size=CHUNK_SIZE
-                )
+            try:
+                result, _ = task_message.deserialize(result_data)
+            except (zlib.error, pickle.UnpicklingError) as e:
+                error = f"Failed to decompress message: {str(e)}"
+                logger.error(error, exc_info=e)
+                raise ValueError(error)
+            except ModuleNotFoundError as e:
+                error = f"Failed to load task result: {str(e)}"
+                logger.error(error, exc_info=e)
+                raise ImportError(error)
 
-                if data_size <= 0:
-                    error = "Failed to send data to remote server"
-                    network_telemetry.end_operation(
-                        task_id=str(id(task_message)), bytes_sent=0, error=error
-                    )
-                    raise ValueError(error)
-
-                # Receive result
-                result_data = receive_data_from_socket(sock, chunk_size=CHUNK_SIZE)
-                received_size = len(result_data)
-
-                logger.debug(
-                    f"Receive {received_size} bytes from {self._host}:{self._port}"
-                )
-
-                try:
-                    result, _ = task_message.deserialize(result_data)
-
-                    # Record successful operation
-                    network_telemetry.end_operation(
-                        task_id=str(id(task_message)),
-                        bytes_sent=data_size,
-                        bytes_received=received_size,
-                    )
-                    if isinstance(result, Exception):
-                        raise result
-                    return result
-                except (zlib.error, pickle.UnpicklingError) as e:
-                    error = f"Failed to decompress message: {str(e)}"
-                    logger.error(error, exc_info=e)
-                    network_telemetry.end_operation(
-                        task_id=str(id(task_message)),
-                        bytes_sent=data_size,
-                        bytes_received=received_size,
-                        error=error,
-                    )
-                    raise ValueError(error)
-                except ModuleNotFoundError as e:
-                    error = f"Failed to load task result: {str(e)}"
-                    logger.error(error, exc_info=e)
-                    network_telemetry.end_operation(
-                        task_id=str(id(task_message)),
-                        bytes_sent=data_size,
-                        bytes_received=received_size,
-                        error=error,
-                    )
-                    raise ImportError(error)
-
-        except Exception as e:
-            error = f"Network operation failed: {str(e)}"
-            # network_telemetry.end_operation(task_id=str(id(task_message)), error=error)
-            raise
+            if isinstance(result, Exception):
+                raise result
+            return result
 
     def task_queue(self) -> queue.Queue:
         """Separated for easy mocking"""

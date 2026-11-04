@@ -183,6 +183,81 @@ class TaskBase(ObjectIdentityMixin):
 
         return pipe_type
 
+    def get_parallel_group(self) -> typing.List[TaskType]:
+        """The tasks joined to this one by ``||``, in order, this task last.
+
+        ``B`` in ``A || B`` gives ``[A, B]``; a task that is not part of a parallel
+        group gives just itself. For ``(A || B) |-> C`` this is how the producers
+        of ``C`` are found from the tail ``B``.
+        """
+        group = [typing.cast(TaskType, self)]
+        current = self
+        while (
+            current.parent_node is not None
+            and current.get_pointer_to_task() == PipeType.PARALLELISM
+        ):
+            current = current.parent_node
+            group.insert(0, typing.cast(TaskType, current))
+        return group
+
+    def get_chain_tails(self) -> typing.List[TaskType]:
+        """The task(s) the chain that starts here ends on.
+
+        Follows ``->``/``|->`` to the end; a ``||`` group at the end contributes all
+        its members, and a ``{}`` group contributes the tails of each of its chains.
+        This is what a ``{ A, B -> C } |-> D`` consumer reads from: ``A`` and ``C``.
+        """
+        current: typing.Any = self
+        while True:
+            group = [current]
+            while (
+                group[-1].condition_node.on_success_pipe == PipeType.PARALLELISM
+                and group[-1].condition_node.on_success_event is not None
+            ):
+                group.append(group[-1].condition_node.on_success_event)
+            following = group[-1].condition_node.on_success_event
+            if following is None:
+                break
+            current = following
+
+        tails: typing.List[TaskType] = []
+        for task in group:
+            if task.is_grouping:
+                for chain in task.chains:
+                    tails.extend(chain.get_chain_tails())
+            else:
+                tails.append(task)
+        return tails
+
+    def get_stream_producers(self) -> typing.List[TaskType]:
+        """The tasks whose streams this task reads (empty if it reads none).
+
+        * ``B`` in ``A |-> B`` reads ``A``.
+        * ``C`` in ``A |-> (B || C)`` was entered by ``||`` from ``B``, so the group is
+          traced back to ``B`` and from there to ``A``.
+        * ``D`` in ``(A || B) |-> D`` reads both ``A`` and ``B`` (fan-in).
+        * ``D`` in ``{ A, B -> C } |-> D`` reads the tail of each chain: ``A`` and ``C``.
+        """
+        current: typing.Any = self
+        while current.get_pointer_to_task() == PipeType.PARALLELISM:
+            if current.parent_node is None:
+                return []
+            current = current.parent_node
+        if current.get_pointer_to_task() != PipeType.PIPE_POINTER:
+            return []
+        tail = current.parent_node
+        if tail is None:
+            return []
+
+        producers: typing.List[TaskType] = []
+        for member in tail.get_parallel_group():
+            if member.is_grouping:
+                for chain in member.chains:
+                    producers.extend(chain.get_chain_tails())
+            else:
+                producers.append(member)
+        return producers
+
     def get_children(self) -> typing.List[TaskType]:
         children = []
         if self.sink_node:

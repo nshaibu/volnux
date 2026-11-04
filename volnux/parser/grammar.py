@@ -350,9 +350,19 @@ def p_mode(p):
 
 def p_grouped(p):
     """
-    grouped : LCURLY_BRACKET chain RCURLY_BRACKET attribute_list
+    grouped : LCURLY_BRACKET chain_list RCURLY_BRACKET attribute_list
     """
-    p[0] = PipelineGroupingNode([p[2]], options=p[4] or None)
+    # ``{ A -> B }`` holds one chain; ``{ A, B -> C, D }`` holds several, which the
+    # engine runs concurrently and cooperatively (one sub-engine per chain).
+    p[0] = PipelineGroupingNode(p[2], options=p[4] or None)
+
+
+def p_chain_list(p):
+    """
+    chain_list : chain
+               | chain_list SEPARATOR chain
+    """
+    p[0] = [p[1]] if len(p) == 2 else p[1] + [p[3]]
 
 
 def p_directive(p):

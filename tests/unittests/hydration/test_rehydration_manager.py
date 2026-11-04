@@ -83,6 +83,16 @@ async def until(predicate, timeout=3.0):
     return False
 
 
+async def status_reached(entry, status, timeout=3.0):
+    """The last workflow step running is not the end: the entry is marked and the
+    claim released afterwards. Wait for that instead of racing it."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if (await reload(entry)).status == status.value:
+            return
+        await asyncio.sleep(0.01)
+
+
 async def reload(entry):
     return await ExternalCommunicationQueueEntry.get(entry.request_id)
 
@@ -540,6 +550,7 @@ class TestEndToEnd:
         try:
             await ExternalCommunicationResponse.enqueue(answer(entry, "approve"))
             assert await until(lambda: "C" in seen["ran"])
+            await status_reached(entry, RequestStatus.RESUMED)
         finally:
             await manager.stop()
 
@@ -560,6 +571,7 @@ class TestEndToEnd:
         await manager.start()
         try:
             assert await until(lambda: "C" in seen["ran"])
+            await status_reached(entry, RequestStatus.EXPIRED)
         finally:
             await manager.stop()
 

@@ -105,6 +105,22 @@ def _patched_execution_context(ctx_factory=None):
         yield mock_cls
 
 
+@contextmanager
+def _patched_ctx_class(return_value=None, side_effect=None):
+    """Patch the ``ExecutionContext`` class the engine builds contexts from.
+
+    The engine awaits ``ExecutionContext.create_context(...)``, so that is what
+    returns (or, with ``side_effect``, successively returns) the mock contexts.
+    """
+    with patch("volnux.engine.default_engine.ExecutionContext") as cls:
+        if return_value is None and side_effect is None:
+            return_value = MagicMock()
+        cls.create_context = AsyncMock(
+            return_value=return_value, side_effect=side_effect
+        )
+        yield cls
+
+
 def _make_mock_ctx():
     """Create a mock ExecutionContext ready for dispatch / state_async."""
     ctx = MagicMock()
@@ -112,6 +128,7 @@ def _make_mock_ctx():
     state = MagicMock()
     state.status = object()  # hashable, not CANCELLED / ABORTED
     object.__setattr__(ctx, "state_async", _awaitable(state))
+    ctx.status = state.status
     ctx.is_multitask.return_value = False
     return ctx
 
@@ -122,6 +139,7 @@ def _make_mock_ctx_with_status(status_obj):
     object.__setattr__(ctx, "dispatch", _awaitable_fn())
     state = MagicMock()
     state.status = status_obj
+    ctx.status = status_obj
     object.__setattr__(ctx, "state_async", _awaitable(state))
     ctx.is_multitask.return_value = False
     return ctx
@@ -612,7 +630,7 @@ class TestExecuteCheckpointIntegration:
     async def test_checkpoint_hooks_called_when_enabled(self):
         engine = DefaultWorkflowEngine(enable_checkpointing=True)
         engine.enable_checkpointing(
-            checkpointer=MagicMock(),
+            checkpointer=AsyncMock(),  # start()/stop() are awaited by the engine
             checkpoint_frequency=CheckPointFrequency.PER_TASK,
         )
         task = _make_task()
@@ -975,8 +993,8 @@ class TestExecuteContextChaining:
         pipeline = MagicMock()
         mock_ctx = _make_mock_ctx()
 
-        with _patched_status(), patch(
-            "volnux.engine.default_engine.ExecutionContext", return_value=mock_ctx
+        with _patched_status(), _patched_ctx_class(
+            return_value=mock_ctx
         ) as MC, patch.object(
             engine, "_detect_parallel_tasks", return_value=None
         ), patch.object(
@@ -1004,8 +1022,8 @@ class TestExecuteContextChaining:
         ctx1 = _make_mock_ctx()
         ctx2 = _make_mock_ctx()
 
-        with _patched_status(), patch(
-            "volnux.engine.default_engine.ExecutionContext", side_effect=[ctx1, ctx2]
+        with _patched_status(), _patched_ctx_class(
+            side_effect=[ctx1, ctx2]
         ), patch.object(
             engine, "_detect_parallel_tasks", return_value=None
         ), patch.object(
@@ -1035,8 +1053,8 @@ class TestExecuteContextChaining:
         ctx1 = _make_mock_ctx()
         ctx2 = _make_mock_ctx()
 
-        with _patched_status(), patch(
-            "volnux.engine.default_engine.ExecutionContext", side_effect=[ctx1, ctx2]
+        with _patched_status(), _patched_ctx_class(
+            side_effect=[ctx1, ctx2]
         ), patch.object(
             engine, "_detect_parallel_tasks", return_value=None
         ), patch.object(
@@ -1069,9 +1087,8 @@ class TestExecuteSinkNodes:
         ctx2 = _make_mock_ctx()
         sink_ctx = _make_sink_ctx()
 
-        with _patched_status(), patch(
-            "volnux.engine.default_engine.ExecutionContext",
-            side_effect=[ctx1, ctx2, sink_ctx],
+        with _patched_status(), _patched_ctx_class(
+            side_effect=[ctx1, ctx2, sink_ctx]
         ), patch.object(
             engine, "_detect_parallel_tasks", return_value=None
         ), patch.object(
@@ -1106,9 +1123,8 @@ class TestExecuteSinkNodes:
         sink_ctx = MagicMock()
         object.__setattr__(sink_ctx, "dispatch", _failing_dispatch)
 
-        with _patched_status(), patch(
-            "volnux.engine.default_engine.ExecutionContext",
-            side_effect=[ctx1, ctx2, sink_ctx],
+        with _patched_status(), _patched_ctx_class(
+            side_effect=[ctx1, ctx2, sink_ctx]
         ), patch.object(
             engine, "_detect_parallel_tasks", return_value=None
         ), patch.object(
@@ -1148,9 +1164,8 @@ class TestExecuteSinkNodes:
         object.__setattr__(sink_ctx1, "dispatch", _failing_dispatch)
         sink_ctx2 = _make_sink_ctx()
 
-        with _patched_status(), patch(
-            "volnux.engine.default_engine.ExecutionContext",
-            side_effect=[ctx1, ctx2, ctx3, sink_ctx1, sink_ctx2],
+        with _patched_status(), _patched_ctx_class(
+            side_effect=[ctx1, ctx2, ctx3, sink_ctx1, sink_ctx2]
         ), patch.object(
             engine, "_detect_parallel_tasks", return_value=None
         ), patch.object(
@@ -1173,13 +1188,9 @@ class TestExecuteSinkNodes:
         pipeline = MagicMock()
         ctx = _make_mock_ctx()
 
-        with _patched_status(), patch(
-            "volnux.engine.default_engine.ExecutionContext", return_value=ctx
-        ), patch.object(
+        with _patched_status(), _patched_ctx_class(return_value=ctx), patch.object(
             engine, "_detect_parallel_tasks", return_value=None
-        ), patch.object(
-            engine, "_should_terminate", return_value=False
-        ), patch.object(
+        ), patch.object(engine, "_should_terminate", return_value=False), patch.object(
             engine, "_handle_task_switch", return_value=False
         ), patch.object(
             engine, "_resolve_next_task", return_value=None
@@ -1266,9 +1277,9 @@ class TestBuildContext:
         task = _make_task()
         pipeline = MagicMock()
 
-        with patch("volnux.engine.default_engine.ExecutionContext") as MC:
+        with _patched_ctx_class() as MC:
             mock_instance = MagicMock()
-            MC.return_value = mock_instance
+            MC.create_context.return_value = mock_instance
 
             ctx = await engine._build_context(
                 task=task,
@@ -1278,7 +1289,12 @@ class TestBuildContext:
 
             assert ctx is mock_instance
             assert pipeline.execution_context is mock_instance
-            MC.assert_called_once_with(pipeline=pipeline, task_profiles=task)
+            MC.create_context.assert_awaited_once_with(
+                pipeline=pipeline,
+                task_profiles=task,
+                workflow_id=ANY,
+                workflow_name=ANY,
+            )
 
     @pytest.mark.asyncio
     async def test_subsequent_context_sink_collected_and_chained(self):
@@ -1288,9 +1304,9 @@ class TestBuildContext:
         pipeline = MagicMock()
         prev_ctx = MagicMock()
 
-        with patch("volnux.engine.default_engine.ExecutionContext") as MC:
+        with _patched_ctx_class() as MC:
             mock_instance = MagicMock()
-            MC.return_value = mock_instance
+            MC.create_context.return_value = mock_instance
 
             ctx = await engine._build_context(
                 task=task,
@@ -1313,7 +1329,7 @@ class TestBuildContext:
         pipeline = MagicMock()
         parallel_set = {task, _make_task()}
 
-        with patch("volnux.engine.default_engine.ExecutionContext") as MC:
+        with _patched_ctx_class() as MC:
             await engine._build_context(
                 task=task,
                 pipeline=pipeline,
@@ -1321,7 +1337,7 @@ class TestBuildContext:
                 parallel_tasks=parallel_set,
             )
 
-            call_kwargs = MC.call_args[1]
+            call_kwargs = MC.create_context.call_args[1]
             assert isinstance(call_kwargs["task_profiles"], list)
             assert set(call_kwargs["task_profiles"]) == parallel_set
 
@@ -1331,14 +1347,14 @@ class TestBuildContext:
         task = _make_task()
         pipeline = MagicMock()
 
-        with patch("volnux.engine.default_engine.ExecutionContext") as MC:
+        with _patched_ctx_class() as MC:
             await engine._build_context(
                 task=task,
                 pipeline=pipeline,
                 previous_context=None,
             )
 
-            call_kwargs = MC.call_args[1]
+            call_kwargs = MC.create_context.call_args[1]
             assert call_kwargs["task_profiles"] is task
 
     @pytest.mark.asyncio
@@ -1349,7 +1365,7 @@ class TestBuildContext:
         pipeline = MagicMock()
         prev_ctx = MagicMock()
 
-        with patch("volnux.engine.default_engine.ExecutionContext"):
+        with _patched_ctx_class():
             await engine._build_context(
                 task=task,
                 pipeline=pipeline,
@@ -1539,6 +1555,7 @@ class TestResolveNextTask:
         task = _make_task(is_conditional=True)
         next_task = _make_task()
         mock_ctx = MagicMock()
+        mock_ctx.is_multitask.return_value = False
 
         with patch.object(
             engine, "_evaluate_conditional_branch", return_value=next_task
@@ -1553,6 +1570,7 @@ class TestResolveNextTask:
         task = _make_task(is_conditional=False)
         next_task = _make_task()
         mock_ctx = MagicMock()
+        mock_ctx.is_multitask.return_value = False
 
         with patch.object(
             engine, "_follow_sequential_flow", return_value=next_task
@@ -1561,6 +1579,37 @@ class TestResolveNextTask:
 
         m.assert_called_once_with(task, mock_ctx)
         assert result is next_task
+
+    def test_a_multitask_context_follows_its_last_task(self):
+        """A parallel group or stream segment: what follows hangs off the decision task."""
+        engine = DefaultWorkflowEngine()
+        head = _make_task(is_conditional=False)
+        decision = _make_task(is_conditional=False)
+        next_task = _make_task()
+        mock_ctx = MagicMock()
+        mock_ctx.is_multitask.return_value = True
+        mock_ctx.get_decision_task_profile.return_value = decision
+
+        with patch.object(
+            engine, "_follow_sequential_flow", return_value=next_task
+        ) as m:
+            assert engine._resolve_next_task(head, mock_ctx) is next_task
+        m.assert_called_once_with(head, mock_ctx)
+
+    def test_a_branched_last_task_chooses_its_branch(self):
+        engine = DefaultWorkflowEngine()
+        head = _make_task(is_conditional=False)
+        decision = _make_task(is_conditional=True)
+        branch = _make_task()
+        mock_ctx = MagicMock()
+        mock_ctx.is_multitask.return_value = True
+        mock_ctx.get_decision_task_profile.return_value = decision
+
+        with patch.object(
+            engine, "_evaluate_conditional_branch", return_value=branch
+        ) as m:
+            assert engine._resolve_next_task(head, mock_ctx) is branch
+        m.assert_called_once_with(decision, mock_ctx)
 
 
 class TestEvaluateConditionalBranch:
@@ -1698,14 +1747,14 @@ class TestDrainSinkNodes:
         engine.sink_queue.append(sink1)
         engine.sink_queue.append(sink2)
 
-        with patch("volnux.engine.default_engine.ExecutionContext") as MC:
+        with _patched_ctx_class() as MC:
             ctx1 = _make_sink_ctx()
             ctx2 = _make_sink_ctx()
-            MC.side_effect = [ctx1, ctx2]
+            MC.create_context.side_effect = [ctx1, ctx2]
 
             await engine._drain_sink_nodes(pipeline)
 
-            assert MC.call_count == 2
+            assert MC.create_context.call_count == 2
             assert ctx1.dispatch.call_count >= 1
             assert ctx2.dispatch.call_count >= 1
             assert len(engine.sink_queue) == 0
@@ -1721,10 +1770,10 @@ class TestDrainSinkNodes:
         async def _failing_dispatch(*a, **kw):
             raise error
 
-        with patch("volnux.engine.default_engine.ExecutionContext") as MC:
+        with _patched_ctx_class() as MC:
             ctx = MagicMock()
             object.__setattr__(ctx, "dispatch", _failing_dispatch)
-            MC.return_value = ctx
+            MC.create_context.return_value = ctx
 
             with pytest.raises(RuntimeError, match="sink err"):
                 await engine._drain_sink_nodes(pipeline)
@@ -1741,15 +1790,15 @@ class TestDrainSinkNodes:
         async def _failing_dispatch(*a, **kw):
             raise RuntimeError("sink1 err")
 
-        with patch("volnux.engine.default_engine.ExecutionContext") as MC:
+        with _patched_ctx_class() as MC:
             ctx1 = MagicMock()
             object.__setattr__(ctx1, "dispatch", _failing_dispatch)
             ctx2 = _make_sink_ctx()
-            MC.side_effect = [ctx1, ctx2]
+            MC.create_context.side_effect = [ctx1, ctx2]
 
             await engine._drain_sink_nodes(pipeline)
 
-            assert MC.call_count == 2
+            assert MC.create_context.call_count == 2
             assert ctx2.dispatch.call_count >= 1
             assert len(engine.sink_queue) == 0
 
@@ -1760,11 +1809,11 @@ class TestDrainSinkNodes:
         sink = _make_task(name="sink")
         engine.sink_queue.append(sink)
 
-        with patch("volnux.engine.default_engine.ExecutionContext") as MC, patch(
+        with _patched_ctx_class() as MC, patch(
             "volnux.engine.default_engine.logger"
         ) as mock_logger:
 
-            MC.return_value = _make_sink_ctx()
+            MC.create_context.return_value = _make_sink_ctx()
             await engine._drain_sink_nodes(pipeline)
 
             mock_logger.debug.assert_called_once()
@@ -2069,40 +2118,123 @@ class TestExecuteSubgraphs:
 
 
 class TestExecuteTaskGrouping:
-    """{} grouping: SINGLE_CHAIN executes normally, MULTIPATH_CHAINS fans
-    out into execute_subgraphs()."""
+    """``{}`` is the cooperative paradigm: every group, one chain or several, runs its
+    chains concurrently through execute_subgraphs()."""
 
     def _grouping(self, chains):
         return PipelineTaskGrouping(chains=chains)
 
     @pytest.mark.asyncio
-    async def test_single_chain_falls_through_to_normal_dispatch(self):
+    async def test_a_single_chain_group_also_runs_through_execute_subgraphs(self):
         engine = DefaultWorkflowEngine()
-        grouping = self._grouping([_make_task()])
+        chain = _make_task()
+        grouping = self._grouping([chain])
         assert grouping.strategy == GroupingStrategy.SINGLE_CHAIN
-        mock_ctx = _make_mock_ctx()
+        pipeline = MagicMock()
+
+        with patch.object(
+            engine, "_build_context", AsyncMock(return_value=_make_mock_ctx())
+        ), patch.object(
+            engine,
+            "execute_subgraphs",
+            AsyncMock(
+                return_value=[EngineResult(status=EngineExecutionResult.COMPLETED)]
+            ),
+        ) as m_subgraphs, patch.object(
+            engine, "_drain_sink_nodes"
+        ):
+            result = await engine.execute(grouping, pipeline)
+
+        m_subgraphs.assert_called_once_with([chain], pipeline)
+        assert result.status == EngineExecutionResult.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_a_group_first_in_the_workflow_gets_a_context_of_its_own(self):
+        """The chains' contexts hang from the engine's final context, so a group that
+        starts the workflow must create one first (it used to fail silently)."""
+        engine = DefaultWorkflowEngine()
+        grouping = self._grouping([_make_task(), _make_task()])
+        ctx = _make_mock_ctx()
+        m_build = AsyncMock(return_value=ctx)
+
+        with patch.object(engine, "_build_context", m_build), patch.object(
+            engine,
+            "execute_subgraphs",
+            AsyncMock(
+                return_value=[EngineResult(status=EngineExecutionResult.COMPLETED)] * 2
+            ),
+        ), patch.object(engine, "_drain_sink_nodes"):
+            await engine.execute(grouping, MagicMock())
+
+        m_build.assert_awaited_once()
+        assert engine.final_context is ctx
+
+    @pytest.mark.asyncio
+    async def test_a_group_after_a_task_reuses_the_existing_context(self):
+        engine = DefaultWorkflowEngine()
+        first = _make_task()
+        grouping = self._grouping([_make_task(), _make_task()])
+        first.condition_node.on_success_event = grouping
+        ctx = _make_mock_ctx()
+        m_build = AsyncMock(return_value=ctx)
 
         with _patched_status(), patch.object(
             engine, "_detect_parallel_tasks", return_value=None
-        ), patch.object(
-            engine, "_build_context", return_value=mock_ctx
-        ) as m_build, patch.object(
+        ), patch.object(engine, "_build_context", m_build), patch.object(
             engine, "_should_terminate", return_value=False
         ), patch.object(
             engine, "_handle_task_switch", return_value=False
         ), patch.object(
-            engine, "_resolve_next_task", return_value=None
+            engine,
+            "execute_subgraphs",
+            AsyncMock(
+                return_value=[EngineResult(status=EngineExecutionResult.COMPLETED)] * 2
+            ),
         ), patch.object(
             engine, "_drain_sink_nodes"
-        ), patch.object(
-            engine, "execute_subgraphs"
-        ) as m_subgraphs:
+        ):
+            await engine.execute(first, MagicMock())
 
-            result = await engine.execute(grouping, MagicMock())
+        assert m_build.await_count == 1  # for `first` only, not again for the group
 
-        m_subgraphs.assert_not_called()
-        m_build.assert_called_once()
-        assert result.status == EngineExecutionResult.COMPLETED
+    @pytest.mark.asyncio
+    async def test_a_failed_group_is_retried_as_a_unit(self):
+        engine = DefaultWorkflowEngine()
+        grouping = self._grouping([_make_task(), _make_task()])
+        grouping.options = MagicMock(retry_attempts=3)
+        results = [
+            [EngineResult(status=EngineExecutionResult.FAILED)] * 2,
+            [EngineResult(status=EngineExecutionResult.FAILED)] * 2,
+            [EngineResult(status=EngineExecutionResult.COMPLETED)] * 2,
+        ]
+        m_subgraphs = AsyncMock(side_effect=results)
+
+        with patch.object(
+            engine, "_build_context", AsyncMock(return_value=_make_mock_ctx())
+        ), patch.object(engine, "execute_subgraphs", m_subgraphs), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
+            await engine.execute(grouping, MagicMock())
+
+        assert m_subgraphs.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_a_group_that_succeeds_is_not_retried(self):
+        engine = DefaultWorkflowEngine()
+        grouping = self._grouping([_make_task(), _make_task()])
+        grouping.options = MagicMock(retry_attempts=3)
+        m_subgraphs = AsyncMock(
+            return_value=[EngineResult(status=EngineExecutionResult.COMPLETED)] * 2
+        )
+
+        with patch.object(
+            engine, "_build_context", AsyncMock(return_value=_make_mock_ctx())
+        ), patch.object(engine, "execute_subgraphs", m_subgraphs), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
+            await engine.execute(grouping, MagicMock())
+
+        assert m_subgraphs.await_count == 1
 
     @pytest.mark.asyncio
     async def test_multipath_chains_calls_execute_subgraphs_with_chains(self):
@@ -2113,6 +2245,8 @@ class TestExecuteTaskGrouping:
         pipeline = MagicMock()
 
         with patch.object(
+            engine, "_build_context", AsyncMock(return_value=_make_mock_ctx())
+        ), patch.object(
             engine,
             "execute_subgraphs",
             AsyncMock(
@@ -2121,7 +2255,9 @@ class TestExecuteTaskGrouping:
                     EngineResult(status=EngineExecutionResult.COMPLETED),
                 ]
             ),
-        ) as m_subgraphs, patch.object(engine, "_drain_sink_nodes"):
+        ) as m_subgraphs, patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             result = await engine.execute(grouping, pipeline)
 
@@ -2206,6 +2342,8 @@ class TestExecuteTaskGrouping:
         grouping = self._grouping([_make_task(), _make_task()])
 
         with patch.object(
+            engine, "_build_context", AsyncMock(return_value=_make_mock_ctx())
+        ), patch.object(
             engine,
             "execute_subgraphs",
             AsyncMock(
@@ -2214,7 +2352,9 @@ class TestExecuteTaskGrouping:
                     EngineResult(status=EngineExecutionResult.SUSPENDED),
                 ]
             ),
-        ), patch.object(engine, "_drain_sink_nodes") as m_drain:
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ) as m_drain:
 
             result = await engine.execute(grouping, MagicMock())
 
@@ -2232,12 +2372,16 @@ class TestExecuteTaskGrouping:
         grouping.sink_node = sink
 
         with patch.object(
+            engine, "_build_context", AsyncMock(return_value=_make_mock_ctx())
+        ), patch.object(
             engine,
             "execute_subgraphs",
             AsyncMock(
                 return_value=[EngineResult(status=EngineExecutionResult.COMPLETED)]
             ),
-        ), patch.object(engine, "_drain_sink_nodes") as m_drain:
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ) as m_drain:
 
             await engine.execute(grouping, MagicMock())
 

@@ -1,29 +1,101 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from celery import Celery
 from celery.schedules import crontab
 
+from ..event import TriggerEvent
 from .base import TriggerBase, TriggerType
+from .event import EventSubscriptionMixin
 
 logger = logging.getLogger(__name__)
 
+#: Name of the one Celery task every schedule fires. It is the same for all
+#: triggers, so a worker that never saw a trigger can still run it.
+FIRE_TASK_NAME = "volnux.schedule_trigger.fire"
 
-class SchedulerTrigger(TriggerBase):
+#: ``TriggerEvent.event_type`` published by the task when a schedule is due.
+SCHEDULE_FIRED_EVENT = "schedule.fired"
+
+
+def _run_sync(coro) -> None:
+    """Run ``coro`` to completion from synchronous (Celery task) code.
+
+    ``asyncio.run`` refuses to start inside a thread that already runs an event
+    loop (an eager task called from async code, a gevent/eventlet worker), so in
+    that case the coroutine runs on a short-lived thread of its own.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(coro)
+        return
+
+    outcome: Dict[str, BaseException] = {}
+
+    def runner() -> None:
+        try:
+            asyncio.run(coro)
+        except BaseException as exc:  # handed back to the calling thread
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=runner, name="schedule-trigger-fire")
+    thread.start()
+    thread.join()
+    if "error" in outcome:
+        raise outcome["error"]
+
+
+def fire_schedule(trigger_id: str, crontab_repr: str = "") -> None:
+    """What a worker does when beat dispatches a schedule: say that it is due.
+
+    The worker holds no trigger and no engine. It publishes a ``TriggerEvent``
+    over the messaging backend; the ``SchedulerTrigger`` with this id, running
+    wherever the engine is, receives it and activates its workflow.
+    """
+    event = TriggerEvent(
+        event_type=SCHEDULE_FIRED_EVENT,
+        source=FIRE_TASK_NAME,
+        data={
+            "trigger_id": trigger_id,
+            "scheduled_at": datetime.now(timezone.utc).isoformat(),
+            "crontab": crontab_repr,
+        },
+    )
+    _run_sync(TriggerEvent.publish(event))
+
+
+def register_schedule_task(celery_app: Celery) -> None:
+    """Register the shared fire task on ``celery_app`` (idempotent).
+
+    Call this wherever the Celery app is configured, so the worker process
+    knows the task; constructing a ``SchedulerTrigger`` against the app also
+    does it, which covers the engine side.
+    """
+    if FIRE_TASK_NAME not in celery_app.tasks:
+        celery_app.task(name=FIRE_TASK_NAME, shared=False)(fire_schedule)
+
+
+class SchedulerTrigger(EventSubscriptionMixin, TriggerBase):
     """
     Trigger that activates on a Celery cron schedule.
 
     Activation mechanism
     --------------------
-    On ``start()``, registers a named Celery task and injects a corresponding
-    entry into ``celery_app.conf.beat_schedule``. Celery Beat fires the task
-    according to the supplied ``crontab``; the task bridges back into async
-    by running ``activate()`` on a fresh event loop inside the worker process.
+    ``start()`` adds an entry to ``celery_app.conf.beat_schedule`` that runs one
+    shared task, ``volnux.schedule_trigger.fire``, with this trigger's id.
+    When Celery Beat dispatches it, the worker publishes a ``schedule.fired``
+    ``TriggerEvent`` over the messaging backend; the trigger, listening in the
+    engine process, receives it and calls ``activate()``.
 
-    On ``stop()``, the beat entry is removed and the task is deregistered from
-    the Celery task registry so no further executions are scheduled or dispatched.
+    Beat, the worker and the engine therefore need not share a process: the
+    worker only has to know the shared task (``register_schedule_task(app)``,
+    done for you when a ``SchedulerTrigger`` is built against the app) and reach
+    the same messaging backend. Delivery is pub/sub: a run that comes due while
+    the engine is not listening is missed, not queued.
 
     Crontab fields
     --------------
@@ -69,6 +141,14 @@ class SchedulerTrigger(TriggerBase):
         enabled: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
     ):
+        if celery_app is None:
+            raise ValueError("SchedulerTrigger requires a celery_app.")
+        if schedule is not None and not isinstance(schedule, crontab):
+            raise TypeError(
+                f"'schedule' must be a celery.schedules.crontab, got "
+                f"{type(schedule).__name__}."
+            )
+
         _using_schedule = schedule is not None
         _using_fields = any(
             v != "*" for v in (minute, hour, day_of_week, day_of_month, month_of_year)
@@ -95,146 +175,126 @@ class SchedulerTrigger(TriggerBase):
             day_of_month=day_of_month,
             month_of_year=month_of_year,
         )
+        register_schedule_task(celery_app)
 
-        # Stable, unique names derived from trigger_id (set after state.save()).
-        # Both the Celery task name and the beat-schedule key use the same value
-        # so they are trivially correlated in logs and monitoring.
-        self._task_name: Optional[str] = None
+        # Key of this trigger's beat entry (set by start(), cleared by stop()).
+        self._beat_key: Optional[str] = None
 
-    def _make_task_name(self) -> str:
-        """Return the Celery task name for this trigger instance."""
+    def _make_beat_key(self) -> str:
+        """The beat-schedule key of this trigger instance."""
         return f"volnux.schedule_trigger.{self.trigger_id}"
-
-    def _register_celery_task(self) -> None:
-        """
-        Dynamically create and register a Celery task that fires ``activate()``.
-
-        The task is bound to ``self`` via closure so each ``ScheduleTrigger``
-        instance gets its own isolated task. A fresh event loop is used per
-        invocation because Celery worker processes do not share the engine's
-        async event loop.
-        """
-        trigger = self  # explicit closure capture; avoids accidental rebinding
-        task_name = self._task_name
-
-        @self.celery_app.task(name=task_name)
-        def _fire_trigger() -> None:
-            logger.debug("Celery task '%s' executing schedule trigger", task_name)
-            fired_at = datetime.now(timezone.utc).isoformat()
-            try:
-                asyncio.run(
-                    trigger.activate(
-                        scheduled_at=fired_at,
-                        crontab=str(trigger._crontab),
-                    )
-                )
-            except Exception as exc:
-                # Error is already recorded inside activate(); re-raise so
-                # Celery can apply its own retry / failure machinery.
-                logger.error(
-                    "ScheduleTrigger '%s' raised during Celery task execution: %s",
-                    trigger.trigger_id,
-                    exc,
-                )
-                raise
-
-    def _deregister_celery_task(self) -> None:
-        """Remove the task from Celery's registry if it is present."""
-        if self._task_name and self._task_name in self.celery_app.tasks:
-            del self.celery_app.tasks[self._task_name]
-            logger.debug(
-                "ScheduleTrigger '%s': deregistered Celery task '%s'",
-                self.trigger_id,
-                self._task_name,
-            )
 
     async def start(self) -> None:
         """
-        Register the Celery task and inject the beat-schedule entry.
+        Add the beat entry and start listening for the schedule's events.
 
-        Calling ``start()`` on an already-active trigger is idempotent: a
-        warning is logged and the method returns without modifying existing
-        state, preventing duplicate beat entries.
+        Calling ``start()`` on an already-active trigger is idempotent: no
+        second beat entry is created.
         """
-        task_name = self._make_task_name()
+        key = self._make_beat_key()
+        register_schedule_task(self.celery_app)
 
-        if task_name in self.celery_app.conf.beat_schedule:
+        if key in self.celery_app.conf.beat_schedule:
             logger.warning(
-                "ScheduleTrigger '%s': beat entry '%s' already exists; "
-                "skipping start to avoid duplicate registration.",
+                "SchedulerTrigger '%s': beat entry '%s' already exists; "
+                "not adding a duplicate.",
                 self.trigger_id,
-                task_name,
+                key,
             )
-            return
+        else:
+            self.celery_app.conf.beat_schedule[key] = {
+                "task": FIRE_TASK_NAME,
+                "schedule": self._crontab,
+                "args": (self.trigger_id, str(self._crontab)),
+                "kwargs": {},
+                "options": {
+                    # Prevent stale tasks from piling up if a worker is slow.
+                    "expires": self._crontab_period_seconds(),
+                },
+            }
+        self._beat_key = key
 
-        self._task_name = task_name
-        self._register_celery_task()
-
-        self.celery_app.conf.beat_schedule[self._task_name] = {
-            "task": self._task_name,
-            "schedule": self._crontab,
-            # Pass nothing via Celery args; all context lives in the closure.
-            "args": (),
-            "kwargs": {},
-            "options": {
-                # Prevent stale tasks from piling up if a worker is slow.
-                "expires": self._crontab_period_seconds(),
-            },
-        }
+        # Listen before the first run can come due.
+        await self._open_subscription()
 
         logger.info(
-            "ScheduleTrigger '%s' started — task: '%s', crontab: '%s'",
+            "SchedulerTrigger '%s' started — beat entry '%s', crontab: '%s'",
             self.trigger_id,
-            self._task_name,
+            key,
             self._crontab,
         )
 
     async def stop(self) -> None:
         """
-        Remove the beat-schedule entry and deregister the Celery task.
+        Remove the beat entry and stop listening.
 
         Safe to call on a trigger that was never started or was already stopped.
         """
-        if self._task_name is None:
+        await self._close_subscription()
+
+        if self._beat_key is None:
             logger.debug(
-                "ScheduleTrigger '%s': stop() called before start(); nothing to do.",
+                "SchedulerTrigger '%s': stop() called before start(); nothing to do.",
                 self.trigger_id,
             )
             return
 
-        removed = self.celery_app.conf.beat_schedule.pop(self._task_name, None)
+        removed = self.celery_app.conf.beat_schedule.pop(self._beat_key, None)
         if removed:
             logger.info(
-                "ScheduleTrigger '%s': removed beat entry '%s'.",
+                "SchedulerTrigger '%s': removed beat entry '%s'.",
                 self.trigger_id,
-                self._task_name,
+                self._beat_key,
             )
         else:
             logger.warning(
-                "ScheduleTrigger '%s': beat entry '%s' was not found during stop().",
+                "SchedulerTrigger '%s': beat entry '%s' was not found during stop().",
                 self.trigger_id,
-                self._task_name,
+                self._beat_key,
             )
+        self._beat_key = None
 
-        self._deregister_celery_task()
-        self._task_name = None
+    async def _handle_event(self, event: TriggerEvent) -> None:
+        """Activate when the worker reports that *this* trigger's schedule is due."""
+        if event.event_type != SCHEDULE_FIRED_EVENT:
+            return
+        data = event.data or {}
+        if data.get("trigger_id") != self.trigger_id:
+            return
+
+        await self.activate(
+            scheduled_at=data.get("scheduled_at"),
+            crontab=data.get("crontab"),
+            correlation_id=self.generate_correlation_id(),
+        )
+
+    #: How many upcoming gaps between runs are looked at to find the longest.
+    _EXPIRY_LOOKAHEAD = 12
 
     def _crontab_period_seconds(self) -> int:
         """
-        Return a conservative upper-bound expiry for the task in seconds.
+        Return an upper bound, in seconds, on the time between two runs.
 
-        Used to set ``expires`` on dispatched tasks so stale executions from
-        a paused worker do not fire in a burst when the worker recovers.
-        A full minute (60 s) is used as the floor to cover per-minute crontabs.
+        Used as ``expires`` on dispatched tasks so executions that sat in a queue
+        past the next scheduled run (a paused worker) are dropped instead of
+        firing in a burst on recovery. The gaps between the next several runs are
+        measured, because they are not always equal (``mon-fri`` leaves a
+        three-day gap over the weekend); the longest wins, with a 60 s floor.
         """
-        # crontab does not expose its period directly, so we derive an upper
-        # bound from the human-readable string that Celery itself builds.
-        period_map = {
-            "day_of_week": 7 * 24 * 3600,
-            "day_of_month": 31 * 24 * 3600,
-            "hour": 3600,
-        }
-        for field, seconds in period_map.items():
-            if getattr(self._crontab, field, "*") not in ("*", None):
-                return seconds
-        return 60  # per-minute floor
+        longest = 60.0
+        try:
+            moment = self._crontab.now()
+            # remaining_delta(last_run) is the step from ``last_run`` to the next
+            # run, whatever the current time is (remaining_estimate is not).
+            previous = moment
+            for _ in range(self._EXPIRY_LOOKAHEAD + 1):
+                last_run, delta, _now = self._crontab.remaining_delta(previous)
+                following = last_run + delta
+                if following <= previous:
+                    break
+                if previous is not moment:
+                    longest = max(longest, (following - previous).total_seconds())
+                previous = following
+        except Exception:  # an exotic schedule must not stop the trigger starting
+            logger.debug("Could not measure the crontab period", exc_info=True)
+        return int(longest)

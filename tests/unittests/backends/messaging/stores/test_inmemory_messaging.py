@@ -163,6 +163,18 @@ async def test_psubscribe_matches_patterns(bound):
 
 
 @pytest.mark.asyncio
-async def test_streams_unsupported_on_inmemory_backend_fail_clearly(bound):
+async def test_inmemory_backend_supports_streams(bound):
+    assert await Msg.stream_length() == 0
+    await Msg.stream_append(Msg(n=1))
+    await Msg.stream_append(Msg(n=2))
+    await Msg.stream_ensure_consumer_group("g")
+    assert ns(
+        [e.record for e in await Msg.stream_read("g", count=5, block_ms=None)]
+    ) == [1, 2]
+
+
+def test_a_backend_without_streams_fails_clearly():
+    from volnux.backends.messaging.util import require_streaming
+
     with pytest.raises(TypeError, match="StreamCapabilityMixin"):
-        await Msg.stream_length()
+        require_streaming(object(), "Msg")

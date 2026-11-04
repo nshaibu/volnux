@@ -390,7 +390,22 @@ class LLMProviderError(RuntimeError):
     """
     Raised when the LLM provider is unavailable, returns an error, or
     produces a structurally invalid response.
+
+    ``retryable`` says whether trying again can help: a timeout, a rate limit or a
+    server error can; a rejected key or a malformed request cannot, and the agent
+    gives up at once instead of waiting through its backoff. ``status_code`` is the
+    HTTP status when there was one.
     """
+
+    def __init__(
+        self,
+        *args: object,
+        retryable: bool = True,
+        status_code: "int | None" = None,
+    ) -> None:
+        super().__init__(*args)
+        self.retryable = retryable
+        self.status_code = status_code
 
 
 class HallucinationDetected(RuntimeError):

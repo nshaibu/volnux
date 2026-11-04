@@ -22,6 +22,19 @@ KEY_VALUE_STORE_CONFIG = {
     #     "port": 6379,
     # },
 }
+# Bounded resources. Process/thread pools are shared by all flows (never one pool per
+# flow), and the chains of a ``{}`` group run at most this many at a time (0: no limit):
+# SHARED_PROCESS_POOL_SIZE = None  # default: the CPU count
+# SHARED_THREAD_POOL_SIZE = None   # default: min(32, CPU count + 4)
+# SHARED_EXECUTOR_POOLS = True     # False: a pool per flow, as before
+# COOPERATIVE_MAX_CONCURRENCY = 64
+
+# Streams (``A |-> B`` between generator events) default to KEY_VALUE_STORE_CONFIG.
+# Point them at another backend with a Redis or Kafka stream capability:
+# STREAM_BACKEND_CONFIG = {
+#     "ENGINE": "volnux.backends.stores.redis.RedisStoreBackend",
+#     "CONNECTOR_CONFIG": {"host": "localhost", "port": 6379},
+# }
 # Kafka (pip install 'volnux[kafka]') provides key-value records, pub/sub, queues
 # and streams from one backend:
 # KEY_VALUE_STORE_CONFIG = {

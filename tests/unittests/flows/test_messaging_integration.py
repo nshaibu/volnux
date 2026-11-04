@@ -232,6 +232,7 @@ KAFKA_PORT = int(os.environ.get("VOLNUX_TEST_KAFKA_PORT", "19092"))
 
 @pytest_asyncio.fixture
 async def kafka_env(tmp_path, monkeypatch):
+    pytest.importorskip("confluent_kafka", reason="confluent-kafka is not installed")
     from volnux.backends.stores.kafka import KafkaStoreBackend
 
     try:

@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 420" width="1280" height="420" role="img" aria-label="Volnux - workflow orchestration">
+  <title>Volnux</title>
+  <defs>
+    <linearGradient id="vxBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1220"/><stop offset="1" stop-color="#16224A"/>
+    </linearGradient>
+    <linearGradient id="vxWord" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#14B8A6"/><stop offset="0.55" stop-color="#3B82F6"/><stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <linearGradient id="vxA" gradientUnits="userSpaceOnUse" x1="60" y1="48" x2="128" y2="148">
+      <stop offset="0" stop-color="#14B8A6"/><stop offset="1" stop-color="#3B82F6"/>
+    </linearGradient>
+    <linearGradient id="vxB" gradientUnits="userSpaceOnUse" x1="196" y1="48" x2="128" y2="148">
+      <stop offset="0" stop-color="#06B6D4"/><stop offset="1" stop-color="#6366F1"/>
+    </linearGradient>
+    <linearGradient id="vxOut" gradientUnits="userSpaceOnUse" x1="128" y1="148" x2="128" y2="232">
+      <stop offset="0" stop-color="#3B82F6"/><stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="420" fill="url(#vxBg)"/>
+  <g opacity="0.07" stroke="#FFFFFF" stroke-width="1.5" fill="none">
+    <polygon points="1000,40 1060,10 1120,40 1120,100 1060,130 1000,100"/>
+    <polygon points="1120,100 1180,70 1240,100 1240,160 1180,190 1120,160"/>
+    <polygon points="1000,160 1060,130 1120,160 1120,220 1060,250 1000,220"/>
+  </g>
+  <g transform="translate(92 62) scale(1.25 1.25)">
+    <!-- two branches converge (fork/join) into one flow that continues: the V of Volnux -->
+    <path d="M60 48 L128 148" stroke="url(#vxA)" stroke-width="22" stroke-linecap="round" fill="none"/>
+    <path d="M196 48 L128 148" stroke="url(#vxB)" stroke-width="22" stroke-linecap="round" fill="none"/>
+    <path d="M128 148 L128 196" stroke="url(#vxOut)" stroke-width="22" stroke-linecap="round" fill="none"/>
+    <path d="M100 192 L156 192 L128 234 Z" fill="url(#vxOut)" stroke="url(#vxOut)" stroke-width="10" stroke-linejoin="round"/>
+    <circle cx="60" cy="48" r="26" fill="url(#vxA)"/>
+    <circle cx="60" cy="48" r="10" fill="#FFFFFF" fill-opacity="0.95"/>
+    <circle cx="196" cy="48" r="26" fill="url(#vxB)"/>
+    <circle cx="196" cy="48" r="10" fill="#FFFFFF" fill-opacity="0.95"/>
+    <circle cx="128" cy="148" r="32" fill="url(#vxOut)"/>
+    <circle cx="128" cy="148" r="20" fill="none" stroke="#FFFFFF" stroke-opacity="0.95" stroke-width="5"/>
+    <circle cx="128" cy="148" r="7" fill="#FFFFFF" fill-opacity="0.95"/>
+  </g>
+  <text x="470" y="215" font-family="Inter, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="128" font-weight="700" letter-spacing="3" fill="url(#vxWord)">volnux</text>
+  <text x="474" y="276" font-family="Inter, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif" font-size="30" font-weight="500" letter-spacing="1" fill="#CBD5E1">Describe workflows as graphs. Run them anywhere.</text>
+  <text x="474" y="326" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="18" fill="#64748B">ReceiveOrder -&gt; Validate ( success -&gt; (Charge || Reserve) -&gt; Ship )</text>
+</svg>

@@ -266,13 +266,14 @@ class TestEventBaseAdditional(unittest.TestCase):
         ):
             self.InvalidStrategyEvent.evaluator()
 
-    def test_can_bypass_current_event_default_is_false(self):
+    def test_bypass_is_not_supported_unless_overridden(self):
+        import asyncio
+
         event = self.SimpleEvent(None, "1")
 
-        should_skip, data = event.can_bypass_current_event()
-
-        self.assertFalse(should_skip)
-        self.assertIsNone(data)
+        # The runner treats this as "no bypass": the event runs normally.
+        with self.assertRaises(NotImplementedError):
+            asyncio.run(event.bypass())
 
     async def test_call_bypasses_process_when_bypass_flag_enabled(self):
         event = self.BypassEvent(None, "task-1", run_bypass_event_checks=True)
@@ -388,11 +389,11 @@ class TestEventBaseAdditional(unittest.TestCase):
         self.assertEqual(version, "2.1.0")
         registry_mock.assert_called_once_with("named-event", "payments")
 
-    def test_get_direct_subclasses_returns_direct_children(self):
-        subclasses = EventBase.get_direct_subclasses()
+    def test_get_all_event_classes_lists_registered_events(self):
+        classes = EventBase.get_all_event_classes()
 
-        self.assertIn(self.SimpleEvent, subclasses)
-        self.assertIn(self.NamedEvent, subclasses)
+        self.assertIn(self.SimpleEvent, classes)
+        self.assertIn(self.NamedEvent, classes)
 
     def test_clear_class_cache_delegates_to_registry(self):
         with patch("volnux.event.base._event_registry.clear") as clear_mock:

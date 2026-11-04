@@ -9,6 +9,7 @@ from typing import (
     Any,
     Deque,
     Dict,
+    List,
     Optional,
     Set,
     Tuple,
@@ -24,6 +25,7 @@ from volnux.exceptions import TaskCancelledError
 from volnux.concurrency.async_utils import to_thread
 from volnux.execution.context import ExecutionContext
 from volnux.executors import BaseExecutor, ProcessPoolExecutor
+from volnux.executors.shared import get_shared_pool
 from volnux.executors.utils.registry import get_global_executor_registry
 from volnux.mixins import ObjectIdentityMixin
 
@@ -157,6 +159,14 @@ class BaseFlow(ObjectIdentityMixin):
     def __post_init__(self, enable_communication: bool = True) -> None:
         self.task_profiles = cast(Deque[TaskType], self.context.task_profiles)
         self._enable_communication = enable_communication
+        # Stream wiring, filled in by StreamFlow before events are built:
+        # consumer task id -> the tasks it reads (each producer's stream id is its
+        # task id; several producers mean a fan-in).
+        self._stream_upstream: Dict[str, List[str]] = {}
+        # Producers that are not generators but feed a stream consumer: their result
+        # is published as a stream of one chunk when they finish.
+        self._stream_publish_plain: Set[str] = set()
+        self._stream_publish_tasks: Set["asyncio.Future[Any]"] = set()
         # The bridge kind depends on the executor, which is only resolved in
         # run(); the bridge is therefore created in _initialize_executor().
         super().__post_init__()
@@ -279,21 +289,22 @@ class BaseFlow(ObjectIdentityMixin):
         if task_profile.options:
             event_init_args["options"] = task_profile.options
 
-        # Data flow routing based on pipe type
+        # Data flow routing based on pipe type. A task that reads a stream (wired by
+        # StreamFlow) starts together with its producer, so there is no previous
+        # result to hand it: it reads the stream. A ``|->`` whose producer is not a
+        # streaming event is an ordinary ``->``.
         pointer_type = self._resolve_pointer_type(task_profile)
+        is_stream_consumer = task_id in self._stream_upstream
 
-        if pointer_type == PipeType.POINTER:
+        if (
+            pointer_type in (PipeType.POINTER, PipeType.PIPE_POINTER)
+            and not is_stream_consumer
+        ):
             event_init_args["previous_result"] = (
                 self.context.previous_context.get_results()
                 if self.context.previous_context
                 else EMPTY
             )
-        elif pointer_type == PipeType.PIPE_POINTER:
-            # Stream integration for |-> operator
-            stream_key = task_profile.get_stream_key()
-            group_name = f"{self.context.workflow_id}:{task_id}"
-            event_init_args["stream_key"] = stream_key
-            event_init_args["consumer_group"] = group_name
 
         # Every event gets the run's checkpoint manager (None when checkpointing
         # is not enabled), not only those fed by a stream.
@@ -303,6 +314,15 @@ class BaseFlow(ObjectIdentityMixin):
 
         event = event_klass(**event_init_args)
         self._configure_event(event, task_profile)
+        engine = self.context.get_engine()
+        if engine is not None and getattr(event, "_volnux_streaming", False):
+            # lets a consumer elsewhere (another sub-engine) ask this event to stop
+            engine.register_stream_event(task_id, event)
+        if is_stream_consumer:
+            # The stream id of a producer is its task id; each consumer reads
+            # through a group of its own, so every consumer sees every chunk.
+            event._upstream_stream_ids = list(self._stream_upstream[task_id])
+            event._consumer_group = f"consumer:{task_id}"
 
         result = (event, event_call_args)
         self._initialized_events[task_id] = result
@@ -401,6 +421,12 @@ class BaseFlow(ObjectIdentityMixin):
         self._ensure_comm_bridge(executor)
 
         if inspect.isclass(executor):
+            # Standard process/thread pools are shared and bounded (see
+            # volnux.executors.shared): nested cooperative groups must not each build
+            # a pool of their own. A shared pool is never shut down by a flow.
+            shared = get_shared_pool(executor)
+            if shared is not None:
+                return shared
             config = self.parse_executor_initialisation_configuration(
                 executor, executor_config
             )
@@ -477,9 +503,38 @@ class BaseFlow(ObjectIdentityMixin):
 
         # Async-safe signal emission on completion
         future.add_done_callback(lambda fut: self._schedule_end_signal(event))
+        engine = self.context.get_engine()
+        if engine is not None and getattr(event, "_volnux_streaming", False):
+            future.add_done_callback(
+                lambda fut: engine.forget_stream_event(event._task_id)
+            )
+        engine = self.context.get_engine()
+        if event._task_id in self._stream_publish_plain or (
+            engine is not None and engine.publishes_plain_stream(event._task_id)
+        ):
+            future.add_done_callback(
+                lambda fut: self._schedule_stream_publish(event, fut)
+            )
 
         logger.debug("Event submitted successfully; future: %s", future)
         return future
+
+    def _schedule_stream_publish(
+        self, event: "Event", future: "asyncio.Future[Any]"
+    ) -> None:
+        """A plain producer finished: publish its result as a one-chunk stream."""
+        if future.cancelled():
+            success, data = False, "cancelled"
+        elif future.exception() is not None:
+            success, data = False, repr(future.exception())
+        else:
+            result = future.result()
+            success = not getattr(result, "error", False)
+            data = getattr(result, "content", result)
+
+        task = asyncio.ensure_future(event.publish_single(success, data))
+        self._stream_publish_tasks.add(task)
+        task.add_done_callback(self._stream_publish_tasks.discard)
 
     def _track_future(
         self,

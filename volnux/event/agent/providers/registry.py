@@ -1,21 +1,25 @@
 import logging
 import warnings
+from typing import Any, Dict, List, Type, TYPE_CHECKING, Union
 
-from typing import Dict, Type, TYPE_CHECKING
 from volnux.exceptions import LLMProviderError
 
-
 if TYPE_CHECKING:
-    from .base import LLMProviderAdapterBase
+    from .base import LLMProvider, LLMProviderAdapterBase
 
 
 logger = logging.getLogger(__name__)
 
 
+def _key(name: Any) -> str:
+    return str(getattr(name, "value", name)).strip().lower()
+
+
 class LLMProviderRegistry:
     """
-    Singleton registry mapping provider name strings to adapter classes.
-    Extended at runtime via ``register()``.
+    Registry mapping provider names to adapter classes. Names are case-insensitive
+    and may be given as an :class:`LLMProvider`. Extended at runtime with
+    :meth:`register`; the built-in adapters register themselves when imported.
     """
 
     _registry: Dict[str, Type["LLMProviderAdapterBase"]] = {}
@@ -23,28 +27,44 @@ class LLMProviderRegistry:
     @classmethod
     def register(
         cls,
-        provider_name: str,
+        provider_name: Union[str, "LLMProvider"],
         adapter_class: Type["LLMProviderAdapterBase"],
     ) -> None:
-        if provider_name in cls._registry:
+        key = _key(provider_name)
+        existing = cls._registry.get(key)
+        if existing is not None and existing is not adapter_class:
             warnings.warn(
-                f"LLMProviderRegistry: overwriting provider '{provider_name}'.",
+                f"LLMProviderRegistry: overwriting provider '{key}'.",
                 stacklevel=2,
             )
-        cls._registry[provider_name] = adapter_class
+        cls._registry[key] = adapter_class
         logger.debug(
-            "LLMProviderRegistry: registered '%s' → %s",
-            provider_name,
-            adapter_class.__name__,
+            "LLMProviderRegistry: registered '%s' → %s", key, adapter_class.__name__
         )
 
     @classmethod
-    def resolve(cls, provider_name: str) -> "LLMProviderAdapterBase":
-        adapter_class = cls._registry.get(provider_name)
+    def unregister(cls, provider_name: Union[str, "LLMProvider"]) -> bool:
+        return cls._registry.pop(_key(provider_name), None) is not None
+
+    @classmethod
+    def available(cls) -> List[str]:
+        return sorted(cls._registry)
+
+    @classmethod
+    def is_registered(cls, provider_name: Union[str, "LLMProvider"]) -> bool:
+        return _key(provider_name) in cls._registry
+
+    @classmethod
+    def resolve(
+        cls, provider_name: Union[str, "LLMProvider"], **options: Any
+    ) -> "LLMProviderAdapterBase":
+        """A new adapter for ``provider_name``, built with ``options``."""
+        adapter_class = cls._registry.get(_key(provider_name))
         if adapter_class is None:
             raise LLMProviderError(
                 f"No adapter registered for LLM provider '{provider_name}'. "
-                f"Available: {sorted(cls._registry)}. "
-                f"Register via LLMProviderRegistry.register()."
+                f"Available: {cls.available()}. "
+                f"Register via LLMProviderRegistry.register().",
+                retryable=False,
             )
-        return adapter_class()
+        return adapter_class(**options)

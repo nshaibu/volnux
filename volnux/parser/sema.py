@@ -70,6 +70,7 @@ _KNOWN_DIRECTIVES: typing.FrozenSet[str] = frozenset(
 # always dict-like and don't have a single "wrong" literal type to warn about.
 _OPTIONS_FIELD_TYPES: typing.Dict[str, typing.Tuple[type, ...]] = {
     "retry_attempts": (int,),
+    "max_concurrency": (int,),
     "executor": (str,),
     "result_evaluation_strategy": (str,),
     "stop_condition": (str,),
@@ -79,6 +80,7 @@ _OPTIONS_FIELD_TYPES: typing.Dict[str, typing.Tuple[type, ...]] = {
 _OPTIONS_KNOWN_FIELDS: typing.FrozenSet[str] = frozenset(
     {
         "retry_attempts",
+        "max_concurrency",
         "executor",
         "executor_config",
         "extras",
@@ -123,6 +125,31 @@ def _is_pascal_case(name: str) -> bool:
     All-uppercase names (acronyms) also pass.
     """
     return bool(name) and name[0].isupper() and "_" not in name
+
+
+# ---------------------------------------------------------------------------
+# Streaming (``|->``) structure helpers
+# ---------------------------------------------------------------------------
+
+
+def _stream_tail(node: typing.Any) -> typing.Any:
+    """The task a chain ends on: ``A -> B |-> C`` ends on ``C``."""
+    while isinstance(node, BinOpNode) and node.op in _PIPELINE_OPS:
+        node = node.right
+    return node
+
+
+def _operands(node: typing.Any) -> typing.List[typing.Any]:
+    """The tasks a chain end stands for: ``A || B`` is ``[A, B]`` (and a group that
+    holds one chain stands for the end of that chain)."""
+    if isinstance(node, BinOpNode) and node.op == "||":
+        return _operands(node.left) + _operands(node.right)
+    if isinstance(node, PipelineGroupingNode):
+        found: typing.List[typing.Any] = []
+        for expression in node.expressions:
+            found.extend(_operands(_stream_tail(expression)))
+        return found
+    return [node]
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +247,23 @@ class Sema(ASTVisitorInterface):
                                 attr,
                             )
 
+                # A negative number is ``-`` applied to a literal, not a literal
+                negative = (
+                    isinstance(value_node, UnaryOpNode)
+                    and value_node.op == "-"
+                    and isinstance(value_node.right, LiteralNode)
+                    and value_node.right.type == LiteralType.NUMBER
+                    and isinstance(value_node.right.value, (int, float))
+                    and not isinstance(value_node.right.value, bool)
+                )
+                if negative and name in ("retry_attempts", "max_concurrency"):
+                    minimum = 0 if name == "retry_attempts" else 1
+                    self._err(
+                        f"Option '{name}' on '{context}': "
+                        f"value -{value_node.right.value} must be >= {minimum}",
+                        attr,
+                    )
+
                 # 3b. Deep validation for specific known fields
                 if isinstance(value_node, LiteralNode) and value_node.value is not None:
                     val = value_node.value
@@ -234,6 +278,26 @@ class Sema(ASTVisitorInterface):
                             self._err(
                                 f"Option 'retry_attempts' on '{context}': "
                                 f"value {val} must be >= 0",
+                                attr,
+                            )
+
+                    # max_concurrency must be >= 1 (and only a {} group runs chains)
+                    elif name == "max_concurrency":
+                        if (
+                            isinstance(val, int)
+                            and not isinstance(val, bool)
+                            and val < 1
+                        ):
+                            self._err(
+                                f"Option 'max_concurrency' on '{context}': "
+                                f"value {val} must be >= 1",
+                                attr,
+                            )
+                        if context != "grouped expression":
+                            self._warn(
+                                f"Option 'max_concurrency' on '{context}' has no "
+                                f"effect: it limits how many chains of a '{{}}' "
+                                f"group run at once",
                                 attr,
                             )
 
@@ -425,7 +489,50 @@ class Sema(ASTVisitorInterface):
             else:
                 seen_descriptors[desc_val] = label
 
+            if branch.operator == "|->":
+                self._err(
+                    f"A branch cannot stream: '{task_label} "
+                    f"({label or desc_val} |-> ...)' is chosen by the outcome of "
+                    f"'{task_label}', which is only known when its stream ends, but "
+                    f"a streaming consumer has to start while it is still running. "
+                    f"Use '->' for the branch",
+                    branch,
+                )
+
             self._visit(branch.task)
+
+    def _check_stream_edge(self, node: "BinOpNode") -> None:
+        """Rules for ``left |-> right``.
+
+        A stream edge puts both ends in one concurrent segment, wired by a stream,
+        so anything that needs the producer's *final* outcome, or a second
+        attempt, before the consumer may run cannot sit inside it.
+        """
+        producers = _operands(_stream_tail(node.left))
+        consumers = _operands(node.right)
+
+        for producer in producers:
+            if isinstance(producer, ConditionalNode):
+                subject = (
+                    producer.task.task
+                    if isinstance(producer.task, TaskNode)
+                    else "the task"
+                )
+                self._err(
+                    f"'{subject}' has branches but is followed by '|->': a branch is "
+                    f"chosen by the outcome of '{subject}', which is only known when "
+                    f"its stream ends, while the consumer has to start earlier. Put "
+                    f"the branches on the last task of the stream, or use '->'",
+                    node,
+                )
+
+        if any(isinstance(m, RetryNode) for m in producers + consumers):
+            self._err(
+                "A streamed task cannot be retried on its own: a second attempt "
+                "would replay chunks into a consumer that already saw them. Retry "
+                "the whole stream instead, e.g. '{ A |-> B } * 3'",
+                node,
+            )
 
     def visit_binop(self, node: "BinOpNode") -> None:
         self._visit(node.left)
@@ -435,6 +542,8 @@ class Sema(ASTVisitorInterface):
 
         # Pipeline operators carry no expression-level type meaning.
         if op in _PIPELINE_OPS:
+            if op == "|->":
+                self._check_stream_edge(node)
             return
 
         left_lit = node.left if isinstance(node.left, LiteralNode) else None

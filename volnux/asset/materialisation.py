@@ -40,7 +40,3 @@ class AssetMaterialisation(KeyValueStoreIntegrationMixin, BaseModel):
 
     def __hash__(self) -> int:
         return hash(self.id)
-
-    @classmethod
-    def get_schema_name(cls) -> str:
-        return "volnux_AssetMaterialisation"

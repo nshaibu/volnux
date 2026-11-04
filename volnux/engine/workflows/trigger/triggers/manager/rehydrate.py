@@ -33,6 +33,7 @@ import asyncio
 import logging
 import os
 import socket
+import time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional, Set, TYPE_CHECKING
 
@@ -79,6 +80,10 @@ class RehydrationManager(TriggerBase):
     :param claim_lease_seconds: How long a worker may hold the claim on a request. A
         claim whose worker died is taken over after this.
     :param max_concurrent_resumes: How many workflows may be resumed at once.
+    :param max_attempts: How many times one request may be attempted before
+        recovery stops re-delivering it. A resume that kills the process every
+        time (a poison answer) would otherwise be re-delivered at each start for
+        ever; past this it is marked FAILED with the reason.
     :param resume_handler: ``async (entry, response) -> EngineResult``. Defaults to
         ``resume_suspended_workflow``; replaceable for tests or a custom runner.
     """
@@ -95,11 +100,24 @@ class RehydrationManager(TriggerBase):
         timeout_sweep_interval: float = 30.0,
         claim_lease_seconds: float = 300.0,
         max_concurrent_resumes: int = 4,
+        max_attempts: int = 5,
         resume_handler: Optional[ResumeHandler] = None,
         workflow_params: Optional[Dict[str, Any]] = None,
         enabled: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
     ):
+        if max_concurrent_resumes < 1:
+            raise ValueError("max_concurrent_resumes must be at least 1")
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        for name, value in (
+            ("poll_timeout", poll_timeout),
+            ("timeout_sweep_interval", timeout_sweep_interval),
+            ("claim_lease_seconds", claim_lease_seconds),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive, got {value!r}")
+
         super().__init__(
             workflow_name=self.WORKFLOW_SCOPE,
             workflow_params=workflow_params,
@@ -109,6 +127,7 @@ class RehydrationManager(TriggerBase):
         self._poll_timeout = poll_timeout
         self._timeout_sweep_interval = timeout_sweep_interval
         self._claim_lease_seconds = claim_lease_seconds
+        self._max_attempts = max_attempts
         self._resume_handler = resume_handler
         self._slots = asyncio.Semaphore(max_concurrent_resumes)
         self._owner = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
@@ -116,8 +135,14 @@ class RehydrationManager(TriggerBase):
         self._consumer_task: Optional[asyncio.Task] = None
         self._sweeper_task: Optional[asyncio.Task] = None
         self._wake_tasks: Set[asyncio.Task] = set()
-        # requests whose timeout answer is already on the queue (this run only)
-        self._timeouts_enqueued: Set[str] = set()
+        # requests whose timeout answer is on the queue (this run only) -> when it
+        # was put there. Forgotten once handled, or after a while in case the
+        # answer was lost, so the request is not left waiting for good.
+        self._timeouts_enqueued: Dict[str, float] = {}
+        self._clock = time.monotonic
+        self._timeout_retry_after = max(
+            claim_lease_seconds, 10 * timeout_sweep_interval
+        )
 
     @property
     def running(self) -> bool:
@@ -193,6 +218,7 @@ class RehydrationManager(TriggerBase):
                 response.request_id,
             )
         finally:
+            self._timeouts_enqueued.pop(response.request_id, None)
             self._slots.release()
 
     # --- waking one task ---------------------------------------------------
@@ -319,13 +345,17 @@ class RehydrationManager(TriggerBase):
             status=RequestStatus.WAITING.value
         )
         queued = 0
+        now = self._clock()
         for entry in await waiting.to_list():
-            if entry.request_id in self._timeouts_enqueued or not entry.is_expired():
+            if not entry.is_expired():
+                continue
+            sent_at = self._timeouts_enqueued.get(entry.request_id)
+            if sent_at is not None and now - sent_at < self._timeout_retry_after:
                 continue
             await ExternalCommunicationResponse.enqueue(
                 ExternalCommunicationResponse.timeout(entry.request_id)
             )
-            self._timeouts_enqueued.add(entry.request_id)
+            self._timeouts_enqueued[entry.request_id] = now
             queued += 1
         return queued
 
@@ -350,11 +380,32 @@ class RehydrationManager(TriggerBase):
                 continue  # a live worker is on it
             if not entry.response:
                 continue
+            if entry.attempts >= self._max_attempts:
+                entry.status = RequestStatus.FAILED.value
+                entry.last_error = (
+                    f"gave up after {entry.attempts} interrupted attempt(s)"
+                )
+                await entry.save()
+                logger.error(
+                    "RehydrationManager: request %s interrupted %d time(s); "
+                    "not re-delivering it again",
+                    entry.request_id,
+                    entry.attempts,
+                )
+                continue
+            # WAITING first: an answer picked up before the entry says so is ignored
             entry.status = RequestStatus.WAITING.value
             await entry.save()
-            await ExternalCommunicationResponse.enqueue(
-                ExternalCommunicationResponse(**entry.response)
-            )
+            try:
+                await ExternalCommunicationResponse.enqueue(
+                    ExternalCommunicationResponse(**entry.response)
+                )
+            except Exception:
+                # Not queued: keep the entry READY so the next recovery retries,
+                # instead of a WAITING entry whose answer is nowhere.
+                entry.status = RequestStatus.READY.value
+                await entry.save()
+                raise
             redelivered += 1
         if redelivered:
             logger.warning(

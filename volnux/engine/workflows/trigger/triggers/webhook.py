@@ -1,6 +1,8 @@
 import hashlib
 import hmac
 import logging
+import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -72,7 +74,27 @@ class WebhookTrigger(TriggerBase):
 
     Raises :class:`PermissionError` on mismatch so callers can map it to an
     HTTP 401/403 response cleanly.
+
+    Replay protection
+    -----------------
+    A correctly signed request can otherwise be captured and sent again for ever.
+    Set ``timestamp_header`` (e.g. ``"x-webhook-timestamp"``) to require the
+    sender to include the time of sending, in Unix seconds, and to sign it with
+    the body: the signed message becomes ``f"{timestamp}.".encode() + body``
+    (the scheme Stripe uses). Then:
+
+    * a request whose timestamp is more than ``tolerance_seconds`` from now
+      (either direction) is refused, so a captured request goes stale;
+    * inside that window an identical signature is accepted only once, so it
+      cannot be replayed immediately either.
+
+    The seen-signature memory is per process (bounded, entries expire with the
+    window); behind several processes, put the same check in a shared store.
+    Requires ``secret_token``, and sender and receiver clocks must roughly agree.
     """
+
+    #: Most signatures remembered for replay detection (oldest dropped first).
+    _MAX_SEEN_SIGNATURES = 10_000
 
     trigger_type = TriggerType.WEBHOOK
 
@@ -82,6 +104,8 @@ class WebhookTrigger(TriggerBase):
         endpoint_path: str,
         secret_token: Optional[str] = None,
         token_header: str = "x-webhook-token",
+        timestamp_header: Optional[str] = None,
+        tolerance_seconds: float = 300.0,
         web_app: Optional[Any] = None,
         workflow_params: Optional[Dict[str, Any]] = None,
         enabled: bool = True,
@@ -92,6 +116,28 @@ class WebhookTrigger(TriggerBase):
                 f"'secret_token' must be a str, got {type(secret_token).__name__!r}. "
                 "Encode bytes tokens to a hex or base64 string before passing them in."
             )
+        if secret_token == "":
+            # An empty secret would "verify" requests against a publicly known key.
+            raise ValueError(
+                "'secret_token' must not be empty; pass None to disable verification."
+            )
+        if not isinstance(endpoint_path, str) or not endpoint_path.startswith("/"):
+            raise ValueError(
+                f"'endpoint_path' must be a path starting with '/', got {endpoint_path!r}."
+            )
+        if not isinstance(token_header, str) or not token_header.strip():
+            raise ValueError("'token_header' must be a non-empty header name.")
+
+        if timestamp_header is not None:
+            if not isinstance(timestamp_header, str) or not timestamp_header.strip():
+                raise ValueError("'timestamp_header' must be a non-empty header name.")
+            if secret_token is None:
+                raise ValueError(
+                    "Replay protection ('timestamp_header') needs a 'secret_token': "
+                    "an unsigned timestamp proves nothing."
+                )
+        if tolerance_seconds <= 0:
+            raise ValueError("'tolerance_seconds' must be positive.")
 
         super().__init__(
             workflow_name,
@@ -99,10 +145,15 @@ class WebhookTrigger(TriggerBase):
             enabled=enabled,
             metadata=metadata,
         )
+        self.timestamp_header = timestamp_header.lower() if timestamp_header else None
+        self.tolerance_seconds = float(tolerance_seconds)
+        self._clock = time.time  # replaceable in tests
+        self._seen_signatures: "OrderedDict[str, float]" = OrderedDict()
         self.endpoint_path = endpoint_path
         self.secret_token = secret_token
         self.token_header = token_header.lower()
         self.web_app = web_app
+        self._endpoint_registered = False
 
     async def start(self) -> None:
         """
@@ -111,7 +162,11 @@ class WebhookTrigger(TriggerBase):
         In the default external-integration model this is a no-op; the web
         framework route is wired by the caller before the engine starts.
         """
+        if self._endpoint_registered:
+            logger.debug("WebhookTrigger '%s' already started", self.trigger_id)
+            return
         await self._register_endpoint()
+        self._endpoint_registered = True
         logger.info(
             "WebhookTrigger '%s' ready at '%s'", self.trigger_id, self.endpoint_path
         )
@@ -122,7 +177,12 @@ class WebhookTrigger(TriggerBase):
 
         In the default external-integration model this is a no-op.
         """
-        await self._unregister_endpoint()
+        if not self._endpoint_registered:
+            return
+        try:
+            await self._unregister_endpoint()
+        finally:
+            self._endpoint_registered = False
         logger.info("WebhookTrigger '%s' stopped", self.trigger_id)
 
     async def _register_endpoint(self) -> None:
@@ -139,12 +199,17 @@ class WebhookTrigger(TriggerBase):
         The default implementation is a deliberate no-op.
         """
 
+    #: Headers never forwarded to the workflow: they carry credentials.
+    _SENSITIVE_HEADERS = frozenset(
+        {"authorization", "proxy-authorization", "cookie", "set-cookie"}
+    )
+
     async def handle_webhook(
         self,
         body: bytes,
         *,
         headers: Optional[Dict[str, str]] = None,
-    ) -> None:
+    ) -> bool:
         """
         Process an inbound webhook request.
 
@@ -157,22 +222,49 @@ class WebhookTrigger(TriggerBase):
         headers:
             HTTP request headers. Required when ``secret_token`` is set.
 
+        Returns
+        -------
+        bool
+            ``True`` if the workflow was activated, ``False`` if the request was
+            valid but the trigger is disabled (paused or stopped) and ignored it.
+            The signature is checked first, so an unauthenticated caller cannot
+            learn whether the trigger is enabled.
+
         Raises
         ------
+        TypeError
+            If ``body`` is not bytes-like.
         PermissionError
             If a ``secret_token`` is configured and the request does not
             supply a valid HMAC-SHA256 signature in the expected header.
         """
+        if not isinstance(body, (bytes, bytearray, memoryview)):
+            raise TypeError(
+                f"'body' must be the raw request bytes, got {type(body).__name__!r}."
+            )
+        body = bytes(body)
         normalised_headers = {k.lower(): v for k, v in (headers or {}).items()}
 
         if self.secret_token is not None:
             self._verify_signature(body, normalised_headers)
 
+        if not self.enabled:
+            logger.info(
+                "WebhookTrigger '%s' is disabled; webhook ignored.", self.trigger_id
+            )
+            return False
+
+        forwarded = {
+            name: value
+            for name, value in normalised_headers.items()
+            if name not in self._SENSITIVE_HEADERS and name != self.token_header
+        }
         await self.activate(
             webhook_body=body,
-            webhook_headers=normalised_headers,
+            webhook_headers=forwarded,
             received_at=datetime.now(timezone.utc).isoformat(),
         )
+        return True
 
     def _verify_signature(
         self, body: bytes, normalised_headers: Dict[str, str]
@@ -183,6 +275,9 @@ class WebhookTrigger(TriggerBase):
         The expected signature is computed as::
 
             HMAC-SHA256(key=secret_token, msg=body).hexdigest()
+
+        or, with ``timestamp_header`` set, over ``f"{timestamp}.".encode() + body``
+        followed by the staleness and replay checks.
 
         Header lookup uses pre-normalised (lowercase) keys. Comparison always
         runs through :func:`hmac.compare_digest` — including when the header
@@ -200,17 +295,34 @@ class WebhookTrigger(TriggerBase):
         PermissionError
             If the signature is absent or does not match.
         """
-        provided_sig = normalised_headers.get(self.token_header, "")
+        provided_sig = str(normalised_headers.get(self.token_header, "")).strip()
+        # Providers such as GitHub send "sha256=<hex>"; hex digits are case-blind.
+        if provided_sig.lower().startswith("sha256="):
+            provided_sig = provided_sig[len("sha256=") :]
+        provided_sig = provided_sig.lower()
+
+        message = body
+        timestamp = None
+        if self.timestamp_header is not None:
+            raw_timestamp = str(
+                normalised_headers.get(self.timestamp_header, "")
+            ).strip()
+            timestamp = self._parse_timestamp(raw_timestamp)
+            # The timestamp is part of what is signed, so it cannot be refreshed
+            # on a captured request.
+            message = raw_timestamp.encode() + b"." + body
 
         expected_sig = hmac.new(
             self.secret_token.encode(),
-            body,
+            message,
             hashlib.sha256,
         ).hexdigest()
 
         # Always call compare_digest regardless of whether the header was
-        # present; short-circuiting on absence leaks a timing signal.
-        if not hmac.compare_digest(provided_sig, expected_sig):
+        # present; short-circuiting on absence leaks a timing signal. Compared as
+        # bytes: str arguments with non-ASCII characters make it raise TypeError
+        # (a 500 for the caller) instead of simply not matching.
+        if not hmac.compare_digest(provided_sig.encode(), expected_sig.encode()):
             logger.warning(
                 "WebhookTrigger '%s': rejected request — invalid or missing "
                 "HMAC-SHA256 signature (header: %r)",
@@ -221,3 +333,46 @@ class WebhookTrigger(TriggerBase):
                 f"Invalid or missing webhook signature "
                 f"(expected header: {self.token_header!r})"
             )
+
+        if timestamp is not None:
+            self._check_not_replayed(expected_sig, timestamp)
+
+    @staticmethod
+    def _parse_timestamp(raw: str) -> float:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = float("nan")
+        if value != value or value in (float("inf"), float("-inf")):
+            raise PermissionError("Missing or invalid webhook timestamp.")
+        return value
+
+    def _check_not_replayed(self, signature: str, timestamp: float) -> None:
+        """Refuse a stale timestamp or a signature already accepted in the window."""
+        now = self._clock()
+        if abs(now - timestamp) > self.tolerance_seconds:
+            logger.warning(
+                "WebhookTrigger '%s': rejected request — timestamp outside the "
+                "%.0fs tolerance",
+                self.trigger_id,
+                self.tolerance_seconds,
+            )
+            raise PermissionError("Webhook timestamp outside the allowed tolerance.")
+
+        # forget what has aged out (insertion order is expiry order)
+        while self._seen_signatures:
+            oldest, expires = next(iter(self._seen_signatures.items()))
+            if expires > now:
+                break
+            self._seen_signatures.popitem(last=False)
+
+        if signature in self._seen_signatures:
+            logger.warning(
+                "WebhookTrigger '%s': rejected request — signature already used",
+                self.trigger_id,
+            )
+            raise PermissionError("Webhook request was already received (replay).")
+
+        self._seen_signatures[signature] = now + self.tolerance_seconds
+        while len(self._seen_signatures) > self._MAX_SEEN_SIGNATURES:
+            self._seen_signatures.popitem(last=False)

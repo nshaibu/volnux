@@ -79,7 +79,7 @@ def test_get_instance_returns_singleton(monkeypatch):
     )
     monkeypatch.setattr(VolnuxConfig, "load_from_file", lambda self, file_path: None)
 
-    VolnuxConfig._instance = None
+    monkeypatch.setattr(VolnuxConfig, "_instance", None)  # restored afterwards
     first = VolnuxConfig.get_instance()
     second = VolnuxConfig.get_instance()
 

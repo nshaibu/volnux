@@ -1,4 +1,5 @@
 import functools
+import inspect
 import typing
 import logging
 import hashlib
@@ -80,18 +81,31 @@ def event(
         # Validate that func has the correct signature
         validate_event_process_method(func)
 
-        def process(
-            self,
-            *args: typing.Any,
-            **kwargs: typing.Any,
-        ) -> typing.Tuple[bool, typing.Any]:
-            """
-            Execute the wrapped function with provided arguments.
+        if inspect.isasyncgenfunction(func):
+            # A generator process() makes a streaming event: keep it a generator
+            async def process(self, *args: typing.Any, **kwargs: typing.Any):
+                async for item in func(self, *args, **kwargs):
+                    yield item
 
-            Returns:
-                Tuple of (success: bool, result: Any)
-            """
-            return func(self, *args, **kwargs)
+        elif inspect.isgeneratorfunction(func):
+
+            def process(self, *args: typing.Any, **kwargs: typing.Any):
+                yield from func(self, *args, **kwargs)
+
+        else:
+
+            def process(
+                self,
+                *args: typing.Any,
+                **kwargs: typing.Any,
+            ) -> typing.Tuple[bool, typing.Any]:
+                """
+                Execute the wrapped function with provided arguments.
+
+                Returns:
+                    Tuple of (success: bool, result: Any)
+                """
+                return func(self, *args, **kwargs)
 
         # Create the class dynamically with the desired name
         generated_event = type(

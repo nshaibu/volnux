@@ -1,6 +1,7 @@
 import logging
 from typing import (
     Any,
+    Dict,
     Awaitable,
     Callable,
     List,
@@ -302,6 +303,18 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         return await backend.queue_peek(await cls.get_schema_name(), record_class=cls)
 
     # Append-only streams
+    #
+    # A model has one route, so by default every record of the model lands in one
+    # stream. A caller that needs a stream per entity (per producing task, say)
+    # passes ``route_override``: values for the route's ``{placeholders}``, resolved
+    # exactly like the routing keys of the model itself.
+
+    @classmethod
+    async def _stream_key(cls, route_override: Optional[Dict[str, str]] = None) -> str:
+        if not route_override:
+            return await cls.get_schema_name()
+        backend = await cls.get_backend()
+        return cls.get_storage_route().resolve(backend, route_override)
 
     @classmethod
     @ensure_streaming
@@ -311,16 +324,20 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         record: Any,
         max_len: Optional[int] = None,
         approximate_trim: bool = True,
+        *,
+        route_override: Optional[Dict[str, str]] = None,
     ) -> str:
         """Appends a record to the model's append-only stream log.
 
+        :param route_override: Values for the route placeholders, to address another
+            stream of the same model.
         :return: The backend-assigned entry ID.
         :raises ValueError: If ``max_len`` is negative.
         """
         if max_len is not None and max_len < 0:
             raise ValueError(f"max_len must be None or >= 0, got {max_len!r}")
         return await backend.stream_append(
-            stream_key=await cls.get_schema_name(),
+            stream_key=await cls._stream_key(route_override),
             record=record,
             max_len=max_len,
             approximate_trim=approximate_trim,
@@ -333,10 +350,12 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         backend: "StreamCapabilityMixin",
         group_name: str,
         start_from: Union[StreamOffset, str] = StreamOffset.BEGINNING,
+        *,
+        route_override: Optional[Dict[str, str]] = None,
     ) -> None:
         """Ensures a consumer group namespace exists for this stream log."""
         await backend.stream_ensure_consumer_group(
-            stream_key=await cls.get_schema_name(),
+            stream_key=await cls._stream_key(route_override),
             group_name=group_name,
             start_from=start_from,
         )
@@ -350,6 +369,8 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         consumer_id: Optional[str] = None,
         count: int = 1,
         block_ms: Optional[int] = 5000,
+        *,
+        route_override: Optional[Dict[str, str]] = None,
     ) -> List[StreamEntry[T]]:
         """Reads undelivered entries from the stream for a consumer group.
 
@@ -358,7 +379,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         _check_positive("count", count)
         _check_timeout(block_ms)
         return await backend.stream_read(
-            stream_key=await cls.get_schema_name(),
+            stream_key=await cls._stream_key(route_override),
             group_name=group_name,
             record_class=cls,
             consumer_id=consumer_id,
@@ -373,10 +394,11 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         backend: "StreamCapabilityMixin",
         group_name: str,
         *entry_ids: str,
+        route_override: Optional[Dict[str, str]] = None,
     ) -> int:
         """Acknowledges processed entries, advancing the consumer group offset."""
         return await backend.stream_ack(
-            await cls.get_schema_name(),
+            await cls._stream_key(route_override),
             group_name,
             *entry_ids,
         )
@@ -390,6 +412,8 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         consumer_id: str,
         min_idle_ms: int = 30_000,
         count: int = 100,
+        *,
+        route_override: Optional[Dict[str, str]] = None,
     ) -> List[StreamEntry[T]]:
         """Claims orphaned pending stream entries from crashed workers.
 
@@ -398,7 +422,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         _check_timeout(min_idle_ms)
         _check_positive("count", count)
         return await backend.stream_claim_pending(
-            stream_key=await cls.get_schema_name(),
+            stream_key=await cls._stream_key(route_override),
             group_name=group_name,
             consumer_id=consumer_id,
             record_class=cls,
@@ -408,9 +432,14 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
 
     @classmethod
     @ensure_streaming
-    async def stream_length(cls, backend: "StreamCapabilityMixin") -> int:
+    async def stream_length(
+        cls,
+        backend: "StreamCapabilityMixin",
+        *,
+        route_override: Optional[Dict[str, str]] = None,
+    ) -> int:
         """Returns the total number of entries currently stored in the stream log."""
-        return await backend.stream_length(await cls.get_schema_name())
+        return await backend.stream_length(await cls._stream_key(route_override))
 
     @classmethod
     @ensure_streaming
@@ -419,6 +448,8 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         backend: "StreamCapabilityMixin",
         max_len: int,
         approximate: bool = True,
+        *,
+        route_override: Optional[Dict[str, str]] = None,
     ) -> int:
         """
         Trims the stream log to at most `max_len` entries, evicting the oldest entries first.
@@ -431,16 +462,21 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         if max_len < 0:
             raise ValueError(f"max_len must be >= 0, got {max_len!r}")
         return await backend.stream_trim(
-            stream_key=await cls.get_schema_name(),
+            stream_key=await cls._stream_key(route_override),
             max_len=max_len,
             approximate=approximate,
         )
 
     @classmethod
     @ensure_streaming
-    async def stream_delete(cls, backend: "StreamCapabilityMixin") -> bool:
+    async def stream_delete(
+        cls,
+        backend: "StreamCapabilityMixin",
+        *,
+        route_override: Optional[Dict[str, str]] = None,
+    ) -> bool:
         """Deletes the entire stream log and purges associated consumer group states."""
-        return await backend.stream_delete(await cls.get_schema_name())
+        return await backend.stream_delete(await cls._stream_key(route_override))
 
     @classmethod
     @ensure_streaming
@@ -451,6 +487,8 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         consumer_id: Optional[str] = None,
         count: int = 1,
         block_ms: Optional[int] = 5000,
+        *,
+        route_override: Optional[Dict[str, str]] = None,
     ) -> List[T]:
         """
         Reads and automatically acknowledges entries in a single call (At-Most-Once delivery).
@@ -465,7 +503,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         _check_positive("count", count)
         _check_timeout(block_ms)
         return await backend.stream_read_and_ack(
-            stream_key=await cls.get_schema_name(),
+            stream_key=await cls._stream_key(route_override),
             group_name=group_name,
             record_class=cls,
             consumer_id=consumer_id,

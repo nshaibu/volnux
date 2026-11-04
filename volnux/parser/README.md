@@ -8,7 +8,7 @@ Pointy is a small domain-specific language for describing event/task workflows. 
 
 ReceiveOrder -> ValidateOrder (
     failure -> RejectOrder,
-    success -> (ChargeCard || ReserveStock) |-> ShipOrder
+    success -> (ChargeCard || ReserveStock) -> ShipOrder
 )
 ```
 
@@ -72,14 +72,14 @@ Attach options to a task with a bracketed list of `name = expression` pairs:
 Worker[retry_attempts = 3, executor = "MyExecutor", extras = {"queue": "high"}]
 ```
 
-Known option names are `retry_attempts`, `executor`, `executor_config`, `extras`, `result_evaluation_strategy`, `stop_condition` and `bypass_event_checks`. Other names are accepted but reported as warnings by semantic analysis (they end up in `extras`). Executor names are resolved at runtime and are not validated by the parser. Attribute values can be any [expression](#10-types-and-expressions), including variables.
+Known option names are `retry_attempts`, `max_concurrency` (only meaningful on a `{}` group), `executor`, `executor_config`, `extras`, `result_evaluation_strategy`, `stop_condition` and `bypass_event_checks`. Other names are accepted but reported as warnings by semantic analysis (they end up in `extras`). Executor names are resolved at runtime and are not validated by the parser. Attribute values can be any [expression](#10-types-and-expressions), including variables.
 
 ## 3. Chaining and operators
 
 | Operator | Meaning |
 |---|---|
-| `A -> B` | Run `B` after `A` completes |
-| `A \|-> B` | Run `B` after `A` and pipe `A`'s result into `B` |
+| `A -> B` | Run `B` after `A` completes; `B` receives `A`'s results as `previous_result` |
+| `A \|-> B` | Stream `A`'s output into `B` while `A` is still running (see [Streaming](#streaming-with--)); an ordinary `->` when `A` does not stream |
 | `A \|\| B` | Run `A` and `B` in parallel |
 | `A * N` | Retry `A` up to `N` times (see [Retry](#5-retry)) |
 
@@ -97,11 +97,40 @@ is `A -> (B || C) -> D`. Use parentheses to group a sequence inside a parallel b
 (A -> B) || (C -> D)
 ```
 
-Parallel results can be piped on:
+Parallel results continue with `->`:
 
 ```pointy
-(FetchUsers || FetchOrders) |-> Merge
+(FetchUsers || FetchOrders) -> Merge
 ```
+
+(`|->` cannot follow a parallel group: that would merge two streams into one consumer, which is not supported. See [Streaming](#streaming-with--).)
+
+### Streaming with `|->`
+
+`A |-> B` links two tasks by a **stream**. When `A`'s `process()` is a generator (`async def` with `yield`, or a plain generator) it yields `(success, data)` many times, and each is appended to a stream on the messaging backend (Redis or Kafka streams, or the in-memory backend). `B` reads the stream while `A` is still producing, with `async for chunk in self.input_stream()`.
+
+```pointy
+Numbers |-> Double |-> Collect       # three tasks, running together
+Numbers |-> (AuditLog || Collect)    # fan-out: both read every chunk
+(Orders || Refunds) |-> Ledger       # fan-in: Ledger reads one merged stream
+{ Orders, Refunds -> Audit } |-> Ledger   # a cooperative group feeding a consumer
+Numbers |-> Collect (failure -> Alert, success -> Publish)
+```
+
+**Fan-in.** `(A || B) |-> C` and `{ A, B -> D } |-> C` make every producer (for a group: the last task of each chain) feed `C`, which reads one merged stream: each source keeps its own order, chunks of different sources arrive in arrival order, `chunk.task_id` says where a chunk came from, and the stream ends when every source has ended. A producer that is not a generator contributes its return value as a single chunk; if *no* producer streams, `|->` is an ordinary `->`.
+
+A run of `|->` tasks is one *segment*. Its members run at the same time; the segment succeeds when all of them do. If a consumer fails, its producers are asked to stop; if a producer fails, its stream is closed as failed and its consumers fail with it. When `A` is **not** a generator, `A |-> B` behaves exactly like `A -> B`.
+
+Because the members run together, some constructs cannot sit inside a segment, and semantic analysis reports them as errors:
+
+| Written | Why it is rejected |
+|---|---|
+| `A (1 \|-> B)`, `A (success \|-> B, failure \|-> C)` | A branch is chosen by `A`'s outcome, which is only known when its stream ends, but a streaming consumer has to start earlier. Use `->` for the branch. |
+| `A (failure -> X) \|-> B` | Same reason: branches on a task that is followed by a stream edge. Put the branches on the **last** task of the segment (`A \|-> B (failure -> X)`). |
+| `A * 3 \|-> B`, `(A * 2 \|\| B) \|-> C` | A second attempt of one member would replay chunks into a consumer that already read the first. Retry the whole segment: `{ A \|-> B }[retry_attempts = 3]`. |
+| `{ A, B (failure -> X) } \|-> C` | The tail of a chain that feeds a stream cannot branch, for the same reason as above. |
+
+Allowed: branches after the **end** of a segment (`A |-> B (failure -> X, success -> Y)`), and `A (1 -> C)` where `A` is a generator (not streaming: `C` starts when `A` has finished and receives a reference to the retained stream, readable with `self.replay()`).
 
 ## 4. Conditional branching and descriptors
 
@@ -111,11 +140,11 @@ A task can be followed by a parenthesised list of branches. Each branch maps a *
 Validate (failure -> HandleError, success -> Continue)
 ```
 
-Branches are separated by commas, may use `->` or `|->`, and may contain whole chains:
+Branches are separated by commas, use `->`, and may contain whole chains. (A branch cannot use the streaming `|->`: see [Streaming](#streaming-with--).)
 
 ```pointy
 Validate (
-    failure |-> LogError -> NotifyAdmin,
+    failure -> LogError -> NotifyAdmin,
     success -> Save (failure -> Rollback, success -> Done)
 )
 ```
@@ -197,13 +226,32 @@ Validate (failure -> Repair * 2, success -> Continue)
 
 Retry cannot be applied to a whole conditional expression: `A (failure -> B) * 3` is a syntax error.
 
-## 6. Groupings
+## 6. Execution paradigms: `->`, `||` and `{}`
 
-Parentheses group a chain for precedence. Braces create a **pipeline group** that is treated as one unit and may carry its own attributes:
+Three constructs decide *how* work runs, not just in which order:
+
+| Paradigm | Written | Contents | How it runs |
+|---|---|---|---|
+| Sequential | `A -> B -> C` | tasks and subgraphs | one after another |
+| Parallel | `(A \|\| B \|\| C)` | **tasks only** (`A \|\| (B -> C)` is rejected; a `{}` group counts as one unit and is allowed beside tasks) | the tasks are dispatched together as one unit, on the executor chosen for them |
+| Cooperative | `{ A, B -> C, D -> Z \|-> M }` | **tasks or whole subgraphs**, separated by commas | every item runs concurrently in a sub-engine of its own, as async tasks on the engine's loop (and threads/processes through the executors of the tasks inside) |
+
+`{}` is not mere grouping: its items are independent chains (each may branch, retry, stream with `|->` or hold nested `{}`), they run at the same time, and the group succeeds when all of them do. It can carry attributes and branches of its own, and what follows it continues once every chain has finished:
 
 ```pointy
-{ Extract -> Transform -> Load }[retry_attempts = 2] -> Notify
+{ Extract -> Transform -> Load }[retry_attempts = 2] -> Notify         # retried as one unit
+{ FetchUsers, FetchOrders -> Enrich }[max_concurrency = 8] -> Merge    # at most 8 chains at once
+{ A, B } (failure -> Alert, success -> Publish)                        # failure if any chain failed
+{ Source |-> Sink, AuditTrail }                                        # a stream segment inside one item
 ```
+
+A chain of the group failed when its engine failed or the last task it ran failed (a failure handled by a branch leaves a later task as the last one).
+
+**Bounded by design.** Cooperative execution must not starve other work or multiply processes:
+
+* the chains of one group run at most `max_concurrency` at a time (default: the `COOPERATIVE_MAX_CONCURRENCY` setting, 64; `0` is unlimited); the rest wait for a slot, none is dropped;
+* process and thread pools are shared, fixed-size and created once (`SHARED_PROCESS_POOL_SIZE`, `SHARED_THREAD_POOL_SIZE`), so nested groups cannot each build a pool; work queues in submission order;
+* a stream segment that is put on a pool smaller than the number of tasks that wait on each other runs on the async executor instead, so a consumer can never hold the only worker while its producer waits for one.
 
 ## 7. Meta events
 
@@ -324,6 +372,8 @@ Errors:
 - duplicate descriptors in a conditional
 - unknown directive names; non-string `@author` / `@description`; `@mode` other than exactly `"DAG"` or `"CFG"`
 - a conditional with no subject task, and retry applied to a conditional
+- streaming misuse: a branch written with `|->`, branches on a task (or on the tail of a `{}` chain) that is followed by `|->`, and retry of one member of a stream
+- `max_concurrency` below 1 (and a warning when it is put on something that is not a `{}` group)
 - division or modulo by a literal zero
 - a negative `retry_attempts`
 
@@ -349,7 +399,7 @@ chain          := parallel (('->' | '|->') parallel)*
 parallel       := step ('||' step)*
 step           := unit | unit '*' INT | conditional
 conditional    := step '(' branch (',' branch)* ')'
-branch         := descriptor ('->' | '|->') chain
+branch         := descriptor ('->' | '|->') chain      # '|->' parses but is rejected by semantic analysis
 descriptor     := INT | 'failure' | 'success' | name
 unit           := task | meta | group | '(' chain ')'
 task           := [namespace '::'] name [attributes]
