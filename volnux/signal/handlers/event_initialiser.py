@@ -8,7 +8,7 @@ from volnux.signal.signals import event_init
 
 ValidatorFunc = Callable[[Any, str, EventBase], None]
 
-PROTECTED_NAMES = EventBase.__dict__.keys()
+PROTECTED_NAMES = frozenset(EventBase.__dict__)
 
 
 class EventInitKwargs(typing.TypedDict, total=False):
@@ -21,16 +21,22 @@ class EventInitKwargs(typing.TypedDict, total=False):
     validators: typing.List[ValidatorFunc]
 
 
-@listener(event_init, sender=EventBase)
+# Connected for any sender: ``event_init`` is emitted with the concrete event
+# subclass as sender, and signal sender matching is exact (not subclass-aware),
+# so connecting with ``sender=EventBase`` would never fire.
+@listener(event_init)
 def inject_event_initialisation_extra_params(
-    event: EventBase, **init_kwargs: Dict[str, Any]
-):
+    event: EventBase,
+    init_kwargs: typing.Optional[Dict[str, Any]] = None,
+    **_signal_kwargs: Any,
+) -> None:
     """
     A generic listener connected to event_init that reads the INIT_PARAMS_SCHEMA
     (defined using the ExtraEventInitKwargs TypedDict), handles required parameters,
     default values, default factories, and custom validators, then injects
     the parameters as instance attributes.
     """
+    init_kwargs = init_kwargs or {}
     event_class = type(event)
 
     if not hasattr(event_class, "INIT_PARAMS_SCHEMA"):
@@ -71,7 +77,7 @@ def inject_event_initialisation_extra_params(
             except Exception as e:
                 raise RuntimeError(
                     f"Error calling default_factory for parameter '{param_name}': {e}"
-                )
+                ) from e
 
         elif default_value is not None:
             value_to_set = default_value
@@ -93,9 +99,15 @@ def inject_event_initialisation_extra_params(
                     validator(value_to_set, param_name, event)
                 except Exception as e:
                     # Re-raise the exception with context
-                    raise type(e)(
+                    message = (
                         f"Validation failed for parameter '{param_name}' in "
                         f"event '{event_class.__name__}': {e}"
                     )
+                    try:
+                        new_exc = type(e)(message)
+                    except Exception:
+                        # exception type with a non-trivial constructor
+                        new_exc = ValueError(message)
+                    raise new_exc from e
 
             setattr(event, param_name, value_to_set)

@@ -95,6 +95,7 @@ packages = [
     "volnux.mixins",
     "volnux.mixins.utils",
     "volnux.signal",
+    "volnux.signal.handlers",
     "volnux.backends",
     "volnux.backends.stores",
     "volnux.backends.connectors",
