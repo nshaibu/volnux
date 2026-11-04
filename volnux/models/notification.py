@@ -3,7 +3,7 @@ from dataclasses import field
 
 from formax import InitStrategy
 
-from volnux.backends.formax_fk import (
+from volnux.backends.fields.foreign_key import (
     ForeignKeyField,
     FKConfig,
     ForeignKey,

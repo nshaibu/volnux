@@ -2,7 +2,7 @@ import copy
 import typing
 
 from volnux.backends.store import KeyValueStoreBackendBase
-from volnux.backends.q_compiler import create_filter_predicate
+from volnux.backends.q_compiler import create_filter_predicate, resolve_field_value
 from volnux.backends.connection import BackendConnectorBase, ConnectionConfig
 from volnux.backends.messaging.stores.inmemory import (
     InMemoryPubSubMixin,
@@ -201,13 +201,44 @@ class InMemoryKeyValueStoreBackend(
     ) -> "ResultStream[KeyValueStoreIntegrationMixin]":
         predicate = self.create_filter_predicate(**filter_kwargs)
 
-        keys = []
         bucket = self._get_schema_bucket(schema_name)
-        for key, record in bucket.items():
-            if predicate(record):
-                keys.append(key)
+        matches = [(key, record) for key, record in bucket.items() if predicate(record)]
+        keys = self._order_and_page(matches, limit, offset, order_by)
 
         return self._create_result_stream(record_keys=keys, record_klass=record_klass)
+
+    @staticmethod
+    def _order_and_page(
+        matches: typing.List[typing.Tuple[str, typing.Any]],
+        limit: typing.Optional[int],
+        offset: typing.Optional[int],
+        order_by: typing.Optional[str],
+    ) -> typing.List[str]:
+        """Keys of ``matches`` ordered by ``order_by`` (``-`` prefix: descending),
+        then paged with ``offset`` and ``limit``: what the SQL and Redis stores do.
+
+        Records without a value for the field come last in either direction.
+        """
+        if order_by:
+            descending = order_by.startswith("-")
+            field = order_by.lstrip("-+")
+            valued, missing = [], []
+            for key, record in matches:
+                value, found = resolve_field_value(record, field)
+                (valued if found and value is not None else missing).append(
+                    (key, value)
+                )
+            try:
+                valued.sort(key=lambda kv: kv[1], reverse=descending)
+            except TypeError:  # values that cannot be compared with each other
+                valued.sort(key=lambda kv: str(kv[1]), reverse=descending)
+            keys = [key for key, _ in valued + missing]
+        else:
+            keys = [key for key, _ in matches]
+
+        start = offset or 0
+        end = None if limit is None else start + limit
+        return keys[start:end]
 
     def count(
         self,

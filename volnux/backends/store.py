@@ -395,7 +395,7 @@ class YoyoMigrationsMixin:
                 elif meta_field_type in ["datetime", "date"]:
                     if self.dialect == SQLDialect.POSTGRES:
                         if meta_field_type == "datetime":
-                            is_tz = metadata.get("tz_aware", False)
+                            is_tz = metadata.get("tz_aware", True)
                             sql_type = "TIMESTAMPTZ" if is_tz else "TIMESTAMP"
                         else:
                             sql_type = "DATE"

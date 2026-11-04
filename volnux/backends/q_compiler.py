@@ -1,6 +1,7 @@
 import logging
 import operator
 import re
+from datetime import date
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -42,6 +43,26 @@ LOOKUP_OPERATORS: Dict[str, Callable[[Any, Any], bool]] = {
     "range": lambda a, b: b[0] <= a <= b[1] if a is not None and len(b) == 2 else False,
     "isnull": lambda a, b: (a is None) == b,
 }
+
+
+# Lookups whose operand is a value of the field's own type (not text or a flag)
+_VALUE_LOOKUPS = frozenset({"exact", "gt", "gte", "lt", "lte", "in", "range"})
+
+
+def _coerce_temporal(record_value: Any, lookup_type: str, value: Any) -> Any:
+    """Make a filter value comparable with a stored ``datetime``/``date``.
+
+    Stored values are real datetimes while callers often filter with an ISO string,
+    an epoch number, or a datetime in the other time-zone convention. Without this
+    the comparison raises and is silently reported as "no match".
+    """
+    if lookup_type not in _VALUE_LOOKUPS or not isinstance(record_value, date):
+        return value
+    from volnux.backends.fields.datetime import coerce_temporal_like
+
+    if lookup_type in ("in", "range") and isinstance(value, (list, tuple, set)):
+        return type(value)(coerce_temporal_like(record_value, v) for v in value)
+    return coerce_temporal_like(record_value, value)
 
 
 def _safe_regex_match(value: Any, pattern: str, ignore_case: bool = False) -> bool:
@@ -150,7 +171,10 @@ def create_filter_predicate(**filter_kwargs: Any) -> Callable[[Any], bool]:
                 if not found and lookup_type != "isnull":
                     return False
                 try:
-                    return op(record_value, val)
+                    return op(
+                        record_value,
+                        _coerce_temporal(record_value, lookup_type, val),
+                    )
                 except (TypeError, ValueError):
                     return False
 
@@ -194,7 +218,9 @@ def create_q_predicate(
         if not found and lookup_type != "isnull":
             return False
         try:
-            return op_func(record_value, value)
+            return op_func(
+                record_value, _coerce_temporal(record_value, lookup_type, value)
+            )
         except (TypeError, ValueError):
             return False
 

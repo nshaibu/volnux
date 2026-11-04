@@ -14,8 +14,17 @@ logger = logging.getLogger(__name__)
 
 conf = VolnuxConfig.get_instance()
 
+
+def _correlation_prefix(node_id: str) -> str:
+    """First 8 characters of the node id, without its ``node_`` prefix."""
+    prefix = "node_"
+    if node_id.startswith(prefix):
+        node_id = node_id[len(prefix) :]
+    return node_id[:8]
+
+
 # Prefix for structured correlation_id
-_CORRECTION_ID_PREFIX = conf.get_node_id().strip("node_")[:8]
+_CORRECTION_ID_PREFIX = _correlation_prefix(conf.get_node_id())
 
 
 class TriggerType(Enum):
@@ -57,6 +66,14 @@ class TriggerLifecycle(Enum):
     ERROR = "error"
 
 
+def _declares_abstract_methods(cls: type) -> bool:
+    """True if ``cls`` still has an abstract method that nothing overrides."""
+    for name in {n for klass in cls.__mro__ for n in vars(klass)}:
+        if getattr(getattr(cls, name, None), "__isabstractmethod__", False):
+            return True
+    return False
+
+
 class TriggerBase(ABC):
     """
     Base trigger class.
@@ -71,8 +88,9 @@ class TriggerBase(ABC):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        # Only enforce on concrete (non-abstract) subclasses
-        if not getattr(cls, "__abstractmethods__", None):
+        # Only enforce on concrete (non-abstract) subclasses. ABCMeta has not set
+        # ``__abstractmethods__`` yet at this point, so look at the methods.
+        if not _declares_abstract_methods(cls):
             if not isinstance(getattr(cls, "trigger_type", None), TriggerType):
                 raise TypeError(
                     f"{cls.__name__} must define a class-level "
@@ -98,7 +116,6 @@ class TriggerBase(ABC):
             error_count=0,
             last_fired=None,
             dirty=False,
-            updated_at=datetime.now(timezone.utc),
         )
         self.workflow_params = workflow_params or {}
         self.metadata = metadata or {}
@@ -139,8 +156,8 @@ class TriggerBase(ABC):
         return self.state.error_count
 
     @property
-    def last_fired(self) -> Optional[str]:
-        """Get the timestamp of the last activation (ISO format string)."""
+    def last_fired(self) -> Optional[datetime]:
+        """When the trigger last activated (UTC), or None if it never has."""
         return self.state.last_fired
 
     def update_workflow_params(self, params: Dict[str, Any]):
@@ -209,7 +226,19 @@ class TriggerBase(ABC):
         and persists changes, then calls the subclass's start() implementation.
         """
         await self.state.start()
-        await self.start()
+        try:
+            await self.start()
+        except BaseException:
+            # The record said ACTIVE; do not leave it saying so for a trigger that
+            # never started.
+            try:
+                await self.state.mark_error()
+            except Exception:
+                logger.exception(
+                    "Could not record the failed start of trigger '%s'",
+                    self.trigger_id,
+                )
+            raise
 
     async def end(self):
         """
@@ -218,8 +247,11 @@ class TriggerBase(ABC):
         This calls the state record's stop() method, which updates the lifecycle
         and persists changes, then calls the subclass's stop() implementation.
         """
-        await self.state.stop()
-        await self.stop()
+        try:
+            await self.stop()
+        finally:
+            # The record must say stopped even if the subclass failed to clean up
+            await self.state.stop()
 
     @abstractmethod
     async def start(self):
@@ -255,8 +287,6 @@ class TriggerBase(ABC):
         Raises:
             RuntimeError: If no activation callback is set
         """
-        from volnux.engine.workflows.trigger.state import str_to_datetime
-
         if not self.enabled:
             logger.debug(f"Trigger {self.trigger_id} is disabled, skipping activation")
             return
@@ -280,13 +310,14 @@ class TriggerBase(ABC):
                 "overlap with workflow_params and will override them."
             )
 
+        activated_at = datetime.now(timezone.utc)
         self.state.fire_count += 1
-        self.state.last_fired = datetime.now(timezone.utc)
+        self.state.last_fired = activated_at
         await self.state.save()
 
         activation = TriggerActivation(
             trigger_id=self.trigger_id,
-            activated_at=str_to_datetime(self.last_fired),
+            activated_at=activated_at,
             activation_source=self.get_activation_source(),
             workflow_params={
                 **self.workflow_params,

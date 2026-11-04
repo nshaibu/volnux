@@ -19,12 +19,12 @@ class InspectTriggerSubCommand(SubCommand):
         asyncio.run(self._run(trigger_id))
 
     async def _run(self, trigger_id: str):
-        record = await TriggerStateRecord.get_async(record_id=trigger_id)
+        record = await TriggerStateRecord.get_or_none_async(trigger_id)
         if record is None:
             self.error(f"Trigger '{trigger_id}' not found.")
             return
         rows = [
-            ["trigger_id", record.trigger_id],
+            ["trigger_id", record.id],
             ["workflow_name", record.workflow_name],
             [
                 "lifecycle",

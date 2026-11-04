@@ -92,7 +92,7 @@ async def get_execution_traces(
     _: None = Depends(require_permission(Permission.EXECUTION_TRACE)),
 ):
     """Get the fractal execution tree for an execution. Requires trace permission."""
-    traces = ExecutionTrace.filter_async(
+    traces = await ExecutionTrace.filter_async(
         execution_id=execution_id, order_by="step_order"
     )
     return {"status": "success", "data": [_serialize_model(t) for t in traces]}

@@ -19,7 +19,7 @@ class StopTriggerSubCommand(SubCommand):
         asyncio.run(self._stop_trigger(trigger_id))
 
     async def _stop_trigger(self, trigger_id: str):
-        record = await TriggerStateRecord.get_async(record_id=trigger_id)
+        record = await TriggerStateRecord.get_or_none_async(trigger_id)
         if record is None:
             self.error(f"Trigger '{trigger_id}' not found.")
             return

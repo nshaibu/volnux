@@ -85,18 +85,10 @@ register_formax_model_constraints(
 )
 
 
-# Observability
-if getattr(config, "OTEL_ENABLED", True):
-    setup_otel(app, engine)
-
-if getattr(config, "METRICS_ENABLED", True):
-    setup_metrics(app, engine, port=metrics_port)
+# Observability (OpenTelemetry, Prometheus) is set up by the server lifecycle
+# (volnux/adapters/lifecycle), which knows the engine and the run mode.
 
 # Middleware (last added = first executed)
-app.add_middleware(RequestLoggingMiddleware)
-
-cors_origins = ["*"] if dev_mode else getattr(config, "API_CORS_ORIGINS", [])
-
 _app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -104,13 +96,6 @@ _app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-if getattr(config, "API_RATE_LIMIT_ENABLED", True) and not dev_mode:
-    app.add_middleware(
-        RateLimitMiddleware,
-        requests_per_window=getattr(config, "API_RATE_LIMIT_REQUESTS", 1000),
-        window_seconds=getattr(config, "API_RATE_LIMIT_WINDOW", 60),
-    )
 
 
 def get_current_app() -> FastAPI:

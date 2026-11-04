@@ -399,6 +399,17 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
                         attribs[name] = meta
         return attribs
 
+    def _apply_auto_now(self) -> None:
+        """Stamp every ``auto_now`` field with the current time.
+
+        Called when the record is written. Assigning ``None`` makes the field's
+        pre-formatter produce "now", so the field alone decides what "now" means
+        (UTC datetime or UTC date).
+        """
+        for name, attrib in self._field_attribs().items():
+            if (attrib.metadata or {}).get("auto_now") and not name.startswith("_"):
+                setattr(self, name, None)
+
     def get_state(self) -> Dict[str, Any]:
         """
         Persistable state of a formax model, built from its declared fields.
@@ -564,6 +575,7 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             ObjectExistError: If force_insert is True and the record already exists.
         """
         try:
+            self._apply_auto_now()
             backend = await self.get_backend()
             schema_name = await self.get_schema_name()
 
@@ -606,6 +618,7 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             ObjectDoesNotExist: If the record doesn't exist in the backend.
         """
         try:
+            self._apply_auto_now()
             backend = await self.get_backend()
             await self._run_in_kv_executor(
                 backend.update, await self.get_schema_name(), self.id, self
@@ -780,6 +793,83 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
         """
         return await cls.filter()
 
+    # --- "_async" spellings ------------------------------------------------------
+    #
+    # The platform app, the CLI and the engine use these names. They are the same
+    # operations as the plain ones, with one difference in what is returned:
+    # ``filter_async`` and ``all_async`` give a plain ``list`` (the callers index,
+    # slice and iterate it), where ``filter`` and ``all`` give a lazy stream.
+
+    async def save_async(
+        self, force_insert: bool = False, ttl: Optional[int] = None
+    ) -> None:
+        """Same as :meth:`save`."""
+        await self.save(force_insert=force_insert, ttl=ttl)
+
+    async def update_async(self) -> None:
+        """Same as :meth:`update`."""
+        await self.update()
+
+    async def delete_async(self) -> None:
+        """Same as :meth:`delete`."""
+        await self.delete()
+
+    @classmethod
+    async def get_async(cls: Type[T], record_id: str) -> T:
+        """Same as :meth:`get`: raises ``ObjectDoesNotExist`` when there is no record
+        (the API turns that into a 404)."""
+        return await cls.get(record_id)
+
+    @classmethod
+    async def get_or_none_async(cls: Type[T], record_id: str) -> Optional[T]:
+        """Same as :meth:`get_or_none`."""
+        return await cls.get_or_none(record_id)
+
+    @classmethod
+    async def filter_async(
+        cls: Type[T],
+        *,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        order_by: Optional[str] = None,
+        **filters: Any,
+    ) -> List[T]:
+        """Matching records as a list, optionally ordered and paged.
+
+        Args:
+            limit: Return at most this many records.
+            offset: Skip this many records first.
+            order_by: Field to order by; prefix with ``-`` for descending order.
+            **filters: Field lookups, as for :meth:`filter`.
+        """
+        paging = {
+            name: value
+            for name, value in (
+                ("limit", limit),
+                ("offset", offset),
+                ("order_by", order_by),
+            )
+            if value is not None
+        }
+        stream = await cls.filter(**paging, **filters)
+        return await stream.to_list()
+
+    @classmethod
+    async def all_async(
+        cls: Type[T],
+        *,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        order_by: Optional[str] = None,
+    ) -> List[T]:
+        """Every record as a list (see :meth:`filter_async` for the options)."""
+        return await cls.filter_async(limit=limit, offset=offset, order_by=order_by)
+
+    @classmethod
+    async def count_async(cls, **filters: Any) -> int:
+        """Same as :meth:`count`."""
+        return await cls.count(**filters)
+
     @classmethod
     async def count(cls, **filters: Any) -> int:
         """Count objects matching the given filters.
@@ -793,7 +883,7 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
         try:
             backend = await cls.get_backend()
             return await cls._run_in_kv_executor(
-                backend.count, await cls.get_schema_name(), **filters
+                backend.count, await cls.get_schema_name(), cls, **filters
             )
         except Exception as e:
             logger.error(f"Failed to count {cls.__name__}: {e}")

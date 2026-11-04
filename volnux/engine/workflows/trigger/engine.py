@@ -32,7 +32,6 @@ from typing import (
     Literal,
     Optional,
 )
-from datetime import datetime, timezone
 
 from .state import TriggerStateRecord
 from volnux.engine.workflows.workflow import WorkflowExecutionError, WorkflowNotFound
@@ -382,8 +381,8 @@ class TriggerEngine:
 
         for trigger in self.triggers.values():
             try:
-                await trigger.stop()
-                logger.info(f"Stopped trigger: {trigger.trigger_id}")
+                if await self._end_trigger(trigger):
+                    logger.info(f"Stopped trigger: {trigger.trigger_id}")
             except Exception as e:
                 logger.error(f"Failed to stop trigger {trigger.trigger_id}: {e}")
 
@@ -450,7 +449,7 @@ class TriggerEngine:
         stop_errors: List[Tuple[str, Exception]] = []
         for trigger in self.triggers.values():
             try:
-                await trigger.end()
+                await self._end_trigger(trigger)
             except Exception as e:
                 stop_errors.append((trigger.trigger_id, e))
 
@@ -483,6 +482,24 @@ class TriggerEngine:
         logger.warning("Trigger engine force-stopped.")
         return dropped
 
+    @staticmethod
+    async def _end_trigger(trigger: TriggerBase) -> bool:
+        """Stop a trigger and record it as STOPPED; returns whether it was stopped.
+
+        ``end()`` is the whole shutdown: the trigger's own ``stop()`` hook (timers,
+        subscriptions) and the persisted lifecycle. Calling only ``stop()`` left the
+        record saying ACTIVE after the engine had shut down. A trigger that never
+        ran, or is already stopped, has nothing to stop.
+        """
+        if trigger.lifecycle in (
+            TriggerLifecycle.CREATED,
+            TriggerLifecycle.INITIALIZED,
+            TriggerLifecycle.STOPPED,
+        ):
+            return False
+        await trigger.end()
+        return True
+
     async def _state_sync_loop(self):
         """
         Background task: poll for dirty TriggerStateRecord rows every
@@ -495,9 +512,18 @@ class TriggerEngine:
             while True:
                 await asyncio.sleep(self._state_sync_interval)
                 try:
-                    dirty_records = await TriggerStateRecord.get_dirty()
+                    dirty_records = await (
+                        await TriggerStateRecord.get_dirty()
+                    ).to_list()
                     for record in dirty_records:
-                        await self._apply_state_change(record)
+                        try:
+                            await self._apply_state_change(record)
+                        except Exception as exc:
+                            logger.exception(
+                                "State-sync: could not apply change to trigger '%s': %s",
+                                record.id,
+                                exc,
+                            )
                 except Exception as exc:
                     logger.exception("Error during state-sync poll: %s", exc)
         except asyncio.CancelledError:
@@ -523,29 +549,45 @@ class TriggerEngine:
 
         lifecycle = record.lifecycle
 
-        if lifecycle == TriggerLifecycle.PAUSED:
-            logger.info("State-sync: pausing trigger '%s'.", record.id)
-            await trigger.pause()
+        try:
+            if lifecycle == trigger.lifecycle:
+                logger.debug(
+                    "State-sync: trigger '%s' is already '%s'.",
+                    record.id,
+                    lifecycle.value,
+                )
 
-        elif lifecycle == TriggerLifecycle.ACTIVE:
-            logger.info("State-sync: resuming trigger '%s'.", record.id)
-            await trigger.resume()
+            elif lifecycle == TriggerLifecycle.PAUSED:
+                logger.info("State-sync: pausing trigger '%s'.", record.id)
+                await trigger.pause()
 
-        elif lifecycle == TriggerLifecycle.STOPPED:
-            logger.info("State-sync: stopping trigger '%s'.", record.id)
-            await trigger.end()
+            elif lifecycle == TriggerLifecycle.ACTIVE:
+                logger.info("State-sync: resuming trigger '%s'.", record.id)
+                await trigger.resume()
 
-        else:
-            logger.debug(
-                "State-sync: no action required for lifecycle '%s' on trigger '%s'.",
-                lifecycle,
+            elif lifecycle == TriggerLifecycle.STOPPED:
+                logger.info("State-sync: stopping trigger '%s'.", record.id)
+                await self._end_trigger(trigger)
+
+            else:
+                logger.debug(
+                    "State-sync: no action required for lifecycle '%s' on trigger '%s'.",
+                    lifecycle.value,
+                    record.id,
+                )
+        except RuntimeError as exc:
+            # A request that cannot apply (resume of a stopped trigger, ...) is
+            # reported and dropped: left dirty it would be retried forever.
+            logger.warning(
+                "State-sync: cannot apply '%s' to trigger '%s': %s",
+                lifecycle.value,
                 record.id,
+                exc,
             )
 
         # Clear the dirty flag and persist.
         record.dirty = False
-        record.updated_at = datetime.now(timezone.utc)
-        await record.save()
+        await record.save()  # stamps updated_at
 
     async def _handle_activation(self, activation: TriggerActivation):
         """
@@ -557,8 +599,10 @@ class TriggerEngine:
             return
 
         try:
-            # Enqueue the workflow details
-            await self.task_queue.put(
+            # Enqueue the workflow details. put_nowait, not put: on a full bounded
+            # queue put() waits for room and never raises QueueFull, which would stall
+            # the trigger (and everything awaiting its activate()) behind a backlog.
+            self.task_queue.put_nowait(
                 (trigger.workflow_name, activation.workflow_params)
             )
             logger.debug(f"Workflow '{trigger.workflow_name}' enqueued.")

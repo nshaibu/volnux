@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __all__ = ["StatusTriggerEngineSubCommand"]
 
+import asyncio
 import json
 import math
 import os
@@ -52,7 +53,7 @@ class StatusTriggerEngineSubCommand(SubCommand):
             dest="verbose",
             action="store_true",
             default=False,
-            help="Include extra columns: last_fired_at, error_count, last_error.",
+            help="Include extra columns: fire count.",
         )
 
     # ------------------------------------------------------------------
@@ -103,9 +104,11 @@ class StatusTriggerEngineSubCommand(SubCommand):
         db_error: Optional[str] = None
 
         try:
-            from ..state import TriggerStateRecord  # noqa: PLC0415
+            from volnux.engine.workflows.trigger.state import (  # noqa: PLC0415
+                TriggerStateRecord,
+            )
 
-            triggers = TriggerStateRecord.all()
+            triggers = asyncio.run(TriggerStateRecord.all_async())
         except ImportError as exc:
             db_error = f"Cannot import TriggerStateRecord: {exc}"
         except Exception as exc:  # noqa: BLE001
@@ -132,13 +135,13 @@ class StatusTriggerEngineSubCommand(SubCommand):
     ) -> None:
         trigger_list = [
             {
-                "trigger_id": r.trigger_id,
-                "trigger_name": r.trigger_name,
-                "state": r.state,
-                "last_fired_at": r.last_fired_at,
+                "trigger_id": r.id,
+                "workflow_name": r.workflow_name,
+                "state": _state_of(r),
+                "enabled": r.enabled,
+                "fire_count": r.fire_count,
+                "last_fired": r.last_fired,
                 "error_count": r.error_count,
-                "last_error": r.last_error,
-                "created_at": r.created_at,
                 "updated_at": r.updated_at,
             }
             for r in triggers
@@ -208,7 +211,7 @@ class StatusTriggerEngineSubCommand(SubCommand):
                 f"{'ERRORS':<{_COL_ERRORS}}"
             )
             if verbose:
-                header += f"  {'LAST ERROR'}"
+                header += f"  {'FIRES'}"
             out(header)
 
             sep_width = _COL_NAME + _COL_STATE + _COL_LAST_FIRED + _COL_ERRORS
@@ -250,16 +253,14 @@ class StatusTriggerEngineSubCommand(SubCommand):
 
     def _format_table_row(self, record, verbose: bool) -> tuple[str, ...]:
         """Return display strings for one table row."""
-        name = record.trigger_name or record.trigger_id
-        state_str = record.state or "unknown"
-        last_fired = self._format_relative_time(record.last_fired_at)
+        name = record.workflow_name or record.id
+        state_str = _state_of(record) or "unknown"
+        last_fired = self._format_relative_time(record.last_fired)
         errors = str(record.error_count)
         coloured = _colorise_trigger_state(state_str, self.style)
 
         if verbose:
-            raw = record.last_error or ""
-            trunc = raw[:40] + ("…" if len(raw) > 40 else "")
-            return (name, coloured, last_fired, errors, trunc)
+            return (name, coloured, last_fired, errors, f"fired {record.fire_count}x")
 
         return (name, coloured, last_fired, errors)
 
@@ -318,11 +319,17 @@ class StatusTriggerEngineSubCommand(SubCommand):
 # ---------------------------------------------------------------------------
 
 
+def _state_of(record) -> str:
+    """The lifecycle of a state record as a plain string ('active', 'paused', ...)."""
+    lifecycle = record.lifecycle
+    return getattr(lifecycle, "value", lifecycle) or ""
+
+
 def _build_summary(triggers: list) -> dict:
     """Return total and per-state counts."""
     s = {"total": len(triggers), "active": 0, "paused": 0, "stopped": 0, "error": 0}
     for rec in triggers:
-        key = (rec.state or "").lower()
+        key = (_state_of(rec) or "").lower()
         if key in s:
             s[key] += 1
     return s

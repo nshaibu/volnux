@@ -26,7 +26,7 @@ class ListTriggerSubCommand(SubCommand):
 
         rows = [
             [
-                r.trigger_id,
+                r.id,
                 r.workflow_name,
                 r.lifecycle.value if hasattr(r.lifecycle, "value") else r.lifecycle,
                 "yes" if r.enabled else "no",
