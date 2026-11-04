@@ -1,3 +1,4 @@
+import typing
 import logging
 from enum import Enum
 from contextlib import contextmanager
@@ -1033,6 +1034,47 @@ class PostgresStoreBackend(
         except Exception as e:
             logger.error("Error getting record: %s", e)
             raise SqlOperationError(f"Error getting record: {e}")
+
+    _GET_MANY_CHUNK = 1000
+
+    def get_many(
+        self,
+        schema_name: str,
+        record_keys: typing.Sequence[Union[str, int]],
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+    ) -> Dict[str, "KeyValueStoreIntegrationMixin"]:
+        """Retrieve several records with ``WHERE id IN (...)`` queries."""
+        keys = list(record_keys)
+        if not keys:
+            return {}
+        self._ensure_connected()
+
+        found: Dict[str, "KeyValueStoreIntegrationMixin"] = {}
+        try:
+            for i in range(0, len(keys), self._GET_MANY_CHUNK):
+                chunk = keys[i : i + self._GET_MANY_CHUNK]
+                placeholders = ", ".join("%s" for _ in chunk)
+                with self._get_cursor() as cursor:
+                    cursor.execute(
+                        f"SELECT * FROM {_safe_name(schema_name)} "
+                        f"WHERE id IN ({placeholders})",
+                        chunk,
+                    )
+                    # Map columns while the cursor is open (see get()).
+                    row_dicts = [
+                        self._sqlite_row_and_tuple_to_dict(row, cursor)
+                        for row in cursor.fetchall()
+                    ]
+                for row_dict in row_dicts:
+                    found[str(row_dict["id"])] = self._deserialize_record(
+                        row_dict, record_klass
+                    )
+            return found
+        except SerializationError:
+            raise
+        except Exception as e:
+            logger.error("Error getting records: %s", e)
+            raise SqlOperationError(f"Error getting records: {e}")
 
     def reload(
         self, schema_name: str, record: "KeyValueStoreIntegrationMixin"

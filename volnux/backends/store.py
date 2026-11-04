@@ -29,7 +29,11 @@ from typing import (
     Optional,
     Tuple,
     get_args,
+    List,
+    Set,
+    Tuple,
 )
+from dataclasses import dataclass, field
 
 from formax import BaseModel
 from formax.typing import (
@@ -39,7 +43,7 @@ from formax.typing import (
 )
 
 from .connection import BackendConnectorBase
-from volnux.exceptions import SerializationError
+from volnux.exceptions import SerializationError, ObjectDoesNotExist
 from .db_utils import (
     _safe_name,
     _generate_constraint_name,
@@ -58,10 +62,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-
-from dataclasses import dataclass, field
-from typing import List, Set, Tuple
 
 
 class SQLDialect(Enum):
@@ -972,6 +972,12 @@ class KeyValueStoreBackendBase(abc.ABC):
 
     NAMESPACE_SEPARATOR = ":"
 
+    #: True when separate processes (and machines) can see each other's data
+    #: through this backend, i.e. it is a shared service such as Redis or Kafka.
+    #: Task command channels over the messaging backend need this: the in-memory
+    #: store (or a local file database) cannot carry a message to a worker process.
+    supports_cross_process: bool = False
+
     RESERVED_FIELDS = {
         "_id",
         "_backend",
@@ -1378,6 +1384,36 @@ class KeyValueStoreBackendBase(abc.ABC):
             The record instance if found, None otherwise.
         """
         raise NotImplementedError
+
+    def get_many(
+        self,
+        schema_name: str,
+        record_keys: typing.Sequence[Union[str, int]],
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+    ) -> Dict[str, "KeyValueStoreIntegrationMixin"]:
+        """Retrieve several records in one call.
+
+        Missing keys are omitted from the result rather than raising, so the
+        caller can tell which records are gone. Backends should override this
+        with a single round trip; the default falls back to one ``get`` per key.
+
+        Args:
+            schema_name: The schema/namespace containing the records.
+            record_keys: The keys of the records to retrieve.
+            record_klass: The class to instantiate the records with.
+
+        Returns:
+            Mapping of ``str(record_key)`` to the record instance.
+        """
+        found: Dict[str, "KeyValueStoreIntegrationMixin"] = {}
+        for key in record_keys:
+            try:
+                record = self.get(schema_name, key, record_klass)
+            except ObjectDoesNotExist:
+                continue
+            if record is not None:
+                found[str(key)] = record
+        return found
 
     @abc.abstractmethod
     def filter(

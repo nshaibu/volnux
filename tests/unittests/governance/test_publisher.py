@@ -81,7 +81,8 @@ def test_flush_source_is_drained_periodically(make_event):
         seen.append(event.event_type)
 
     publisher = GovernanceEventPublisher(
-        sink=sink, flush_source=lambda: pending.pop(0) if pending else [],
+        sink=sink,
+        flush_source=lambda: pending.pop(0) if pending else [],
         flush_interval=0.05,
     )
     publisher.start()

@@ -14,6 +14,7 @@ Classes:
     ExecutorInitializerConfig: Configuration settings for executor initialization.
     EventCheckpointingMixin: A mixin offering event checkpointing capabilities.
     ExternalCommunicationMixin: A mixin for handling external communication.
+    ExternalCommunicationType: The kind of external communication being requested.
     RetryPolicy: Represents a policy for defining retry strategies.
     RetryMixin: A mixin that integrates retry logic into classes.
     RetryConfigDict: Type definition or configuration for retry-related settings.
@@ -22,5 +23,5 @@ Classes:
 from .command import EventCommandMixin
 from .executor import ExecutorInitializerMixin, ExecutorInitializerConfig
 from .checkpointer import EventCheckpointingMixin
-from .external import ExternalCommunicationMixin
+from .external import ExternalCommunicationMixin, ExternalCommunicationType
 from .retry import RetryPolicy, RetryMixin, RetryConfigDict

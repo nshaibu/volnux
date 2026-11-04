@@ -25,12 +25,14 @@ import pytest
 def _import_mixin():
     from volnux.mixins.event import ExecutorInitializerMixin
     from volnux.parser.executor_config import ExecutorInitializerConfig
+
     return ExecutorInitializerMixin, ExecutorInitializerConfig
 
 
 # ---------------------------------------------------------------------------
 # get_task_executor
 # ---------------------------------------------------------------------------
+
 
 class TestGetTaskExecutor:
     def test_returns_executor_when_already_an_instance(self):
@@ -41,6 +43,7 @@ class TestGetTaskExecutor:
         # Use a real-ish BaseExecutor subclass; if BaseExecutor is abstract
         # we instantiate via MagicMock with the right spec.
         try:
+
             class _FakeExecutor(BaseExecutor):
                 pass
 
@@ -77,6 +80,7 @@ class TestGetTaskExecutor:
 # ---------------------------------------------------------------------------
 # get_executor_initializer_config
 # ---------------------------------------------------------------------------
+
 
 class TestGetExecutorInitializerConfig:
     def test_returns_existing_config_when_set(self):
@@ -139,6 +143,7 @@ class TestGetExecutorInitializerConfig:
 # ---------------------------------------------------------------------------
 # get_executor_context
 # ---------------------------------------------------------------------------
+
 
 class TestGetExecutorContext:
     def test_returns_none_when_executor_is_not_a_class(self):

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import threading
+import time
 from typing import Any, Callable, Optional
 
 from celery import Celery
 from celery.app.control import Control
 from celery.result import AsyncResult
+
+logger = logging.getLogger(__name__)
 
 
 def make_remote_task(celery_app: Celery):
@@ -85,6 +89,48 @@ class CeleryFuture(concurrent.futures.Future):
     def cancelled(self) -> bool:
         return super().cancelled() or self._async_result.state == "REVOKED"
 
+    @property
+    def async_result(self) -> AsyncResult:
+        """The Celery ``AsyncResult`` behind this future."""
+        return self._async_result
+
+    def _sync_from_backend(self) -> bool:
+        """Record the task's final outcome on this future and fire its callbacks.
+
+        ``done()``/``result()`` read the result backend directly, so on their own
+        they never notify anyone: asyncio's ``wrap_future`` (hence
+        ``run_in_executor``) waits for callbacks that would never come. The
+        executor's watcher calls this to close that gap.
+
+        Returns True once the future is finished (by this or an earlier call).
+        """
+        state = self._async_result.state
+        if state not in self._CELERY_DONE_STATES:
+            return False
+        with self._condition:
+            if self._state in (
+                concurrent.futures._base.CANCELLED,
+                concurrent.futures._base.CANCELLED_AND_NOTIFIED,
+                concurrent.futures._base.FINISHED,
+            ):
+                return True
+            if state == "SUCCESS":
+                self._result = self._async_result.result
+                self._state = concurrent.futures._base.FINISHED
+            elif state == "FAILURE":
+                error = self._async_result.result
+                self._exception = (
+                    error
+                    if isinstance(error, BaseException)
+                    else RuntimeError(str(error))
+                )
+                self._state = concurrent.futures._base.FINISHED
+            else:  # REVOKED
+                self._state = concurrent.futures._base.CANCELLED
+            self._condition.notify_all()
+        self._invoke_callbacks()
+        return True
+
     def running(self) -> bool:
         return self._async_result.state == "STARTED"
 
@@ -136,6 +182,7 @@ class CeleryExecutor(concurrent.futures.Executor):
         *,
         task_soft_time_limit: Optional[int] = None,
         task_time_limit: Optional[int] = None,
+        poll_interval: float = 0.2,
     ) -> None:
         if not isinstance(celery_app, Celery):
             raise TypeError(
@@ -150,6 +197,8 @@ class CeleryExecutor(concurrent.futures.Executor):
         self._lock = threading.Lock()
         self._futures: dict[str, CeleryFuture] = {}
         self._shutdown = False
+        self._poll_interval = poll_interval
+        self._watcher: Optional[threading.Thread] = None
 
         self._remote_task = make_remote_task(celery_app)
         self._control: Control = celery_app.control
@@ -187,8 +236,37 @@ class CeleryExecutor(concurrent.futures.Executor):
 
         with self._lock:
             self._futures[async_result.id] = future
+        self._ensure_watcher()
 
         return future
+
+    def _ensure_watcher(self) -> None:
+        """Make sure a thread is resolving finished tasks onto their futures."""
+        with self._lock:
+            if self._watcher is not None and self._watcher.is_alive():
+                return
+            self._watcher = threading.Thread(
+                target=self._watch, name="volnux-celery-watcher", daemon=True
+            )
+            self._watcher.start()
+
+    def _watch(self) -> None:
+        """Poll the result backend and complete futures as their tasks finish.
+
+        Exits when nothing is pending; the next ``submit`` starts a new one.
+        """
+        while True:
+            with self._lock:
+                pending = list(self._futures.values())
+                if not pending:
+                    self._watcher = None
+                    return
+            for future in pending:
+                try:
+                    future._sync_from_backend()
+                except Exception:
+                    logger.exception("Could not read the state of a Celery task")
+            time.sleep(self._poll_interval)
 
     def shutdown(
         self,

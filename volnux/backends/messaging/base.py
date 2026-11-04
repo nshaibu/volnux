@@ -275,6 +275,15 @@ class PushPopCapabilityMixin:
             Deserialised elements from start to stop, inclusive.
         """
 
+    async def queue_delete(self, key: str) -> bool:
+        """Delete a queue and everything in it.
+
+        Returns True if the queue existed. Backends that can remove a queue
+        override this; the default cannot and returns False. Used to clean up
+        per-task command queues, which would otherwise outlive their task.
+        """
+        return False
+
     # Convenience methods built on the abstract primitives
     # These have default implementations. Backends may override them
     # for performance (e.g. Redis has atomic GETSET for some of these).

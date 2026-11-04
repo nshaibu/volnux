@@ -311,6 +311,34 @@ def test_get_raises_when_record_does_not_exist(sqlite_store):
         sqlite_store.get("users", "missing", SampleRecord)
 
 
+def test_get_many_returns_found_records_and_omits_missing(sqlite_store, sample_record):
+    sqlite_store.insert("users", "user-1", sample_record)
+    sqlite_store.insert("users", "user-2", sample_record)
+
+    found = sqlite_store.get_many(
+        "users", ["user-2", "missing", "user-1"], SampleRecord
+    )
+
+    assert set(found) == {"user-1", "user-2"}
+    assert found["user-1"].name == sample_record.name
+
+
+def test_get_many_with_no_keys_returns_empty(sqlite_store, sample_record):
+    sqlite_store.insert("users", "user-1", sample_record)
+    assert sqlite_store.get_many("users", [], SampleRecord) == {}
+
+
+def test_get_many_chunks_large_key_lists(sqlite_store, sample_record, monkeypatch):
+    monkeypatch.setattr(type(sqlite_store), "_GET_MANY_CHUNK", 2)
+    keys = [f"user-{i}" for i in range(5)]
+    for key in keys:
+        sqlite_store.insert("users", key, sample_record)
+
+    found = sqlite_store.get_many("users", keys + ["nope"], SampleRecord)
+
+    assert set(found) == set(keys)
+
+
 def test_update_replaces_existing_record(sqlite_store, sample_record):
     sqlite_store.insert("users", "user-1", sample_record)
 

@@ -57,6 +57,9 @@ class TaskState(enum.Enum):
     QUEUED = "queued"
     RUNNING = "running"
     PAUSED = "paused"
+    #: Waiting for something outside the task (a human, an external event or
+    #: condition). Distinct from PAUSED, which is a coordinator command.
+    SUSPENDED = "suspended"
     CANCELLED = "cancelled"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -159,15 +162,50 @@ class TaskExecutionHandle:
         )
 
 
+class ChannelUnavailable(RuntimeError):
+    """A control channel cannot be offered for this task (no cross-process
+    messaging backend configured, say). The task still runs, without one."""
+
+
+#: States after which a task sends nothing more.
+TERMINAL_STATES = frozenset(
+    {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}
+)
+
+
+def parse_task_state(raw: Any) -> Optional[TaskState]:
+    """The ``TaskState`` for a value sent by an event.
+
+    Events send ``state.value`` (``"running"``); the member NAME (``"RUNNING"``)
+    is accepted too. Unknown values return ``None``.
+    """
+    if isinstance(raw, TaskState):
+        return raw
+    for lookup in (lambda: TaskState(raw), lambda: TaskState[str(raw).upper()]):
+        try:
+            return lookup()
+        except (ValueError, KeyError):
+            continue
+    return None
+
+
 class TaskCommunicationBridge(ABC):
     """
-    Abstract interface for task communication.
+    The coordinator's side of the task control plane.
 
-    Implementations provide backend-specific communication for different executors
-    (local threads, processes, remote workers, Celery).
+    A bridge registers each running task, hands the task a channel to receive
+    commands on, and consumes the status messages the task sends back. How the
+    bytes travel depends on where the task runs:
+
+    * ``LocalTaskCommunicationBridge``: in this process (async and thread executors)
+    * ``MessagingTaskCommunicationBridge``: anywhere else (process pool, Celery),
+      over a Redis/Kafka-backed messaging backend
     """
 
     channel_class: Type["CommandChannelBase"]
+
+    #: Seconds a pump waits for a message before checking whether to stop.
+    pump_timeout: float = 1.0
 
     def __init__(self, context: "ExecutionContext"):
         self.context = context
@@ -175,18 +213,28 @@ class TaskCommunicationBridge(ABC):
         # Channel registry: full_id -> CommandChannelBase
         self._channels: Dict[str, "CommandChannelBase"] = {}
 
-        # Execution handle tracking
+        # Execution handle tracking: full_id -> handle
         self._execution_handles: Dict[str, TaskExecutionHandle] = {}
 
-        # Status cache
+        # Status cache: full_id -> TaskStatus
         self._statuses: Dict[str, TaskStatus] = {}
 
-        # Track execution handles by full_id
-        self._execution_handles: Dict[str, TaskExecutionHandle] = {}
+        # asyncio primitives are created lazily inside the running loop: built
+        # here they would bind to whatever loop (if any) exists at construction
+        self._lock_obj: Optional[asyncio.Lock] = None
+        self._pumps: Dict[str, "asyncio.Task[None]"] = {}
+        self._monitoring = False
+        self._shutdown_done = False
 
-        self._lock: Optional[LockType] = None
-        self._monitor_task: Optional[asyncio.Task] = None
-        self._shutdown_event: Optional[EventType] = None
+    @property
+    def _lock(self) -> asyncio.Lock:
+        if self._lock_obj is None:
+            self._lock_obj = asyncio.Lock()
+        return self._lock_obj
+
+    @property
+    def is_shutdown(self) -> bool:
+        return self._shutdown_done
 
     def _get_or_create_channel(self, task_id: str) -> "CommandChannelBase":
         """Get or create a communication channel for a task"""
@@ -197,17 +245,9 @@ class TaskCommunicationBridge(ABC):
     def _register_task(
         self, handle: TaskExecutionHandle
     ) -> Tuple["CommandChannelBase", str]:
-        """
-        Registers a task execution handle to manage its lifecycle and maintain its
-        status within the system.
+        """Record ``handle`` and create its channel and initial (QUEUED) status.
 
-        :param handle: The TaskExecutionHandle object encapsulating essential
-                       information about the task execution, including identifiers
-                       and task-specific metadata.
-        :type handle: TaskExecutionHandle
-        :return: A tuple containing the communication channel object associated
-                 with the task and the full identifier of the registered task.
-        :rtype: Tuple[CommandChannelBase, str]
+        :return: ``(channel, full_id)``.
         """
         full_id = handle.full_id
         self._execution_handles[full_id] = handle
@@ -224,24 +264,20 @@ class TaskCommunicationBridge(ABC):
 
         return channel, full_id
 
-    @abstractmethod
     async def register_task(self, handle: TaskExecutionHandle) -> "CommandChannelBase":
         """
-        Registers a task and returns a command channel for handling task execution.
+        Register a task and return the channel to inject into its event.
 
-        This method serves as an interface for subclasses to implement task registration
-        logic. Upon successful implementation in a subclass, it is expected to associate
-        the given handle with a task and return an appropriate command channel to interact
-        with the task's execution lifecycle.
-
-        :param handle: The execution handle representing the task to be registered.
-        :type handle: TaskExecutionHandle
-        :return: An instance of CommandChannelBase for managing task execution.
-        :rtype: CommandChannelBase
-        :raises NotImplementedError: This method must be overridden in a subclass.
+        When monitoring has already started the task's messages are consumed
+        from this moment on.
         """
+        async with self._lock:
+            channel, full_id = self._register_task(handle)
 
-        raise NotImplementedError("register_task must be implemented by subclasses")
+        logger.debug(f"Registered execution: {handle.event_name} ({full_id})")
+        if self._monitoring:
+            self._start_pump(full_id, channel)
+        return channel
 
     def get_execution_handle(self, task_id: str) -> Optional[TaskExecutionHandle]:
         """Get execution handle by any ID format"""
@@ -305,53 +341,100 @@ class TaskCommunicationBridge(ABC):
             return False
         return (time.time() - status.last_heartbeat) < timeout
 
+    # Monitoring
+
     async def start_monitoring(self) -> None:
-        """Start monitoring task messages"""
-        if not self._monitor_task:
-            self._monitor_task = asyncio.create_task(self._monitor_messages())
+        """Start consuming task messages (idempotent)."""
+        if self._monitoring or self._shutdown_done:
+            return
+        self._monitoring = True
+        for full_id, channel in list(self._channels.items()):
+            self._start_pump(full_id, channel)
 
-    async def _monitor_messages(self) -> None:
-        """Monitor incoming messages from tasks"""
-        while not self._shutdown_event.is_set():
-            # Poll all channels for messages
-            for full_id, channel in list(self._channels.items()):
-                try:
-                    message = await channel.receive_message(timeout=0.1)
-                    if message:
-                        await self._process_message(message)
-                except Exception as e:
-                    logger.error(f"Error receiving message: {e}", exc_info=True)
+    def _start_pump(self, full_id: str, channel: "CommandChannelBase") -> None:
+        """One pump per channel: waits for that task's messages and applies them."""
+        existing = self._pumps.get(full_id)
+        if existing is not None and not existing.done():
+            return
+        self._pumps[full_id] = asyncio.create_task(
+            self._pump(full_id, channel), name=f"volnux-bridge-pump-{full_id}"
+        )
 
-            # Small sleep to prevent busy loop
-            await asyncio.sleep(0.05)
+    async def _pump(self, full_id: str, channel: "CommandChannelBase") -> None:
+        try:
+            while not self._shutdown_done:
+                message = await channel.receive_message(timeout=self.pump_timeout)
+                if message is None:
+                    continue
+                await self._process_message(message, full_id)
+                status = self._statuses.get(full_id)
+                if status is not None and status.state in TERMINAL_STATES:
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Message pump for {full_id} failed: {e}", exc_info=True)
 
-    async def _process_message(self, message: TaskMessage) -> None:
-        """Process incoming a message from a task"""
-        # Update status if it's a status update
-        if message.message_type == MessageType.STATUS_UPDATE:
-            status = self._statuses.get(message.task_id)
-            if status:
-                status.state = TaskState[message.payload.get("state", "RUNNING")]
-                status.progress = message.payload.get("progress", status.progress)
-                status.message = message.payload.get("message", "")
-                status.last_heartbeat = time.time()
+    async def _process_message(
+        self, message: TaskMessage, full_id: Optional[str] = None
+    ) -> None:
+        """Apply a message from a task to its cached status."""
+        if full_id is None:
+            handle = self.get_execution_handle(message.task_id)
+            full_id = handle.full_id if handle else message.task_id
+        status = self._statuses.get(full_id)
+        if status is None:
+            logger.debug(f"Message for unknown task {message.task_id}; ignored")
+            return
 
-        # Update heartbeat timestamp
-        elif message.message_type == MessageType.HEARTBEAT:
-            status = self._statuses.get(message.task_id)
-            if status:
-                status.last_heartbeat = time.time()
+        payload = message.payload or {}
+        if message.message_type in (
+            MessageType.STATUS_UPDATE,
+            MessageType.PROGRESS_UPDATE,
+            MessageType.ERROR,
+        ):
+            if "state" in payload:
+                state = parse_task_state(payload["state"])
+                if state is None:
+                    logger.warning(
+                        f"Ignoring unknown task state {payload['state']!r} for {full_id}"
+                    )
+                else:
+                    status.state = state
+
+            if "progress" in payload:
+                status.progress = payload["progress"]
+            elif payload.get("total"):
+                status.progress = payload.get("step", 0) / payload["total"]
+
+            detail = payload.get("message") or payload.get("error")
+            if detail:
+                status.message = str(detail)
+            elif payload.get("step_name"):
+                status.message = str(payload["step_name"])
+
+        status.last_heartbeat = time.time()
 
         logger.debug(
             f"Processed message: {message.message_type} from {message.task_id}"
         )
 
     async def shutdown(self) -> None:
-        """Clean up resources"""
-        self._shutdown_event.set()
+        """Stop monitoring and release every channel. Safe to call twice."""
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
 
-        if self._monitor_task:
+        pumps = list(self._pumps.values())
+        for pump in pumps:
+            pump.cancel()
+        if pumps:
+            await asyncio.gather(*pumps, return_exceptions=True)
+        self._pumps.clear()
+
+        for channel in list(self._channels.values()):
             try:
-                await asyncio.wait_for(self._monitor_task, timeout=2.0)
-            except asyncio.TimeoutError:
-                self._monitor_task.cancel()
+                await channel.close()
+            except Exception as e:
+                logger.debug(f"Error closing channel {channel.task_id}: {e}")
+        self._channels.clear()

@@ -149,7 +149,9 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         Pipeline,
         ObjectConfig(serializer=serialize_pipeline, deserializer=deserialize_pipeline),
     ]
-    metrics: ObjectField[ExecutionMetrics, ObjectConfig(default_factory=ExecutionMetrics)]
+    metrics: ObjectField[
+        ExecutionMetrics, ObjectConfig(default_factory=ExecutionMetrics)
+    ]
 
     # project identity
     node_id: MiniAnnotated[str, Attrib(default_factory=lambda: get_current_node_id())]
@@ -429,6 +431,15 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
             pass
         return tail
 
+    def execution_failed(self) -> bool:
+        """True if this context ended without completing: failed, aborted or
+        cancelled."""
+        return self.status in (
+            ExecutionStatus.FAILED,
+            ExecutionStatus.ABORTED,
+            ExecutionStatus.CANCELLED,
+        )
+
     def get_tail_context(self) -> "ExecutionContext":
         """
         Returns the tail context of the execution context.
@@ -586,11 +597,38 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         """Cancel execution - only mutates THIS context."""
         self._transition(ExecutionStatus.CANCELLED, event_execution_cancelled)
 
-    async def cancel_async(self) -> None:
-        """Async version of cancel - only mutates THIS context."""
+    async def cancel_async(self, propagate: bool = True) -> None:
+        """Async version of cancel - only mutates THIS context's status.
+
+        With ``propagate`` (the default) the tasks that are running right now
+        are told to cancel as well, through their control channel.
+        """
+        flow = getattr(self, "_active_flow", None)
+        if propagate and flow is not None:
+            await flow.cancel()
         await self._transition_async(
             ExecutionStatus.CANCELLED, event_execution_cancelled
         )
+
+    # The flow executing this context right now is kept in the instance attribute
+    # ``_active_flow``: set by the coordinator for the duration of a dispatch,
+    # runtime-only. It has no class-level declaration on purpose: formax turns
+    # every class attribute of a model into a persisted field.
+
+    async def pause_tasks(self) -> int:
+        """Ask the running tasks to hold before their next step.
+
+        Unlike ``paused_async`` this does not change the context status (PAUSED
+        means "suspended, waiting on something external" and ends the run).
+        Returns how many tasks received the command.
+        """
+        flow = getattr(self, "_active_flow", None)
+        return await flow.pause() if flow is not None else 0
+
+    async def resume_tasks(self) -> int:
+        """Release tasks held by ``pause_tasks``."""
+        flow = getattr(self, "_active_flow", None)
+        return await flow.resume() if flow is not None else 0
 
     def abort(self) -> None:
         """Abort execution - only mutates THIS context."""

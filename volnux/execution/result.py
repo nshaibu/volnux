@@ -3,7 +3,7 @@ import logging
 import typing
 from contextlib import contextmanager
 
-from volnux.exceptions import StopProcessingError, SwitchTask
+from volnux.exceptions import StopProcessingError, SwitchTask, TaskCancelledError
 from volnux.result import EventResult, ResultSet, ResultStream
 from volnux.result_evaluators import (
     EventEvaluationResult,
@@ -13,7 +13,7 @@ from volnux.result_evaluators import (
 
 logger = logging.getLogger(__name__)
 
-_CONTROL_FLOW_EXCEPTIONS = (StopProcessingError, SwitchTask)
+_CONTROL_FLOW_EXCEPTIONS = (StopProcessingError, SwitchTask, TaskCancelledError)
 
 
 class ResultProcessor:
@@ -79,7 +79,11 @@ class ResultProcessor:
         a multitask/parallel dispatch) rather than a single EventResult —
         those are flattened here instead of being dropped.
         """
-        if isinstance(result, Exception):
+        if isinstance(result, asyncio.CancelledError):
+            # A cancelled task surfaces as CancelledError (a BaseException, so
+            # the Exception check below would miss it and file it as a result).
+            errors.add(TaskCancelledError("task cancelled"))
+        elif isinstance(result, Exception):
             errors.add(result)
         elif isinstance(result, (list, tuple, ResultSet)):
             for item in result:

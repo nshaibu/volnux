@@ -98,7 +98,7 @@ class MyPipeline(Pipeline):
 ```
 
 ## Defining Input Data Field
-Import the `InputDataField` (or another field class) from the `volnux.fields` module.
+Import the `InputDataField` (or another field class) from the `volnux.execution.pipeline.fields` module.
 
 The `InputDataField` class is used to declare input fields for your pipeline. Define these fields as class attributes
 on your pipeline class; they represent the data that will flow through the pipeline. Events can access input field
@@ -106,7 +106,7 @@ values by including the field name in their `process` method signature.
 
 ```python
 from volnux import Pipeline
-from volnux.fields import InputDataField
+from volnux.execution.pipeline.fields import InputDataField
 
 class MyPipeline(Pipeline):
     # Define input fields as attributes
@@ -362,7 +362,7 @@ contexts, depending on the data you plan to process.
 ***Example:***
 ```python
 from volnux import Pipeline
-from volnux.fields import InputDataField, FileInputDataField
+from volnux.execution.pipeline.fields import InputDataField, FileInputDataField
 
 class Simple(Pipeline):
     name = InputDataField(data_type=list, batch_size=5)
@@ -381,7 +381,7 @@ the parallel execution of the pipeline template you just created.
 ***Example:***
 
 ```python
-from volnux.pipeline import BatchPipeline
+from volnux import BatchPipeline
 from volnux.signal import SoftSignal
 
 class SimpleBatch(BatchPipeline):
@@ -439,25 +439,27 @@ Batch Pipeline with Parallel Execution
 Here’s a full example that demonstrates the creation and configuration of a batch processing pipeline:
 
 ```python
-from volnux import Pipeline
-from volnux.pipeline import BatchPipeline, InputDataField, SoftSignal
+from volnux import BatchPipeline, Pipeline
+from volnux.execution.pipeline.fields import InputDataField
 
 class Simple(Pipeline):
     name = InputDataField(data_type=list, batch_size=5)
 
 class SimpleBatch(BatchPipeline):
     pipeline_template = Simple
-    listen_to_signals = []
 
-# Create an instance of SimpleBatch to trigger the batch pipeline
-simple_batch = SimpleBatch()
-simple_batch.execute()  # Trigger execution of the batch pipeline
+def on_result(result):
+    print("failed" if result.exception else "done")
+
+# Create an instance of SimpleBatch with the data, then run it (inside an async function)
+simple_batch = SimpleBatch(name=["item1", "item2", "item3"])
+await simple_batch.execute(on_result)  # on_result is called per finished pipeline
 ```
 ***Explanation:***
 - Simple is the pipeline template that processes batches of 5 items at a time.
 - SimpleBatch inherits from `BatchPipeline`, using Simple as the template for parallel execution.
-- The batch pipeline listens for task_completed and task_failed signals, enabling you to monitor events during execution.
-`simple_batch.execute()` runs the pipeline and processes data in parallel batches.
+- `on_result` is called for every pipeline as it finishes, with its outcome.
+`await simple_batch.execute(on_result)` runs the pipeline and processes data in parallel batches.
 
 # Scheduling
 

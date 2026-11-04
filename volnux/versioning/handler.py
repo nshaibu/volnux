@@ -24,6 +24,8 @@ class VersionHandler:
     deprecation_info: Optional[DeprecationInfo] = None
     namespace: str = "local"
     class_name: Optional[str] = None
+    #: The class this handler describes; the scheme reads its metadata.
+    klass: Optional[Type[Any]] = None
 
     @classmethod
     def from_class(cls, klass: Type[Any], config_key: str) -> "VersionHandler":
@@ -56,11 +58,12 @@ class VersionHandler:
             deprecation_info=getattr(klass, "deprecation_info", None),
             namespace=scheme_handler.get_namespace(klass),
             class_name=scheme_handler.get_event_name(klass),
+            klass=klass,
         )
 
     def get_info(self) -> VersionInfo:
         """Get version information."""
-        return self.scheme.get_version_info(self.__class__)
+        return self.scheme.get_version_info(self.klass or self.__class__)
 
     def is_deprecated(self) -> bool:
         """Check if deprecated."""

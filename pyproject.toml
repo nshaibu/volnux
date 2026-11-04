@@ -80,6 +80,9 @@ metrics = [
     "prometheus-client>=0.20.0",
     "requests>=2.31.0"
 ]
+kafka = [
+    "confluent-kafka>=2.5.0"
+]
 [tool.setuptools]
 packages = [
     "volnux",
@@ -95,8 +98,12 @@ packages = [
     "volnux.backends",
     "volnux.backends.stores",
     "volnux.backends.connectors",
+    "volnux.backends.messaging",
+    "volnux.backends.messaging.stores",
     "volnux.telemetry",
     "volnux.execution",
+    "volnux.execution.pipeline",
+    "volnux.execution.pipeline.fields",
     "volnux.engine",
     "volnux.task",
     "volnux.flows",

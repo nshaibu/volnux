@@ -95,7 +95,9 @@ class TestEngineStateSnapshot:
         sinks = [
             {"task_id": "s1", "previous_context_id": "sc1", "position_in_queue": 0},
         ]
-        e = self._make_engine_state(sink_queue_snapshot=sinks, current_sink_queue_size=1)
+        e = self._make_engine_state(
+            sink_queue_snapshot=sinks, current_sink_queue_size=1
+        )
         assert len(e.sink_queue_snapshot) == 1
         assert e.current_sink_queue_size == 1
 

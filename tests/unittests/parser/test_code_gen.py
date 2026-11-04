@@ -71,7 +71,7 @@ class TestSequencing(unittest.TestCase):
         self.assertEqual(next_of(next_of(a)).event, "C")
 
     def test_no_chain(self):
-        self.assertIsNone(build("@author: \"me\""))
+        self.assertIsNone(build('@author: "me"'))
 
     def test_namespaces(self):
         a = build("billing::Charge -> Notify")
@@ -115,7 +115,9 @@ class TestConditionals(unittest.TestCase):
         self.assertEqual(a.get_descriptor(2).event, "B")
         self.assertEqual(a.get_descriptor(3).event, "C")
         self.assertEqual(a.get_descriptor(3).descriptor_pipe, PipeType.PIPE_POINTER)
-        self.assertEqual(a.get_descriptor(3).get_pointer_to_task(), PipeType.PIPE_POINTER)
+        self.assertEqual(
+            a.get_descriptor(3).get_pointer_to_task(), PipeType.PIPE_POINTER
+        )
 
     def test_branch_chain_is_linked(self):
         a = build("A (failure -> B -> C, success -> D)")
@@ -168,7 +170,7 @@ class TestRetry(unittest.TestCase):
         self.assertEqual(a.condition_node.on_failure_event.options.retry_attempts, 3)
 
     def test_retry_keeps_other_options(self):
-        a = build("A[executor = \"X\"] * 2")
+        a = build('A[executor = "X"] * 2')
         self.assertEqual(a.options.retry_attempts, 2)
         self.assertEqual(a.options.executor, "X")
 
@@ -261,17 +263,21 @@ class TestAttributeExpressions(unittest.TestCase):
     def test_variables_and_indexing(self):
         extras = self.extras(
             '@items = [10, 20]\n@cfg = {"size": 5}\n@n = 3\n'
-            "A[a = $n * 2, b = $items[1], c = $cfg[\"size\"], d = $items]"
+            'A[a = $n * 2, b = $items[1], c = $cfg["size"], d = $items]'
         )
         self.assertEqual(extras, {"a": 6, "b": 20, "c": 5, "d": [10, 20]})
 
     def test_environment_variable(self):
         with mock.patch.dict(os.environ, {"POINTY_TEST_VAR": "xyz"}):
-            extras = self.extras("A[a = $env.POINTY_TEST_VAR, b = $env.POINTY_MISSING ?? 1]")
+            extras = self.extras(
+                "A[a = $env.POINTY_TEST_VAR, b = $env.POINTY_MISSING ?? 1]"
+            )
         self.assertEqual(extras, {"a": "xyz", "b": 1})
 
     def test_known_options_are_not_extras(self):
-        task = build('A[retry_attempts = 1 + 2, stop_condition = "on_error", other = 1]')
+        task = build(
+            'A[retry_attempts = 1 + 2, stop_condition = "on_error", other = 1]'
+        )
         self.assertEqual(task.options.retry_attempts, 3)
         self.assertEqual(task.options.extras, {"other": 1})
 
@@ -335,7 +341,9 @@ class TestDescriptorTranslation(unittest.TestCase):
 
 class TestGeneratorState(unittest.TestCase):
     def test_generate_before_visit_is_none(self):
-        self.assertIsNone(ExecutableASTGenerator(PipelineTask, PipelineTaskGrouping).generate())
+        self.assertIsNone(
+            ExecutableASTGenerator(PipelineTask, PipelineTaskGrouping).generate()
+        )
 
     def test_descriptors_are_exposed(self):
         generator = ExecutableASTGenerator(PipelineTask, PipelineTaskGrouping)

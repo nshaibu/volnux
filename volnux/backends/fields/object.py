@@ -86,7 +86,10 @@ def default_serialize(value: Any) -> Any:
     if isinstance(value, (list, tuple, set, frozenset)) or hasattr(value, "maxlen"):
         return [default_serialize(item) for item in value]
     if _has_custom_state(type(value)):
-        return {"__class__": get_obj_klass_import_str(value), "state": value.__getstate__()}
+        return {
+            "__class__": get_obj_klass_import_str(value),
+            "state": value.__getstate__(),
+        }
     raise TypeError(
         f"Cannot serialize {type(value).__name__} automatically. Give it "
         f"__getstate__/__setstate__ or use ObjectConfig(serializer=..., deserializer=...)."

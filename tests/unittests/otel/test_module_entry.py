@@ -261,9 +261,7 @@ def test_setup_metrics_configures_meter_provider(monkeypatch):
 
     metrics_module.set_meter_provider = MagicMock()
 
-    monkeypatch.setattr(
-        "volnux.otel.metrics", metrics_module
-    )
+    monkeypatch.setattr("volnux.otel.metrics", metrics_module)
     monkeypatch.setattr(
         "volnux.otel.OTLPMetricExporter",
         lambda endpoint: fake_exporter,

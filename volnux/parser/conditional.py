@@ -24,9 +24,7 @@ class DescriptorConfig:
         return {
             "descriptor": self.descriptor,
             "pipe": self.pipe.value if self.pipe else None,
-            "task": (
-                StateSerializer.serialize_task(self.task) if self.task else None
-            ),
+            "task": (StateSerializer.serialize_task(self.task) if self.task else None),
         }
 
 

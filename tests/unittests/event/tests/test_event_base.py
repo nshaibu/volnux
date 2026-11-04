@@ -8,8 +8,6 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import pytest
 
 
-
-
 def _import_event_base():
     try:
         from volnux.event.base import (
@@ -26,7 +24,6 @@ def _import_event_base():
             get_event_registry,
         )
     return EventBase, EventType, EventCategory, get_event_registry
-
 
 
 class TestInitSubclass:
@@ -49,7 +46,6 @@ class TestInitSubclass:
         assert hasattr(dummy_event_cls, "process")
 
 
-
 class TestInitDelegation:
     def test_init_sets_required_runtime_attributes(self, event):
         """_setup_event (via __init__) must set all the attributes the other
@@ -61,6 +57,7 @@ class TestInitDelegation:
         assert event._retry_count == 0
         # Phase
         from volnux.execution.rehydrator.event.snapshot import EventPhase
+
         assert event._phase == EventPhase.INITIALIZED
         # Communication
         assert isinstance(event._pause_gate, asyncio.Event)
@@ -79,6 +76,7 @@ class TestInitDelegation:
         assert event._init_args.get("task_id") == "test-task-id"
         # _call_args defaults to EMPTY
         from volnux.constants import EMPTY
+
         assert event._call_args is EMPTY
 
     def test_init_propagates_command_channel(self, make_event, command_channel):
@@ -97,6 +95,7 @@ class TestInitDelegation:
 # ---------------------------------------------------------------------------
 # __repr__
 # ---------------------------------------------------------------------------
+
 
 class TestRepr:
     def test_repr_format(self, event):
@@ -119,7 +118,6 @@ class TestRepr:
             )
 
 
-
 class TestGetArgs:
     def test_get_init_args_returns_dict(self, event):
         args = event.get_init_args()
@@ -131,8 +129,8 @@ class TestGetArgs:
         # Default _call_args is EMPTY
         args = event.get_call_args()
         from volnux.constants import EMPTY
-        assert args is EMPTY
 
+        assert args is EMPTY
 
 
 class TestVersionClassmethods:
@@ -148,7 +146,8 @@ class TestVersionClassmethods:
     def test_get_version_info_delegates_to_handler(self, dummy_event_cls):
         dummy_event_cls._version_handler = None
         with patch.object(
-            dummy_event_cls, "get_version_handler",
+            dummy_event_cls,
+            "get_version_handler",
             return_value=MagicMock(get_info=MagicMock(return_value={"version": "9.9"})),
         ):
             info = dummy_event_cls.get_version_info()
@@ -156,7 +155,8 @@ class TestVersionClassmethods:
 
     def test_is_deprecated_delegates_to_handler(self, dummy_event_cls):
         with patch.object(
-            dummy_event_cls, "get_version_handler",
+            dummy_event_cls,
+            "get_version_handler",
             return_value=MagicMock(is_deprecated=MagicMock(return_value=True)),
         ):
             assert dummy_event_cls.is_deprecated() is True
@@ -166,12 +166,16 @@ class TestVersionClassmethods:
         handler.class_name = "DummyEvent"
         handler.namespace = "ns"
         with patch.object(dummy_event_cls, "get_version_handler", return_value=handler):
-            with patch(
-                "volnux.event.base._event_registry.list_versions",
-                return_value=["1.0.0", "2.0.0"],
-            ) if _module_has_attr("volnux.event.base", "_event_registry") else patch(
-                "volnux.event._event_registry.list_versions",
-                return_value=["1.0.0", "2.0.0"],
+            with (
+                patch(
+                    "volnux.event.base._event_registry.list_versions",
+                    return_value=["1.0.0", "2.0.0"],
+                )
+                if _module_has_attr("volnux.event.base", "_event_registry")
+                else patch(
+                    "volnux.event._event_registry.list_versions",
+                    return_value=["1.0.0", "2.0.0"],
+                )
             ) as mock_list:
                 result = dummy_event_cls.get_all_versions()
                 assert result == ["1.0.0", "2.0.0"]
@@ -182,12 +186,16 @@ class TestVersionClassmethods:
         handler.class_name = "DummyEvent"
         handler.namespace = "ns"
         with patch.object(dummy_event_cls, "get_version_handler", return_value=handler):
-            with patch(
-                "volnux.event.base._event_registry.get_latest_version",
-                return_value="3.0.0",
-            ) if _module_has_attr("volnux.event.base", "_event_registry") else patch(
-                "volnux.event._event_registry.get_latest_version",
-                return_value="3.0.0",
+            with (
+                patch(
+                    "volnux.event.base._event_registry.get_latest_version",
+                    return_value="3.0.0",
+                )
+                if _module_has_attr("volnux.event.base", "_event_registry")
+                else patch(
+                    "volnux.event._event_registry.get_latest_version",
+                    return_value="3.0.0",
+                )
             ) as mock_latest:
                 result = dummy_event_cls.get_latest_version()
                 assert result == "3.0.0"
@@ -198,12 +206,16 @@ class TestVersionClassmethods:
         handler.class_name = "DummyEvent"
         handler.namespace = "ns"
         with patch.object(dummy_event_cls, "get_version_handler", return_value=handler):
-            with patch(
-                "volnux.event.base._event_registry.get_latest_version",
-                return_value=None,
-            ) if _module_has_attr("volnux.event.base", "_event_registry") else patch(
-                "volnux.event._event_registry.get_latest_version",
-                return_value=None,
+            with (
+                patch(
+                    "volnux.event.base._event_registry.get_latest_version",
+                    return_value=None,
+                )
+                if _module_has_attr("volnux.event.base", "_event_registry")
+                else patch(
+                    "volnux.event._event_registry.get_latest_version",
+                    return_value=None,
+                )
             ):
                 assert dummy_event_cls.get_latest_version() is None
 
@@ -211,15 +223,16 @@ class TestVersionClassmethods:
 def _module_has_attr(module_path: str, attr: str) -> bool:
     """Check whether a module exposes an attribute (without importing if cached)."""
     import sys
+
     mod = sys.modules.get(module_path)
     if mod is None:
         try:
             import importlib
+
             mod = importlib.import_module(module_path)
         except ImportError:
             return False
     return hasattr(mod, attr)
-
 
 
 class TestGoto:
@@ -237,11 +250,13 @@ class TestGoto:
 
     def test_boundary_descriptor_zero_allowed(self, event):
         from volnux.exceptions import SwitchTask
+
         with pytest.raises(SwitchTask):
             event.goto(0, True, {"x": 1})
 
     def test_boundary_descriptor_nine_allowed(self, event):
         from volnux.exceptions import SwitchTask
+
         with pytest.raises(SwitchTask):
             event.goto(9, False, None)
 
@@ -249,15 +264,19 @@ class TestGoto:
         """When result_success=True and execute_on_event_method=True, goto()
         calls self.on_success(result) and uses its return value as SwitchTask.result."""
         from volnux.exceptions import SwitchTask
+
         sentinel = MagicMock(name="event_result_sentinel")
         with patch.object(event, "on_success", return_value=sentinel) as mock_os:
             with pytest.raises(SwitchTask) as exc_info:
-                event.goto(3, True, {"k": "v"}, reason="manual", execute_on_event_method=True)
+                event.goto(
+                    3, True, {"k": "v"}, reason="manual", execute_on_event_method=True
+                )
             mock_os.assert_called_once_with({"k": "v"})
             assert exc_info.value.result is sentinel
 
     def test_goto_with_failure_path_calls_on_failure(self, event):
         from volnux.exceptions import SwitchTask
+
         sentinel = MagicMock(name="event_result_sentinel")
         with patch.object(event, "on_failure", return_value=sentinel) as mock_of:
             with pytest.raises(SwitchTask) as exc_info:
@@ -268,8 +287,10 @@ class TestGoto:
     def test_goto_with_execute_on_event_method_false_wraps_in_event_result(self, event):
         from volnux.exceptions import SwitchTask
         from volnux.result import EventResult
-        with patch.object(event, "on_success") as mock_os, \
-             patch.object(event, "on_failure") as mock_of:
+
+        with patch.object(event, "on_success") as mock_os, patch.object(
+            event, "on_failure"
+        ) as mock_of:
             with pytest.raises(SwitchTask) as exc_info:
                 event.goto(5, False, "raw-data", execute_on_event_method=False)
             # on_success/on_failure should NOT be called
@@ -282,27 +303,30 @@ class TestGoto:
 
     def test_goto_default_reason_is_manual(self, event):
         from volnux.exceptions import SwitchTask
+
         with pytest.raises(SwitchTask) as exc_info:
             event.goto(2, True, None)
         assert exc_info.value.reason == "manual"
 
     def test_goto_carries_current_task_id(self, event):
         from volnux.exceptions import SwitchTask
+
         with pytest.raises(SwitchTask) as exc_info:
             event.goto(7, True, None)
         assert exc_info.value.current_task_id == event._task_id
 
     def test_goto_carries_next_task_descriptor(self, event):
         from volnux.exceptions import SwitchTask
+
         with pytest.raises(SwitchTask) as exc_info:
             event.goto(7, True, None)
         assert exc_info.value.next_task_descriptor == 7
 
 
-
 class TestEvaluator:
     def test_evaluator_returns_event_evaluator_instance(self, dummy_event_cls):
         from volnux.result_evaluators import EventEvaluator
+
         ev = dummy_event_cls.evaluator()
         assert isinstance(ev, EventEvaluator)
 
@@ -333,7 +357,6 @@ class TestEvaluator:
             _BadStrategyEvent.evaluator()
 
 
-
 class TestDefaultHooks:
     @pytest.mark.asyncio
     async def test_bypass_raises_not_implemented(self, event):
@@ -356,12 +379,11 @@ class TestDefaultHooks:
         assert result is None
 
 
-
-
 class TestEventResult:
     def test_event_result_shape(self, event):
         result = event.event_result(error=False, content={"k": "v"})
         from volnux.result import EventResult
+
         assert isinstance(result, EventResult)
         assert result.error is False
         assert result.content == {"k": "v"}
@@ -373,11 +395,10 @@ class TestEventResult:
         assert result.error is True
 
 
-
-
 class TestOnSuccess:
     def test_on_success_returns_event_result_with_error_false(self, event):
         from volnux.result import EventResult
+
         # StopCondition.NEVER so no StopProcessingError
         result = event.on_success({"ok": True})
         assert isinstance(result, EventResult)
@@ -396,12 +417,14 @@ class TestOnSuccess:
     def test_on_success_with_stop_condition_on_success_raises(self, make_event):
         from volnux.parser.options import StopCondition
         from volnux.exceptions import StopProcessingError
+
         evt = make_event(stop_condition=StopCondition.ON_SUCCESS)
         with pytest.raises(StopProcessingError):
             evt.on_success({"done": True})
 
     def test_on_success_with_stop_condition_never_does_not_raise(self, make_event):
         from volnux.parser.options import StopCondition
+
         evt = make_event(stop_condition=StopCondition.NEVER)
         # Should NOT raise
         result = evt.on_success({"done": True})
@@ -419,11 +442,10 @@ class TestOnSuccess:
         assert event.stop_condition.message == str(result)
 
 
-
-
 class TestOnFailure:
     def test_on_failure_returns_event_result_with_error_true(self, event):
         from volnux.result import EventResult
+
         result = event.on_failure({"err": "boom"})
         assert isinstance(result, EventResult)
         assert result.error is True
@@ -439,12 +461,14 @@ class TestOnFailure:
     def test_on_failure_with_stop_condition_on_error_raises(self, make_event):
         from volnux.parser.options import StopCondition
         from volnux.exceptions import StopProcessingError
+
         evt = make_event(stop_condition=StopCondition.ON_ERROR)
         with pytest.raises(StopProcessingError):
             evt.on_failure(ValueError("boom"))
 
     def test_on_failure_with_stop_condition_never_does_not_raise(self, make_event):
         from volnux.parser.options import StopCondition
+
         evt = make_event(stop_condition=StopCondition.NEVER)
         result = evt.on_failure(ValueError("boom"))
         assert result.error is True
@@ -453,11 +477,15 @@ class TestOnFailure:
         """When execution_result is a MaxRetryError, on_failure unwraps it
         to MaxRetryError.exception before passing to stop_condition.on_error."""
         from volnux.exceptions import MaxRetryError
+
         inner = ValueError("the actual cause")
         max_retry = MaxRetryError(attempt=3, exception=inner, reason="exhausted")
         # Use a NEVER stop condition so on_failure doesn't raise
         from volnux.parser.options import StopCondition
-        event.stop_condition = type(event.stop_condition)(stop_condition=StopCondition.NEVER)
+
+        event.stop_condition = type(event.stop_condition)(
+            stop_condition=StopCondition.NEVER
+        )
         # Spy on stop_condition.on_error to see what exception it received
         with patch.object(event.stop_condition, "on_error", return_value=False) as spy:
             event.on_failure(max_retry)
@@ -471,14 +499,15 @@ class TestOnFailure:
         """Non-MaxRetryError exceptions pass through to stop_condition.on_error
         without unwrapping."""
         from volnux.parser.options import StopCondition
-        event.stop_condition = type(event.stop_condition)(stop_condition=StopCondition.NEVER)
+
+        event.stop_condition = type(event.stop_condition)(
+            stop_condition=StopCondition.NEVER
+        )
         exc = RuntimeError("plain")
         with patch.object(event.stop_condition, "on_error", return_value=False) as spy:
             event.on_failure(exc)
             args, kwargs = spy.call_args
             assert kwargs.get("exception") is exc
-
-
 
 
 class TestRegistryAccessors:
@@ -492,7 +521,6 @@ class TestRegistryAccessors:
         EventBase.clear_class_cache()
 
 
-
 class TestCall:
 
     @pytest.mark.asyncio
@@ -500,7 +528,9 @@ class TestCall:
         """__call__ should invoke self.steps_runner(*args, **kwargs) and return
         whatever steps_runner returned."""
         sentinel = MagicMock(name="result")
-        with patch.object(event, "steps_runner", new=AsyncMock(return_value=sentinel)) as mock_sr:
+        with patch.object(
+            event, "steps_runner", new=AsyncMock(return_value=sentinel)
+        ) as mock_sr:
             result = await event()
             assert result is sentinel
             mock_sr.assert_awaited_once()
@@ -538,7 +568,9 @@ class TestCall:
         evt = make_event(command_channel=command_channel)
         # Make steps_runner raise so we exercise the finally branch.
         sentinel_error = RuntimeError("steps failed")
-        with patch.object(evt, "steps_runner", new=AsyncMock(side_effect=sentinel_error)):
+        with patch.object(
+            evt, "steps_runner", new=AsyncMock(side_effect=sentinel_error)
+        ):
             # _command_listener must exist & be cancellable
             listener_started = asyncio.Event()
 
@@ -560,7 +592,9 @@ class TestCall:
         event._resource_monitor.is_started = MagicMock(return_value=True)
         event._resource_monitor.stop = AsyncMock()
 
-        with patch.object(event, "steps_runner", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        with patch.object(
+            event, "steps_runner", new=AsyncMock(side_effect=RuntimeError("boom"))
+        ):
             with pytest.raises(RuntimeError, match="boom"):
                 await event()
 
@@ -571,6 +605,7 @@ class TestCall:
         """If _phase != EventPhase.COMPLETED after steps_runner, __call__
         runs self._completed(*args, **kwargs) in the finally block."""
         from volnux.execution.rehydrator.event.snapshot import EventPhase
+
         event._phase = EventPhase.PROCESSING  # Not COMPLETED
 
         with patch.object(event, "steps_runner", new=AsyncMock(return_value=None)):
@@ -581,6 +616,7 @@ class TestCall:
     @pytest.mark.asyncio
     async def test_call_skips_completed_when_phase_already_completed(self, event):
         from volnux.execution.rehydrator.event.snapshot import EventPhase
+
         event._phase = EventPhase.COMPLETED
 
         with patch.object(event, "steps_runner", new=AsyncMock(return_value=None)):
@@ -593,11 +629,13 @@ class TestCall:
         """Even if _completed raises, __call__ should not propagate — the
         finally block catches and logs."""
         from volnux.execution.rehydrator.event.snapshot import EventPhase
+
         event._phase = EventPhase.PROCESSING  # Force _completed path
 
         with patch.object(event, "steps_runner", new=AsyncMock(return_value="ok")):
             with patch.object(
-                event, "_completed",
+                event,
+                "_completed",
                 new=AsyncMock(side_effect=RuntimeError("cleanup failed")),
             ):
                 # Should NOT raise
@@ -627,3 +665,94 @@ class TestCall:
         with patch.object(event, "steps_runner", new=AsyncMock(return_value=None)):
             await event()
         assert event._command_listener_task is None
+
+
+class TestVersionHandlerPerClass:
+    """The cached handler lives on the class; a subclass must not inherit its
+    parent's, or it registers with the parent's name and version."""
+
+    def test_each_class_gets_its_own_handler(self):
+        from volnux import EventBase
+        from volnux.versioning import SemanticVersioning
+
+        class Parent(EventBase):
+            versioning_class = SemanticVersioning
+            version = "1.0.0"
+
+            async def process(self, *a, **k):
+                return True, None
+
+        class Child(Parent):
+            version = "2.5.0"
+
+            async def process(self, *a, **k):
+                return True, None
+
+        assert Parent.get_version_handler() is not Child.get_version_handler()
+        assert Parent.get_version_info()["version"] == "1.0.0"
+        assert Child.get_version_info()["version"] == "2.5.0"
+        assert Child.get_version_handler().class_name == "Child"
+
+    def test_version_lookups_work_for_events_without_a_custom_name(self):
+        from volnux import EventBase
+
+        class Plain(EventBase):
+            version = "1.0.0"
+
+            async def process(self, *a, **k):
+                return True, None
+
+        assert Plain.get_version_handler().class_name == "Plain"
+        assert "1.0.0" in Plain.get_all_versions()
+        assert Plain.get_latest_version() == "1.0.0"
+
+
+class TestEventRepr:
+    """`executor` is a registry label (a str) by default; the repr used to read
+    `.__name__` from it and raise whenever an event was logged at INFO."""
+
+    def test_repr_with_the_default_string_executor(self):
+        from volnux import EventBase
+
+        class Plain(EventBase):
+            async def process(self, *a, **k):
+                return True, None
+
+        assert repr(Plain(MagicMock(), "t1")) == "<Plain executor=default>"
+
+    def test_repr_with_an_executor_class(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from volnux import EventBase
+
+        class Threaded(EventBase):
+            executor = ThreadPoolExecutor
+
+            async def process(self, *a, **k):
+                return True, None
+
+        assert (
+            repr(Threaded(MagicMock(), "t1"))
+            == "<Threaded executor=ThreadPoolExecutor>"
+        )
+
+    def test_repr_with_an_executor_instance(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from volnux import EventBase
+
+        pool = ThreadPoolExecutor(1)
+
+        class Instanced(EventBase):
+            executor = pool
+
+            async def process(self, *a, **k):
+                return True, None
+
+        try:
+            assert (
+                repr(Instanced(MagicMock(), "t1"))
+                == "<Instanced executor=ThreadPoolExecutor>"
+            )
+        finally:
+            pool.shutdown()

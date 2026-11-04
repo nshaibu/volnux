@@ -24,7 +24,7 @@ Input fields are defined using the InputDataField class or its variants. These f
 .. code-block:: python
 
     from volnux import Pipeline
-    from volnux.fields import InputDataField
+    from volnux.execution.pipeline.fields import InputDataField
 
     class MyPipeline(Pipeline):
         # Define input fields as attributes
@@ -142,7 +142,7 @@ Creating Pipeline Template
 .. code-block:: python
 
     from volnux import Pipeline
-    from volnux.fields import InputDataField, FileInputDataField
+    from volnux.execution.pipeline.fields import InputDataField, FileInputDataField
 
     class Simple(Pipeline):
         name = InputDataField(data_type=list, batch_size=5)
@@ -153,7 +153,7 @@ Creating Batch Processing Class
 
 .. code-block:: python
 
-    from volnux.pipeline import BatchPipeline
+    from volnux import BatchPipeline
     from volnux.signal import SoftSignal
 
     class SimpleBatch(BatchPipeline):

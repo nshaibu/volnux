@@ -1,5 +1,5 @@
 from volnux.pipeline import Pipeline
-from volnux.fields import InputDataField
+from volnux.execution.pipeline.fields import InputDataField
 from volnux.signal.signals import pipeline_execution_start
 from volnux.decorators import listener
 from .events import LoadData, ProcessData, GraphData

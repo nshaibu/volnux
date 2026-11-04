@@ -117,8 +117,12 @@ class TestGrammarConditional(unittest.TestCase):
     def test_named_builtin_descriptors(self):
         program = pointy_parser("TaskA(failure -> TaskB, success |-> TaskC)")
         failure, success = program.chain.branches
-        self.assertEqual((failure.condition.value, failure.condition.label), (0, "failure"))
-        self.assertEqual((success.condition.value, success.condition.label), (1, "success"))
+        self.assertEqual(
+            (failure.condition.value, failure.condition.label), (0, "failure")
+        )
+        self.assertEqual(
+            (success.condition.value, success.condition.label), (1, "success")
+        )
         self.assertEqual(success.operator, "|->")
         self.assertEqual(program.descriptors, {})
 
@@ -156,7 +160,9 @@ class TestGrammarConditional(unittest.TestCase):
 
     def test_retry_inside_branch_tasks(self):
         program = pointy_parser("A(failure -> B * 2, success |-> C * 3)")
-        self.assertTrue(all(isinstance(b.task, RetryNode) for b in program.chain.branches))
+        self.assertTrue(
+            all(isinstance(b.task, RetryNode) for b in program.chain.branches)
+        )
 
     def test_retry_on_conditional_is_not_parsed(self):
         with self.assertRaises(SyntaxError):

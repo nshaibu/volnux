@@ -36,37 +36,56 @@ class _AsyncDeque:
     async def pop(
         self, side: QueueSide, timeout: Optional[float] = None
     ) -> Optional[str]:
-        if not self._deque:
-            if timeout is None:
-                return None  # Non-blocking immediate return
+        """Pop one value.
 
-            # timeout=0 means wait forever per Volnux contract
-            wait_time = None if timeout == 0 else timeout
+        ``timeout=None`` never waits; ``0`` waits indefinitely; ``> 0`` waits at
+        most that many seconds (the Volnux contract). The wait is re-armed when
+        another consumer wins the item, so a waiter only gives up when its own
+        deadline passes, never because a sibling took the value first.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout if timeout else None
+
+        while True:
+            async with self._lock:
+                if self._deque:
+                    val = (
+                        self._deque.popleft()
+                        if side == QueueSide.LEFT
+                        else self._deque.pop()
+                    )
+                    if not self._deque:
+                        self._not_empty.clear()
+                    return val
+                # Cleared under the lock, and set under the lock in push(), so
+                # a push can never slip between the emptiness check and the wait.
+                self._not_empty.clear()
+
+            if timeout is None:
+                return None
+            remaining = None if deadline is None else deadline - loop.time()
+            if remaining is not None and remaining <= 0:
+                return None
             try:
-                await asyncio.wait_for(self._not_empty.wait(), timeout=wait_time)
+                await asyncio.wait_for(self._not_empty.wait(), timeout=remaining)
             except asyncio.TimeoutError:
                 return None
-
-        async with self._lock:
-            if not self._deque:
-                self._not_empty.clear()
-                return None
-
-            val = self._deque.popleft() if side == QueueSide.LEFT else self._deque.pop()
-            if not self._deque:
-                self._not_empty.clear()
-            return val
 
     def length(self) -> int:
         return len(self._deque)
 
     def range(self, start: int, stop: int) -> List[str]:
-        q_list = list(self._deque)
-        if stop == -1:
-            stop = len(q_list)
-        else:
-            stop = stop + 1
-        return q_list[start:stop]
+        """Inclusive slice with Redis LRANGE semantics (negative = from tail)."""
+        items = list(self._deque)
+        n = len(items)
+        if start < 0:
+            start = max(n + start, 0)
+        if stop < 0:
+            stop = n + stop
+        stop = min(stop, n - 1)
+        if start > stop:
+            return []
+        return items[start : stop + 1]
 
 
 class InMemoryPubSubMixin(PubSubCapabilityMixin):
@@ -82,7 +101,7 @@ class InMemoryPubSubMixin(PubSubCapabilityMixin):
             self.__post_init_pubsub__()
 
         # Delegates to KeyValueStoreBackendBase._serialize_record
-        payload = self._serialize_record(record)  # type: ignore[attr-unresolved]
+        payload = self._serialize_record(record)  # type: ignore[attr-defined]
         receivers = 0
 
         async with self._pubsub_lock:
@@ -202,7 +221,7 @@ class InMemorySubscriptionContext(AsyncSubscriptionContext):
         return Message(
             channel=msg["channel"],
             pattern=msg.get("pattern"),
-            data=self.backend._deserialise_record(msg["data"], self.record_class),  # type: ignore[attr-unresolved]
+            data=self.backend._deserialize_record(msg["data"], self.record_class),  # type: ignore[attr-defined]
             raw=msg,
         )
 
@@ -227,12 +246,19 @@ class InMemoryPushPopMixin(PushPopCapabilityMixin):
             self.__post_init_queues__()
 
         q = await self._get_or_create_queue(key)
-        payloads = [self._serialize_record(v) for v in values]  # type: ignore[attr-unresolved]
+        payloads = [self._serialize_record(v) for v in values]  # type: ignore[attr-defined]
 
         length = 0
         for p in payloads:
             length = await q.push(p, side)
         return length
+
+    async def _get_queue(self, key: str, create: bool) -> Optional[_AsyncDeque]:
+        async with self._queues_lock:
+            q = self._queues.get(key)
+            if q is None and create:
+                q = self._queues[key] = _AsyncDeque()
+            return q
 
     async def pop(
         self,
@@ -244,17 +270,14 @@ class InMemoryPushPopMixin(PushPopCapabilityMixin):
         if not hasattr(self, "_queues_lock"):
             self.__post_init_queues__()
 
-        async with self._queues_lock:
-            q = self._queues.get(key)
-
-        if not q:
-            if timeout is None:
-                return None
-            await asyncio.sleep(timeout)
+        # A blocking pop on a queue that doesn't exist yet must wait on the
+        # deque a later push() will fill, so create it instead of sleeping.
+        q = await self._get_queue(key, create=timeout is not None)
+        if q is None:
             return None
 
         raw = await q.pop(side, timeout)
-        return self._deserialise_record(raw, record_class) if raw is not None else None  # type: ignore[attr-unresolved]
+        return self._deserialize_record(raw, record_class) if raw is not None else None  # type: ignore[attr-defined]
 
     async def pop_many(
         self,
@@ -265,52 +288,35 @@ class InMemoryPushPopMixin(PushPopCapabilityMixin):
         side: QueueSide = QueueSide.LEFT,
     ) -> List[Record]:
         """
-        Block until the queue has data, then drain a batch of items.
+        Wait (per ``timeout``) for the first item, then drain up to ``limit``
+        items in total (everything available if ``limit`` is None).
         """
         if not hasattr(self, "_queues_lock"):
             self.__post_init_queues__()
-
-        async with self._queues_lock:
-            q = self._queues.get(key)
-
-        if not q and timeout is None:
+        if limit is not None and limit <= 0:
             return []
 
-        if not q:
-            q = await self._get_or_create_queue(key)
+        q = await self._get_queue(key, create=timeout is not None)
+        if q is None:
+            return []
 
-        if q.length() == 0:
-            if timeout is None:
-                return []  # Non-blocking immediate return
+        first = await q.pop(side, timeout)
+        if first is None:
+            return []
 
-            # Use the underlying _AsyncDeque's pop with timeout just to wait for the signal,
-            # but we don't want to consume the item yet if we are going to drain.
-            # Actually, it's easier to just use the _not_empty event directly if exposed,
-            # or just do a blocking pop for the first item.
-            first_item_raw = await q.pop(side, timeout=timeout)
-            if first_item_raw is None:
-                return []  # Timeout expired
-
-            # We got the first item!
-            results = [self._deserialise_record(first_item_raw, record_class)]  # type: ignore[attr-unresolved]
-        else:
-            results = []
-
-        # Since this is in-memory, draining is instantaneous.
-        items_popped = 1
-        while True:
-            if limit is not None and items_popped >= limit:
-                break
-
-            # Non-blocking pop for subsequent items
-            raw = await q.pop(side, timeout=None)
+        results = [self._deserialize_record(first, record_class)]  # type: ignore[attr-defined]
+        while limit is None or len(results) < limit:
+            raw = await q.pop(side, None)
             if raw is None:
                 break
-
-            results.append(self._deserialise_record(raw, record_class))  # type: ignore[attr-unresolved]
-            items_popped += 1
-
+            results.append(self._deserialize_record(raw, record_class))  # type: ignore[attr-defined]
         return results
+
+    async def queue_delete(self, key: str) -> bool:
+        if not hasattr(self, "_queues_lock"):
+            self.__post_init_queues__()
+        async with self._queues_lock:
+            return self._queues.pop(key, None) is not None
 
     async def queue_length(self, key: str) -> int:
         if not hasattr(self, "_queues_lock"):
@@ -330,4 +336,4 @@ class InMemoryPushPopMixin(PushPopCapabilityMixin):
             return []
 
         raws = q.range(start, stop)
-        return [self._deserialise_record(r) for r in raws]  # type: ignore[attr-unresolved]
+        return [self._deserialize_record(r, record_class) for r in raws]  # type: ignore[attr-defined]

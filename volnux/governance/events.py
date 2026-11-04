@@ -87,8 +87,12 @@ class GovernanceEvent(MessagingBackendIntegrationMixin, BaseModel):
     workflow_name: Optional[str]
     sequence: Optional[int]
     payload: Dict[str, Any]
-    node_id: MiniAnnotated[str, Attrib(default_factory=lambda: volnux_config.get_node_id())]
-    project_id: MiniAnnotated[str, Attrib(default_factory=lambda: volnux_config.get('PROJECT_ID'))]
+    node_id: MiniAnnotated[
+        str, Attrib(default_factory=lambda: volnux_config.get_node_id())
+    ]
+    project_id: MiniAnnotated[
+        str, Attrib(default_factory=lambda: volnux_config.get("PROJECT_ID"))
+    ]
 
     @classmethod
     def get_storage_route(cls) -> StorageRoute:

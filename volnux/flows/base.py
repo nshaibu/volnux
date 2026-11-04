@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import logging
+import uuid
 from collections import deque
 from copy import deepcopy
 from typing import (
@@ -18,6 +19,7 @@ from typing import (
 from dataclasses import dataclass, field, InitVar
 
 from volnux.constants import EMPTY
+from volnux.exceptions import TaskCancelledError
 from volnux.concurrency.async_utils import to_thread
 from volnux.execution.context import ExecutionContext
 from volnux.executors import BaseExecutor, ProcessPoolExecutor
@@ -32,8 +34,10 @@ from volnux.signal import SoftSignal
 from volnux.signal.signals import event_execution_end, event_execution_start
 from volnux.utils import build_event_arguments_from_pipeline, get_function_call_args
 from .bridge.communications.tasks import (
+    ChannelUnavailable,
     TaskCommand,
     TaskCommunicationBridge,
+    TaskExecutionHandle,
     CommandType,
     create_communication_bridge,
 )
@@ -54,6 +58,23 @@ def _emit_signal_sync(signal: SoftSignal, **kwargs: Any) -> None:
     except RuntimeError:
         # No running loop; fall back to sync emit if available
         signal.emit(**kwargs)
+
+
+def _run_event_sync(event: Any, call_kwargs: Dict[str, Any]) -> Any:
+    """Run an async event to completion on a fresh event loop.
+
+    Thread, process and remote executors only know how to call a *synchronous*
+    function, but ``EventBase.__call__`` is a coroutine function. This module-
+    level function (importable, hence picklable by reference) is what they
+    execute: it owns a private loop for the lifetime of the event.
+    """
+    try:
+        return asyncio.run(event(**call_kwargs))
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException. Celery re-raises BaseException out
+        # of its task machinery (it only handles Exception), which can take the
+        # worker down, so the cancellation travels as an ordinary exception.
+        raise TaskCancelledError("task cancelled") from None
 
 
 def format_task_profiles(task_profiles: Any) -> Set[TaskType]:
@@ -86,17 +107,61 @@ class BaseFlow(ObjectIdentityMixin):
     _flow_executors: list[BaseExecutor] = field(
         default_factory=list, init=False, repr=False
     )
+    # Futures of the tasks this flow submitted, by task id (cancel fallback)
+    _task_futures: Dict[str, "asyncio.Future[Any]"] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _channel_warned: bool = field(default=False, init=False, repr=False)
 
-    def __post_init__(self, *args: Any, **kwargs: Any) -> None:
-        enable_communication = kwargs.pop("enable_communication", True)
+    def __post_init__(self, enable_communication: bool = True) -> None:
         self.task_profiles = cast(Deque[TaskType], self.context.task_profiles)
+        self._enable_communication = enable_communication
+        # The bridge kind depends on the executor, which is only resolved in
+        # run(); the bridge is therefore created in _initialize_executor().
+        super().__post_init__()
 
-        if enable_communication:
-            self._comm_bridge = create_communication_bridge(
-                self.context, "executor_type"
+    @staticmethod
+    def _bridge_type_for(
+        executor: Union[Type[BaseExecutor], BaseExecutor],
+    ) -> Optional[str]:
+        """Communication bridge kind matching an executor, or None for no bridge."""
+        executor_class = executor if inspect.isclass(executor) else type(executor)
+        if issubclass(executor_class, ProcessPoolExecutor):
+            return "process"
+        if executor_class.__name__ == "CeleryExecutor":
+            return "celery"
+        # grpc / tcp / rpc workers have no channel transport: no bridge
+        if executor_class.__name__ in {
+            "GRPCExecutor",
+            "RemoteExecutor",
+            "XMLRPCExecutor",
+        }:
+            return None
+        return "local"  # in-process: default (async) and thread executors
+
+    def _ensure_comm_bridge(
+        self, executor: Union[Type[BaseExecutor], BaseExecutor]
+    ) -> None:
+        """Create the task communication bridge for ``executor`` (once).
+
+        The bridge is the control plane (pause/resume/cancel/status). Failing to
+        build it must never stop the task itself, so errors are only logged.
+        """
+        if not self._enable_communication or self._comm_bridge is not None:
+            return
+        bridge_type = self._bridge_type_for(executor)
+        if bridge_type is None:
+            logger.debug("No task communication bridge for executor %s", executor)
+            return
+        try:
+            self._comm_bridge = create_communication_bridge(self.context, bridge_type)
+        except Exception as exc:
+            logger.warning(
+                "Could not create the %r communication bridge: %s",
+                bridge_type,
+                exc,
+                exc_info=True,
             )
-
-        super().__init__(*args, **kwargs)  # type: ignore[misc]
 
     def add_task_profile(self, task_profile: TaskType) -> None:
         if self.task_profiles is None:
@@ -179,7 +244,7 @@ class BaseFlow(ObjectIdentityMixin):
             # Deep-copy to prevent cross-task policy leakage
             new_policy = deepcopy(event_retry_policy)
             new_policy.max_attempts = total_retries
-            event.config_retry_policy(policy=new_policy)
+            event.retry_policy = new_policy
         else:
             event.config_retry_policy(max_attempts=total_retries)
 
@@ -224,6 +289,8 @@ class BaseFlow(ObjectIdentityMixin):
         executor_class: Union[Type[BaseExecutor], BaseExecutor],
         executor_config: ExecutorInitializerConfig,
     ) -> BaseExecutor:
+        self._ensure_comm_bridge(executor_class)
+
         if inspect.isclass(executor_class):
             config = self.parse_executor_initialisation_configuration(
                 executor_class, executor_config
@@ -238,8 +305,10 @@ class BaseFlow(ObjectIdentityMixin):
 
     @staticmethod
     def _should_shutdown_executor(executor: BaseExecutor) -> bool:
-        if isinstance(executor, ProcessPoolExecutor):
-            return False
+        # Only executors this flow created are shut down; a shared instance
+        # handed in by the registry is never tagged and is left alone. (Process
+        # pools used to be excluded here, leaking a pool of worker processes
+        # on every dispatch.)
         return getattr(executor, "_created_by_flow", False)
 
     @staticmethod
@@ -272,8 +341,19 @@ class BaseFlow(ObjectIdentityMixin):
             execution_context=self.context,
         )
 
-        loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(executor, event, event_call_kwargs)
+        call_kwargs = dict(event_call_kwargs or {})
+        # Signals and snapshots read the call arguments back from the event
+        event._call_args = call_kwargs
+
+        # The event reaches its channel through itself, so attach it first
+        channel = await self._register_channel(event)
+        if channel is not None:
+            event._command_channel = channel
+
+        future = self._dispatch_to_executor(executor, event, call_kwargs)
+        self._task_futures[event._task_id] = future
+        if channel is not None and self._comm_bridge is not None:
+            await self._comm_bridge.start_monitoring()
 
         # Async-safe signal emission on completion
         future.add_done_callback(
@@ -287,6 +367,59 @@ class BaseFlow(ObjectIdentityMixin):
 
         logger.debug("Event submitted successfully; future: %s", future)
         return future
+
+    async def _register_channel(self, event: "Event") -> Optional[Any]:
+        """Register ``event`` with the bridge and return its command channel.
+
+        The control plane is optional: any failure (no distributed backend for
+        a process/Celery task, a transport error...) is logged and the task runs
+        without a channel, exactly as it did before channels existed.
+        """
+        bridge = self._comm_bridge
+        if bridge is None:
+            return None
+        handle = TaskExecutionHandle(
+            task_def_id=event._task_id,
+            execution_id=uuid.uuid4().hex[:12],
+            event_name=event.__class__.__name__,
+            context_state_id=getattr(self.context, "state_id", None),
+        )
+        try:
+            return await bridge.register_task(handle)
+        except ChannelUnavailable as exc:
+            if not self._channel_warned:  # one warning per flow, not per task
+                self._channel_warned = True
+                logger.warning(
+                    "Running without a control channel (pause/resume/status "
+                    "unavailable): %s",
+                    exc,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Could not register %s with the communication bridge: %s",
+                handle.event_name,
+                exc,
+                exc_info=True,
+            )
+        return None
+
+    @staticmethod
+    def _dispatch_to_executor(
+        executor: BaseExecutor, event: "Event", call_kwargs: Dict[str, Any]
+    ) -> asyncio.Future:
+        """Start ``event`` on ``executor`` and return an awaitable ``Future``.
+
+        * Async-capable executors (``DefaultExecutor``) await the coroutine on
+          the engine's own loop.
+        * Everything else (thread / process pools, remote executors) is handed
+          the synchronous ``_run_event_sync`` wrapper, which drives the coroutine
+          on a private loop inside the worker.
+        """
+        if getattr(executor, "supports_coroutines", False):
+            return executor.submit_coroutine(event, **call_kwargs)  # type: ignore[attr-defined,no-any-return]
+
+        loop = asyncio.get_running_loop()
+        return loop.run_in_executor(executor, _run_event_sync, event, call_kwargs)
 
     async def _map_events_to_executor(
         self,
@@ -349,18 +482,56 @@ class BaseFlow(ObjectIdentityMixin):
             finally:
                 self._comm_bridge = None
 
-    async def cancel(self, *args: Any, **kwargs: Any) -> None:
+    async def _command_all(self, command_type: CommandType) -> int:
+        """Send ``command_type`` to every task this flow submitted.
+
+        Returns the number of tasks the command reached through a channel.
+        """
         if not self._comm_bridge:
-            return
-        for task_profile in self.context.task_profiles:
-            task_id = task_profile.get_id()
-            command = TaskCommand(task_id=task_id, command_type=CommandType.CANCEL)
+            return 0
+        delivered = 0
+        for task_id in list(self._task_futures):
+            command = TaskCommand(task_id=task_id, command_type=command_type)
             try:
-                await self._comm_bridge.send_command(task_id, command)
+                if await self._comm_bridge.send_command(task_id, command):
+                    delivered += 1
             except Exception as e:
                 logger.warning(
-                    "Error cancelling task %s: %s", task_id, e, exc_info=True
+                    "Error sending %s to task %s: %s",
+                    command_type.name,
+                    task_id,
+                    e,
+                    exc_info=True,
                 )
+        return delivered
+
+    async def cancel(self, *args: Any, **kwargs: Any) -> None:
+        """Cancel every task. A task without a channel (remote executor, no
+        distributed backend) is cancelled through its future instead."""
+        for task_id, future in list(self._task_futures.items()):
+            if future.done():
+                continue
+            delivered = False
+            if self._comm_bridge:
+                try:
+                    delivered = await self._comm_bridge.send_command(
+                        task_id,
+                        TaskCommand(task_id=task_id, command_type=CommandType.CANCEL),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Error cancelling task %s: %s", task_id, e, exc_info=True
+                    )
+            if not delivered:
+                future.cancel()
+
+    async def pause(self) -> int:
+        """Ask every running task to hold before its next step."""
+        return await self._command_all(CommandType.PAUSE)
+
+    async def resume(self) -> int:
+        """Release tasks held by ``pause``."""
+        return await self._command_all(CommandType.RESUME)
 
     async def get_task_status(self, task_id: str) -> Any:
         if not self._comm_bridge:

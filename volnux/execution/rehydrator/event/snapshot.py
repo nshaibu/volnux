@@ -33,9 +33,18 @@ class CallArgsTemplate(typing.TypedDict, total=False):
 
 
 class EventPhase(IntEnum):
+    """Lifecycle phases, in the order the steps run.
+
+    The numeric order is load-bearing: ``steps_runner`` skips every step whose
+    phase is ``<=`` the event's current phase when resuming from a checkpoint.
+    It must therefore match ``EventCheckpointingMixin._get_steps``: the bypass
+    check (PRE_PROCESS) runs *before* any external communication, so an event
+    that can be skipped never waits on a human or an external system.
+    """
+
     INITIALIZED = 0
-    COMMUNICATING = 1
-    PRE_PROCESS = 2
+    PRE_PROCESS = 1
+    COMMUNICATING = 2
     PROCESSING = 3
     POST_PROCESS = 4
     COMPLETED = 5

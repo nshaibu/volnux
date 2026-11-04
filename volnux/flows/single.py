@@ -47,7 +47,6 @@ class SingleFlow(BaseFlow):
             RuntimeError: if the event submission or execution fails
             BrokenPipeError: if the internal queue of the executor is broken.
         """
-        executor = None
         try:
             logger.debug(
                 f"Starting sequential execution flow for task: {self.task_profile}"
@@ -87,6 +86,6 @@ class SingleFlow(BaseFlow):
                 f"Failed to execute events: {e}\n"
                 f"Events: {self.context.task_profiles}"
             ) from e
-        finally:
-            if executor:
-                await self.shutdown_executor(executor)
+        # No executor shutdown here: a shared executor instance must outlive the
+        # run, and one this flow created is shut down by BaseFlow.close() once the
+        # coordinator has awaited the result.

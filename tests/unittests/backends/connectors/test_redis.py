@@ -207,41 +207,75 @@ def test_is_connected_returns_false_when_not_marked_connected(redis_connector):
     assert redis_connector.is_connected() is False
 
 
-def test_is_connected_returns_true_when_ping_succeeds(redis_connector):
+def test_is_connected_is_true_when_marked_connected_and_never_pings(redis_connector):
+    """is_connected() runs before every operation, so it must not touch the network."""
+    client = MagicMock()
+    redis_connector._client = client
+    redis_connector._is_connected = True
+
+    for _ in range(3):
+        assert redis_connector.is_connected() is True
+
+    client.ping.assert_not_called()
+
+
+def test_is_connected_is_false_without_a_client(redis_connector):
+    redis_connector._client = None
+    redis_connector._is_connected = True
+
+    assert redis_connector.is_connected() is False
+
+
+def test_ping_returns_true_when_the_server_answers(redis_connector):
     client = MagicMock()
     client.ping.return_value = True
     redis_connector._client = client
     redis_connector._is_connected = True
 
-    assert redis_connector.is_connected() is True
+    assert redis_connector.ping() is True
     client.ping.assert_called_once()
 
 
-def test_is_connected_returns_false_on_redis_error(redis_connector):
+def test_ping_is_false_and_makes_no_call_when_not_connected(redis_connector):
     client = MagicMock()
-    client.ping.side_effect = RedisError("redis problem")
+    redis_connector._client = client
+    redis_connector._is_connected = False
+
+    assert redis_connector.ping() is False
+    client.ping.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RedisError("redis problem"),
+        RedisConnectionError("down"),
+        RedisTimeoutError("slow"),
+        RuntimeError("unexpected"),
+    ],
+)
+def test_ping_failure_marks_the_connector_disconnected(redis_connector, error):
+    client = MagicMock()
+    client.ping.side_effect = error
     redis_connector._client = client
     redis_connector._is_connected = True
 
-    assert redis_connector.is_connected() is False
+    assert redis_connector.ping() is False
     assert redis_connector._is_connected is False
+    assert redis_connector.is_connected() is False  # so ensure_connected() reconnects
 
 
-def test_is_connected_returns_false_on_unexpected_error(redis_connector):
-    client = MagicMock()
-    client.ping.side_effect = RuntimeError("unexpected")
-    redis_connector._client = client
-    redis_connector._is_connected = True
-
-    assert redis_connector.is_connected() is False
-    assert redis_connector._is_connected is False
+def test_connection_pool_gets_an_idle_health_check_by_default(
+    redis_connector, mock_connection_pool
+):
+    pool_class, _ = mock_connection_pool
+    assert pool_class.call_args.kwargs["health_check_interval"] == 30
 
 
-def test_ping_delegates_to_is_connected(redis_connector):
-    redis_connector.is_connected = MagicMock(return_value=True)
-
-    assert redis_connector.ping() is True
-    redis_connector.is_connected.assert_called_once()
+def test_health_check_interval_is_configurable(mock_connection_pool):
+    pool_class, _ = mock_connection_pool
+    RedisConnector(host="localhost", port=6379, health_check_interval=5)
+    assert pool_class.call_args.kwargs["health_check_interval"] == 5
 
 
 def test_get_cursor_returns_client_when_connected(redis_connector):

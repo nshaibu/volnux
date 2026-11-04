@@ -6,6 +6,12 @@ import typing
 import uuid
 from enum import Enum
 
+from volnux.exceptions import PipelineExecutionError
+
+
+# status reported for a run that raised before producing an execution context
+ExecutionStatusFailed = "failed"
+
 
 class PipelineExecutionState(Enum):
     INITIALIZED = "initialized"
@@ -255,21 +261,35 @@ class PipelineWrapper:
                     "Failed to send wrapper lifecycle event %r: %s", event_type, exc
                 )
 
+    def _failed_task_names(self, error_node: typing.Any) -> str:
+        """Names of the tasks of the first failed execution context."""
+        try:
+            profiles = error_node.get_task_profiles()
+            return ", ".join(str(p.get_event_name()) for p in profiles) or "unknown"
+        except Exception:
+            return "unknown"
+
     def _handle_pipeline_execution(self) -> None:
         """
         Execute the pipeline and emit start/end lifecycle events.
 
         Pipeline.start() is async. This method runs inside a synchronous
-        worker process (ProcessPoolExecutor / Celery) — asyncio.run() creates
+        worker process (ProcessPoolExecutor / Celery) - asyncio.run() creates
         a fresh event loop per invocation, which is the correct pattern.
+
+        The end event is always sent, with a small summary (never the
+        execution context itself: it is heavy to pickle through the queue).
+        A run that ends failed, aborted or cancelled sets ``self.exception`` so
+        the batch can tell it from a success.
         """
+        pipeline_id = getattr(self.pipeline, "id", None)
         try:
             self.execution_state = PipelineExecutionState.RUNNING
             if self._logger:
                 self._logger.info(
                     "Starting pipeline execution: %s",
                     self.pipeline.__class__.__name__,
-                    extra={"pipeline_id": getattr(self.pipeline, "id", None)},
+                    extra={"pipeline_id": pipeline_id},
                 )
 
             self._send_wrapper_lifecycle_event(
@@ -279,39 +299,45 @@ class PipelineWrapper:
 
             execution_context = asyncio.run(self.pipeline.start(force_rerun=True))
 
+            status = None
             if execution_context:
-                latest_context = execution_context.get_latest_execution_context()
+                latest_context = execution_context.get_latest_context()
+                status = getattr(latest_context.status, "value", latest_context.status)
                 if latest_context.execution_failed():
                     error_node = self.pipeline.get_first_error_execution_node()
-                    failed_task = (
-                        error_node.task.id
-                        if error_node and hasattr(error_node, "task")
-                        else "unknown"
+                    failed_task = self._failed_task_names(error_node)
+                    self.exception = PipelineExecutionError(
+                        f"Pipeline {self.pipeline.__class__.__name__} ended "
+                        f"{status} at task: {failed_task}",
+                        params={"failed_task": failed_task, "status": status},
                     )
                     self.execution_state = PipelineExecutionState.FAILED
                     if self._logger:
                         self._logger.error(
                             "Pipeline execution failed at task: %s",
                             failed_task,
-                            extra={
-                                "pipeline_id": getattr(self.pipeline, "id", None),
-                                "failed_task": failed_task,
-                            },
+                            extra={"pipeline_id": pipeline_id},
                         )
+                    self._send_wrapper_lifecycle_event(
+                        "pipeline_execution_end",
+                        {
+                            "success": False,
+                            "status": status,
+                            "error_message": str(self.exception),
+                            "failed_task": failed_task,
+                        },
+                    )
                     return
 
             self.execution_state = PipelineExecutionState.COMPLETED
             self._send_wrapper_lifecycle_event(
                 "pipeline_execution_end",
-                {
-                    "execution_context": execution_context,
-                    "success": True,
-                },
+                {"success": True, "status": status},
             )
             if self._logger:
                 self._logger.info(
                     "Pipeline execution completed successfully",
-                    extra={"pipeline_id": getattr(self.pipeline, "id", None)},
+                    extra={"pipeline_id": pipeline_id},
                 )
 
         except Exception as exc:
@@ -325,11 +351,19 @@ class PipelineWrapper:
                     exc_info=True,
                     extra={
                         "wrapper_id": self.wrapper_id,
-                        "pipeline_id": getattr(self.pipeline, "id", None),
+                        "pipeline_id": pipeline_id,
                         "exception_type": type(exc).__name__,
                     },
                 )
 
+            self._send_wrapper_lifecycle_event(
+                "pipeline_execution_end",
+                {
+                    "success": False,
+                    "status": ExecutionStatusFailed,
+                    "error_message": f"Wrapper execution failed: {exc}",
+                },
+            )
             self._send_wrapper_lifecycle_event(
                 "wrapper_failed",
                 {

@@ -166,7 +166,9 @@ class TestRehydrateNode:
         original = make_context()
         loaded = stored(original)
 
-        with patch.object(ExecutionContext, "get", AsyncMock(return_value=loaded)) as get:
+        with patch.object(
+            ExecutionContext, "get", AsyncMock(return_value=loaded)
+        ) as get:
             first = await rehydrator.rehydrate_node(original.id)
             second = await rehydrator.rehydrate_node(original.id)
 
@@ -216,7 +218,9 @@ class TestResolveLinks:
             assert isinstance(link, ExecutionContext)
             assert link is by_id[link.id]
         assert [c.id for c in loaded.child_contexts] == [
-            c.id for c in by_id.values() if c.id in {r.id for r in loaded.child_contexts}
+            c.id
+            for c in by_id.values()
+            if c.id in {r.id for r in loaded.child_contexts}
         ]
         assert all(isinstance(c, ExecutionContext) for c in loaded.child_contexts)
 
@@ -272,10 +276,16 @@ class TestResolveResults:
 
     @pytest.mark.asyncio
     async def test_references_are_loaded(self, rehydrator: LazyRehydrator) -> None:
-        first, live, aggregate = make_result("r1"), make_result("r2"), make_result("agg")
+        first, live, aggregate = (
+            make_result("r1"),
+            make_result("r2"),
+            make_result("agg"),
+        )
         context = stored(make_context())
         context.results = [ForeignKey("r1", "m.R", resolved_instance=first), live]
-        context.aggregated_result = ForeignKey("agg", "m.R", resolved_instance=aggregate)
+        context.aggregated_result = ForeignKey(
+            "agg", "m.R", resolved_instance=aggregate
+        )
 
         await rehydrator.resolve_results(context)
 
@@ -404,7 +414,9 @@ class TestLoadEngineState:
         deserialize.assert_called_once_with(raw)
 
     @pytest.mark.asyncio
-    async def test_missing_raises_runtime_error(self, rehydrator: LazyRehydrator) -> None:
+    async def test_missing_raises_runtime_error(
+        self, rehydrator: LazyRehydrator
+    ) -> None:
         with patch.object(
             EngineStateSnapshot, "get", AsyncMock(side_effect=ObjectDoesNotExist("x"))
         ):
@@ -439,14 +451,18 @@ class TestRebuildCurrentTaskNode:
     CURRENT = {"task_id": "t-1", "previous_context_id": "c1", "position_in_queue": 0}
 
     @pytest.mark.asyncio
-    async def test_no_current_task_returns_none(self, rehydrator: LazyRehydrator) -> None:
+    async def test_no_current_task_returns_none(
+        self, rehydrator: LazyRehydrator
+    ) -> None:
         assert (
             await rehydrator._rebuild_current_task_node(engine_state(), make_context())
             is None
         )
 
     @pytest.mark.asyncio
-    async def test_valid_task_creates_task_node(self, rehydrator: LazyRehydrator) -> None:
+    async def test_valid_task_creates_task_node(
+        self, rehydrator: LazyRehydrator
+    ) -> None:
         task = PipelineTask(event=RehydratedEvent)
         context = make_context()
 
@@ -459,7 +475,9 @@ class TestRebuildCurrentTaskNode:
         assert node.previous_context is context
 
     @pytest.mark.asyncio
-    async def test_rebuild_failure_returns_none(self, rehydrator: LazyRehydrator) -> None:
+    async def test_rebuild_failure_returns_none(
+        self, rehydrator: LazyRehydrator
+    ) -> None:
         with patch.object(rehydrator, "_rebuild_task", AsyncMock(return_value=None)):
             node = await rehydrator._rebuild_current_task_node(
                 engine_state(current_task=self.CURRENT), make_context()

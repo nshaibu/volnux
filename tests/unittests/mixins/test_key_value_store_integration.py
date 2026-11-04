@@ -748,3 +748,166 @@ def test_pickle_round_trip(backend):
     assert restored.id == "7"
     assert restored.name == "Carol"
     assert restored.status == "inactive"
+
+
+# ---------------------------------------------------------------------------
+# Regression: save(ttl) on the default path, PROTECT only when referenced
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_save_with_ttl_uses_insert_not_upsert(example_backend):
+    obj = ExampleModel(id="9")
+    await obj.save(ttl=30)
+    example_backend.insert.assert_called_once_with(SCHEMA, "9", obj, ttl=30)
+    example_backend.upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_save_with_ttl_falls_back_to_update_when_exists(example_backend):
+    example_backend.insert.side_effect = ObjectExistError("exists")
+    obj = ExampleModel(id="9")
+    await obj.save(ttl=30)
+    example_backend.update.assert_called_once_with(SCHEMA, "9", obj)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_referrers", [False, True])
+async def test_native_fk_protect_only_raises_when_referenced(
+    example_backend, has_referrers
+):
+    from volnux.backends.fields import OnDelete
+    from volnux.exceptions import ObjectProtectedError
+
+    referrer_stream = MagicMock()
+    referrer_stream.has_results = AsyncMock(return_value=has_referrers)
+    referencing_model = MagicMock()
+    referencing_model.__name__ = "Child"
+    referencing_model.filter = AsyncMock(return_value=referrer_stream)
+    attrib = MagicMock()
+    attrib.metadata = {"on_delete": OnDelete.PROTECT}
+
+    obj = ExampleModel(id="1")
+    with patch.object(
+        ExampleModel,
+        "_backreferences",
+        {"parent": {(referencing_model, "children", attrib, True)}},
+    ):
+        if has_referrers:
+            with pytest.raises(ObjectProtectedError):
+                await obj._on_delete_hook()
+        else:
+            await obj._on_delete_hook()
+
+    referencing_model.filter.assert_awaited_once_with(parent__object_id="1")
+
+
+# ---------------------------------------------------------------------------
+# Regression: change_backend isolation, transaction thread pinning, atomic,
+# inherited backreferences
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_change_backend_is_isolated_to_the_current_task(example_backend):
+    other = MagicMock()
+    seen = {}
+
+    async def sibling(gate, done):
+        await gate.wait()
+        seen["sibling"] = await ExampleModel.get_backend()
+        done.set()
+
+    gate, done = asyncio.Event(), asyncio.Event()
+    # Create the sibling before the override so it has its own context copy.
+    task = asyncio.ensure_future(sibling(gate, done))
+    async with ExampleModel.change_backend(other):
+        gate.set()
+        await done.wait()
+        seen["inside"] = await ExampleModel.get_backend()
+    await task
+
+    assert seen["inside"] is other
+    assert seen["sibling"] is example_backend
+
+
+@pytest.mark.asyncio
+async def test_change_backend_nests_without_deadlock(example_backend):
+    a, b = MagicMock(), MagicMock()
+    async with ExampleModel.change_backend(a):
+        async with ExampleModel.change_backend(b):
+            assert await ExampleModel.get_backend() is b
+        assert await ExampleModel.get_backend() is a
+    assert await ExampleModel.get_backend() is example_backend
+
+
+@pytest.mark.asyncio
+async def test_transaction_runs_all_statements_on_one_thread(example_backend):
+    import threading
+
+    threads = {}
+
+    @contextmanager
+    def fake_transaction():
+        threads["enter"] = threading.get_ident()
+        try:
+            yield
+        finally:
+            threads["exit"] = threading.get_ident()
+
+    def record_thread(*_args, **_kwargs):
+        threads.setdefault("ops", set()).add(threading.get_ident())
+
+    example_backend.connector.transaction = fake_transaction
+    example_backend.upsert.side_effect = record_thread
+
+    async with ExampleModel.transaction():
+        for i in range(10):
+            await ExampleModel(id=str(i)).save()
+
+    assert threads["ops"] == {threads["enter"]}
+    assert threads["exit"] == threads["enter"]
+
+
+@pytest.mark.asyncio
+async def test_transaction_commit_failure_is_not_rolled_back_twice(example_backend):
+    exits = []
+
+    class Tx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            exits.append(exc[0])
+            raise ConnectionError("commit failed")
+
+    example_backend.connector.transaction = lambda: Tx()
+    with pytest.raises(ConnectionError):
+        async with ExampleModel.transaction():
+            pass
+    assert exits == [None]
+
+
+@pytest.mark.asyncio
+async def test_atomic_restores_state_on_cancellation(example_backend):
+    obj = ExampleModel(id="1", name="Alice")
+    example_backend.upsert.side_effect = asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        async with obj.atomic():
+            obj.name = "Bob"
+    assert obj.name == "Alice"
+
+
+def test_subclass_of_a_referenced_model_inherits_backreferences():
+    class Parent(KeyValueStoreIntegrationMixin):
+        pass
+
+    sentinel = (object, "children", MagicMock(), False)
+    Parent._backreferences["owner"] = {sentinel}
+
+    class Child(Parent):
+        pass
+
+    assert sentinel in Child._backreferences["owner"]
+    assert Child._backreferences is not Parent._backreferences

@@ -32,5 +32,11 @@ EVENT_EXCLUDED_ATTRS: frozenset[str] = frozenset(
         "_resource_monitor",
         "_pause_gate",
         "_preempted",
+        # --- Transient per-run state (derived, or only meaningful mid-step) ---
+        # NOTE: `_bypassed` is deliberately NOT here: a bypassed event resumed
+        # from a checkpoint must still skip its work.
+        "_execution_context",  # the real attribute name (the entry above never matched)
+        "_active_phase",
+        "_event_result",
     }
 )

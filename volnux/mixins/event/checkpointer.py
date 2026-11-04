@@ -26,6 +26,7 @@ from volnux.signal.signals import event_init
 from volnux.concurrency.async_utils import to_thread
 from volnux.parser.options import Options, StopCondition
 from volnux.exceptions import (
+    CONTROL_FLOW_EXCEPTIONS,
     MaxRetryError,
     SuspendTask,
     SwitchTask,
@@ -291,6 +292,9 @@ class EventCheckpointingMixin:
         self._call_args = EMPTY
 
         self._phase: EventPhase = EventPhase.INITIALIZED
+        self._active_phase: Optional[EventPhase] = None
+        self._event_result: Optional[EventResult] = None
+        self._bypassed: bool = False
         self.checkpoint_manager = checkpoint_manager
 
         # communication
@@ -365,30 +369,45 @@ class EventCheckpointingMixin:
     @phase_step(EventPhase.PROCESSING)
     async def _process(self: _BaseEvent, *args, **kwargs):
         if self.retry_policy is None:
-            self.exec_status, self.exec_result = await self._process_wrapper(
-                *args, **kwargs
-            )
+            try:
+                self.exec_status, self.exec_result = await self._process_wrapper(
+                    *args, **kwargs
+                )
+            except CONTROL_FLOW_EXCEPTIONS:
+                raise
+            except Exception as e:
+                # Same handling as the retry path: a failure result that goes
+                # through on_failure (hooks, stop conditions), not a bare exception
+                # that bypasses them.
+                logger.error(str(e), exc_info=e)
+                self.exec_status, self.exec_result = False, e
         else:
             try:
-                self.exec_status, exec_result = await self._retry(
+                self.exec_status, self.exec_result = await self._retry(
                     self._process_wrapper, *args, **kwargs
                 )
             except MaxRetryError as e:
                 logger.error(str(e), exc_info=e.exception)
                 self.exec_status, self.exec_result = False, e.exception
+            except CONTROL_FLOW_EXCEPTIONS:
+                raise  # goto / stop / suspend are signals for the coordinator
             except Exception as e:
-                if not isinstance(e, SwitchTask):
-                    logger.error(str(e), exc_info=e)
+                logger.error(str(e), exc_info=e)
                 self.exec_status, self.exec_result = False, e
 
     @phase_step(EventPhase.POST_PROCESS)
     def _post_process(self: _BaseEvent, *args, **kwargs) -> EventResult:
-        result = (
+        # The single place the event's result is built (on_success/on_failure
+        # emit signals and evaluate stop conditions, so they must run once).
+        self._event_result = self._build_event_result()
+        return self._event_result
+
+    def _build_event_result(self: _BaseEvent) -> EventResult:
+        return (
             self.on_success(self.exec_result)
             if self.exec_status
             else self.on_failure(self.exec_result)
         )
-        return result
 
     @phase_step(EventPhase.COMPLETED)
     async def _completed(self: _BaseEvent, *args, **kwargs):

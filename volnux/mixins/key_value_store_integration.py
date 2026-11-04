@@ -4,7 +4,9 @@ import typing
 import re
 import os
 import asyncio
+import copy
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from functools import wraps
 from typing import (
     Any,
@@ -36,6 +38,10 @@ from volnux.exceptions import (
     ObjectDoesNotExist,
 )
 from volnux.import_utils import import_string
+from volnux.concurrency.kv_executor import (
+    TRANSACTION_EXECUTOR as _TRANSACTION_EXECUTOR,
+    run_in_kv_executor,
+)
 from .connection import BackendConnectionIntegrationMixin
 from volnux.backends.db_utils import default_native_fk_check
 
@@ -47,14 +53,12 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound="KeyValueStoreIntegrationMixin")
 
-# Dedicated executor for blocking KV backend calls.
-# NEVER use default asyncio.to_thread pool for persistence operations.
-_KV_BACKEND_EXECUTOR = ThreadPoolExecutor(
-    max_workers=128, thread_name_prefix="volnux-kv-backend"
-)
+# Classes whose ForeignKey annotations couldn't be resolved yet (typically a
+# forward reference to a model defined later). Retried as new models appear.
+_PENDING_FK_CLASSES: List[Type["KeyValueStoreIntegrationMixin"]] = []
 
 
-def _resolve_foreign_keys_for_class(cls: Type["KeyValueStoreIntegrationMixin"]) -> None:
+def _resolve_foreign_keys_for_class(cls: Type["KeyValueStoreIntegrationMixin"]) -> bool:
     """
     Scan a class for ForeignKey fields and register backreferences.
 
@@ -63,12 +67,17 @@ def _resolve_foreign_keys_for_class(cls: Type["KeyValueStoreIntegrationMixin"]) 
 
     Args:
         cls: The class to scan (a KeyValueStoreIntegrationMixin subclass).
+
+    Returns:
+        True if every foreign key was resolved, False if resolution must be
+        retried later (unresolvable forward references).
     """
 
     try:
         hints = get_type_hints(cls, include_extras=True)
-    except Exception:
-        return
+    except Exception as e:
+        logger.debug("Deferring FK resolution for %s: %s", cls.__name__, e)
+        return False
 
     for field_name, hint in hints.items():
         args = get_args(hint)
@@ -101,13 +110,13 @@ def _resolve_foreign_keys_for_class(cls: Type["KeyValueStoreIntegrationMixin"]) 
                         )
                     fk_meta["target_model"] = target_model
                 except Exception as e:
-                    logger.warning(
-                        "Could not resolve ForwardRef for %s.%s: %s",
+                    logger.debug(
+                        "Deferring ForwardRef for %s.%s: %s",
                         cls.__name__,
                         field_name,
                         e,
                     )
-                    raise
+                    return False
 
             if default_native_fk_check(cls, target_model):
                 fk_meta["has_native_fk"] = True
@@ -129,6 +138,8 @@ def _resolve_foreign_keys_for_class(cls: Type["KeyValueStoreIntegrationMixin"]) 
                 reverse_name=reverse_name,
                 has_native_fk=fk_meta["has_native_fk"],
             )
+
+    return True
 
 
 class _ReverseRelationDescriptor:
@@ -297,17 +308,26 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
         """
         super().__init_subclass__(**kwargs)
 
-        # Each subclass gets its OWN isolated backreference registry
-        cls._backreferences = {}
-        _resolve_foreign_keys_for_class(cls)
+        # Each subclass gets its OWN registry, seeded with the backreferences
+        # its parents already carry so inherited models keep delete protection.
+        inherited: Dict[str, Set[Tuple[Type, str, Attrib, bool]]] = {}
+        for base in reversed(cls.__mro__[1:]):
+            for field_name, refs in base.__dict__.get("_backreferences", {}).items():
+                inherited.setdefault(field_name, set()).update(refs)
+        cls._backreferences = inherited
+
+        if not _resolve_foreign_keys_for_class(cls):
+            _PENDING_FK_CLASSES.append(cls)
+
+        # A newly defined model may be the target a pending class was waiting for.
+        for pending in list(_PENDING_FK_CLASSES):
+            if pending is not cls and _resolve_foreign_keys_for_class(pending):
+                _PENDING_FK_CLASSES.remove(pending)
 
     @classmethod
     async def _run_in_kv_executor(cls, func, *args, **kwargs):
         """Run a sync backend method in the dedicated KV executor."""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            _KV_BACKEND_EXECUTOR, lambda: func(*args, **kwargs)
-        )
+        return await run_in_kv_executor(func, *args, **kwargs)
 
     @classmethod
     def register_backreference(
@@ -344,7 +364,21 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
         )
 
         # Create the reverse accessor on this model
-        if not hasattr(cls, reverse_name):
+        existing = getattr(cls, reverse_name, None)
+        if existing is not None and not (
+            isinstance(existing, _ReverseRelationDescriptor)
+            and existing._referencing_model is referencing_model
+            and existing._foreign_key_field == field_name
+        ):
+            logger.warning(
+                "Reverse accessor %r on %s already exists; skipping the one for "
+                "%s.%s. Set reverse_name on the ForeignKey to disambiguate.",
+                reverse_name,
+                cls.__name__,
+                referencing_model.__name__,
+                field_name,
+            )
+        if existing is None:
             setattr(
                 cls,
                 reverse_name,
@@ -384,7 +418,11 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
         for name in getattr(self, "__dataclass_fields__", {}):
             if name.startswith("_") or name not in raw:
                 continue
-            to_state = (attribs[name].metadata or {}).get("to_state") if name in attribs else None
+            to_state = (
+                (attribs[name].metadata or {}).get("to_state")
+                if name in attribs
+                else None
+            )
             state[name] = to_state(self, raw[name]) if to_state else raw[name]
         return state
 
@@ -399,7 +437,11 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
         for name, value in state.items():
             if name == "id" or name.startswith("_"):
                 continue
-            from_state = (attribs[name].metadata or {}).get("from_state") if name in attribs else None
+            from_state = (
+                (attribs[name].metadata or {}).get("from_state")
+                if name in attribs
+                else None
+            )
             restored[name] = from_state(self, value) if from_state else value
 
         # Fields missing from the stored state (e.g. added since it was saved)
@@ -445,6 +487,12 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
                     # Database handles CASCADE, SET NULL, SET DEFAULT automatically
                     # We only need to handle PROTECT (which is NO ACTION in SQL)
                     if action == OnDelete.PROTECT:
+                        # Only protect when something actually references us.
+                        referrers = await referencing_model.filter(
+                            **{f"{field_name}__object_id": str(self.id)}
+                        )
+                        if not await referrers.has_results():
+                            continue
                         raise ObjectProtectedError(
                             f"Cannot delete {self.__class__.__name__}({self.id}): "
                             f"{referencing_model.__name__} objects via '{field_name}'. "
@@ -525,8 +573,8 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
                 )
                 logger.debug(f"Inserted {self.__class__.__name__}:{self.id}")
             else:
-                # Use upsert for save operation
-                if hasattr(backend, "upsert"):
+                # upsert() has no ttl parameter, so a ttl forces insert-or-update.
+                if ttl is None and hasattr(backend, "upsert"):
                     await self._run_in_kv_executor(
                         backend.upsert, schema_name, self.id, self
                     )
@@ -859,7 +907,9 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
     async def atomic(self):
         """Context manager for atomic operations.
 
-        Changes are only saved if the context exits successfully.
+        Changes are only saved if the context exits successfully. On failure
+        (including cancellation) the in-memory state is restored. Note this is
+        not a backend transaction: use ``transaction()`` for that.
 
         Example:
             >>> async with user.atomic():
@@ -869,9 +919,14 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
         """
         original_state = self.__getstate__()
         try:
+            # Deep copy so in-place mutation of lists/dicts can be rolled back.
+            original_state = copy.deepcopy(original_state)
+        except Exception:
+            pass  # fall back to the shallow snapshot
+        try:
             yield self
             await self.save()
-        except Exception as e:
+        except BaseException as e:
             # Restore the original state on error
             self.__setstate__(original_state)
             logger.error(f"Atomic operation failed, state restored: {e}")
@@ -894,28 +949,35 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
         connector = getattr(backend, "connector", None)
 
         if connector and hasattr(connector, "transaction"):
-            # Run sync transaction context in executor thread
             loop = asyncio.get_running_loop()
             tx_ctx = connector.transaction()
 
-            # Enter transaction in executor thread
-            await loop.run_in_executor(_KV_BACKEND_EXECUTOR, tx_ctx.__enter__)
+            # One dedicated thread owns the whole transaction: enter, every
+            # statement issued inside the block, and commit/rollback.
+            tx_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="volnux-kv-tx"
+            )
+            token = _TRANSACTION_EXECUTOR.set(tx_executor)
             try:
-                yield
-                # Commit in executor thread
-                await loop.run_in_executor(
-                    _KV_BACKEND_EXECUTOR, tx_ctx.__exit__, None, None, None
-                )
-            except BaseException as exc:
-                # Rollback in executor thread
-                await loop.run_in_executor(
-                    _KV_BACKEND_EXECUTOR,
-                    tx_ctx.__exit__,
-                    type(exc),
-                    exc,
-                    exc.__traceback__,
-                )
-                raise
+                await loop.run_in_executor(tx_executor, tx_ctx.__enter__)
+                try:
+                    yield
+                except BaseException as exc:
+                    await loop.run_in_executor(
+                        tx_executor,
+                        tx_ctx.__exit__,
+                        type(exc),
+                        exc,
+                        exc.__traceback__,
+                    )
+                    raise
+                else:
+                    await loop.run_in_executor(
+                        tx_executor, tx_ctx.__exit__, None, None, None
+                    )
+            finally:
+                _TRANSACTION_EXECUTOR.reset(token)
+                tx_executor.shutdown(wait=False)
         else:
             logger.warning(
                 "Backend %s does not support transactions",

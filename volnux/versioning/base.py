@@ -60,7 +60,8 @@ class BaseVersioning(abc.ABC):
 
     def get_event_name(self, klass: typing.Type[Any]) -> str:
         """name of class (default: class name)."""
-        return getattr(klass, "name", klass.__name__)
+        # `name` exists on EventBase as None, so getattr's default never applies
+        return getattr(klass, "name", None) or klass.__name__
 
     def is_deprecated(self, klass: typing.Type[Any]) -> bool:
         """Check if this event version is deprecated."""

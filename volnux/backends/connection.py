@@ -7,6 +7,7 @@ resource management.
 """
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -185,21 +186,39 @@ class BackendConnectorBase(ABC, Generic[CursorType]):
 
     @abstractmethod
     def is_connected(self) -> bool:
-        """Check if the connector is currently connected.
+        """Check whether the connector believes it is connected.
+
+        This runs before **every** backend operation (``ensure_connected``), so it
+        must be cheap: inspect local state, and at most probe the server at a
+        throttled rate (see ``health_check_interval``). It must not make a network
+        round trip on each call. Use ``ping()`` to actively verify the server.
 
         Returns:
-            True if connected and the connection is healthy, False otherwise.
+            False if known to be disconnected, True otherwise.
         """
         pass
 
     @abstractmethod
     def ping(self) -> bool:
-        """Test if the connection is alive and responsive.
+        """Actively test that the server answers (always a network round trip).
 
         Returns:
             True if the connection responds successfully, False otherwise.
         """
         pass
+
+    #: Seconds a successful liveness probe stays trusted by ``is_connected``;
+    #: ``0`` probes on every call. Connectors that need a probe use
+    #: ``_recently_verified`` / ``_mark_verified`` to honour it.
+    health_check_interval: float = 0.0
+    _verified_at: float = 0.0
+
+    def _recently_verified(self) -> bool:
+        interval = self.health_check_interval
+        return interval > 0 and (time.monotonic() - self._verified_at) < interval
+
+    def _mark_verified(self, healthy: bool = True) -> None:
+        self._verified_at = time.monotonic() if healthy else 0.0
 
     def ensure_connected(self) -> None:
         """Ensure the connection is active, reconnecting if necessary.

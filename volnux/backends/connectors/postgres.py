@@ -1,4 +1,6 @@
+import functools
 import logging
+import threading
 import typing
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -7,12 +9,48 @@ import psycopg
 from psycopg import Connection, Cursor
 from psycopg.conninfo import make_conninfo
 from psycopg.errors import DatabaseError, InterfaceError, OperationalError
+from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row, tuple_row
 from psycopg_pool import ConnectionPool
 
 from volnux.backends.connection import BackendConnectorBase
 
 logger = logging.getLogger(__name__)
+
+
+class _ManagedCursor(Cursor):
+    """A cursor that runs a cleanup callback when closed.
+
+    With pooling the callback hands the connection back to the pool; with a
+    single shared connection it clears an aborted transaction.
+
+    ``psycopg.Cursor`` defines ``__slots__``, so state cannot be attached to a
+    plain cursor; subclassing gives the cursor a ``__dict__`` and lets
+    ``close()`` (what ``with`` blocks and ``finally`` clauses already call)
+    release the connection, instead of every caller having to remember to.
+    """
+
+    _release: Optional[typing.Callable[[], None]] = None
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            release, self._release = self._release, None
+            if release is not None:
+                release()
+
+
+class _Transaction:
+    """The connection a thread's open transaction is bound to."""
+
+    __slots__ = ("conn", "owned", "depth", "rollback_only")
+
+    def __init__(self, conn: Connection, owned: bool) -> None:
+        self.conn = conn
+        self.owned = owned  # checked out of the pool for this transaction
+        self.depth = 1  # nested transaction() blocks share the outer one
+        self.rollback_only = False
 
 
 class PostgresConnector(BackendConnectorBase[Connection]):
@@ -48,6 +86,7 @@ class PostgresConnector(BackendConnectorBase[Connection]):
         keepalives_interval: int = 10,
         keepalives_count: int = 5,
         autocommit: bool = False,
+        health_check_interval: float = 1.0,
         **kwargs: Any,
     ):
         super().__init__(
@@ -73,6 +112,9 @@ class PostgresConnector(BackendConnectorBase[Connection]):
             **kwargs,
         )
 
+        # Single-connection mode only: how long a successful liveness probe is
+        # trusted. A pool needs none (it validates connections on checkout).
+        self.health_check_interval = health_check_interval
         self._use_pooling = use_pooling
         self._row_factory = row_factory
         self._application_name = application_name
@@ -81,6 +123,10 @@ class PostgresConnector(BackendConnectorBase[Connection]):
         self._autocommit = autocommit
 
         self._connection_pool: Optional[ConnectionPool] = None
+        # The open transaction of the *current thread*. A transaction must run
+        # on one connection from BEGIN to COMMIT; with a pool, successive
+        # checkouts would otherwise land on different connections.
+        self._local = threading.local()
         self._connection: Optional[Connection] = None
         self._cursor: Optional[Cursor] = None
 
@@ -155,15 +201,32 @@ class PostgresConnector(BackendConnectorBase[Connection]):
             return namedtuple_row
         return tuple_row
 
+    def _pool_conninfo(self) -> str:
+        """libpq connection string carrying every connection option.
+
+        Built from the same parameters as a direct connection so pooled
+        connections honour ``sslmode``, ``application_name``, ``connect_timeout``
+        and the keepalive settings (the bare URI used before dropped them).
+        """
+        params = self._get_connection_params()
+        params.pop("autocommit", None)  # a psycopg option, not a libpq one
+        return make_conninfo("", **params)
+
     def _initialize_pool(self) -> None:
         try:
-            conninfo = self._get_connection_string()
             self._connection_pool = ConnectionPool(
-                conninfo,
+                self._pool_conninfo(),
                 min_size=self._pool_config["min_size"],
                 max_size=self._pool_config["max_size"],
                 timeout=self._pool_config["timeout"],
-                kwargs=self._pool_config["kwargs"],
+                # psycopg options applied to every pooled connection
+                kwargs={
+                    "autocommit": self._autocommit,
+                    "row_factory": self._get_row_factory(),
+                },
+                # validate on checkout, so connections the server dropped
+                # (restart, idle timeout) are replaced instead of handed out
+                check=ConnectionPool.check_connection,
                 open=True,
             )
             logger.info(
@@ -185,7 +248,7 @@ class PostgresConnector(BackendConnectorBase[Connection]):
 
         try:
             if self._use_pooling:
-                if self._connection_pool is None:
+                if self._connection_pool is None or self._connection_pool.closed:
                     self._initialize_pool()
 
                 with self._connection_pool.connection() as conn:
@@ -205,6 +268,7 @@ class PostgresConnector(BackendConnectorBase[Connection]):
                     cursor.fetchone()
 
             self._is_connected = True
+            self._mark_verified()
             logger.info(
                 "Successfully connected to PostgresSQL at %s:%s (%s)",
                 self.config.host,
@@ -252,29 +316,65 @@ class PostgresConnector(BackendConnectorBase[Connection]):
             self._is_connected = False
 
     def is_connected(self) -> bool:
+        """Whether the connector believes it is connected. Cheap: no round trip
+        per call (this runs before every store operation).
+
+        * Pooled: true while the pool is open. Dead connections are replaced by
+          the pool's validation on checkout, so nothing else is needed here.
+        * Single connection: true unless the connection is known to be closed or
+          broken; the server is probed at most once per ``health_check_interval``
+          (default 1s) to notice a connection it dropped silently.
+
+        Use ``ping()`` to verify the server explicitly.
+        """
         if not self._is_connected:
             return False
 
+        if self._use_pooling:
+            pool = self._connection_pool
+            if pool is None or pool.closed:
+                self._is_connected = False
+                return False
+            return True
+
+        conn = self._connection
+        # `is True` (not truthiness): only a real known-bad state counts
+        if (
+            conn is None
+            or conn.closed is True
+            or getattr(conn, "broken", False) is True
+        ):
+            self._is_connected = False
+            return False
+        return True if self._recently_verified() else self._probe()
+
+    def _probe(self) -> bool:
+        """Run ``SELECT 1`` and record the outcome."""
         try:
             with self._connection_context() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("SELECT 1")
                     cursor.fetchone()
-            return True
-        except (OperationalError, InterfaceError, DatabaseError, AttributeError):
-            self._is_connected = False
-            return False
         except Exception:
             self._is_connected = False
+            self._mark_verified(False)
             return False
+        self._mark_verified()
+        return True
 
     def ping(self) -> bool:
-        return self.is_connected()
+        """Verify the server answers (a real round trip, unlike ``is_connected``)."""
+        return self._is_connected and self._probe()
 
     @contextmanager
     def _connection_context(self):
         if not self._is_connected:
             raise ConnectionError("Not connected to PostgreSQL")
+
+        transaction = self._transaction_state()
+        if transaction is not None:
+            yield transaction.conn  # stay on the transaction's connection
+            return
 
         if self._use_pooling:
             if self._connection_pool is None:
@@ -284,7 +384,10 @@ class PostgresConnector(BackendConnectorBase[Connection]):
         else:
             if self._connection is None:
                 raise ConnectionError("No connection available")
-            yield self._connection
+            try:
+                yield self._connection
+            finally:
+                self._recover_if_aborted(self._connection)
 
     @contextmanager
     def _cursor_context(self):
@@ -293,29 +396,98 @@ class PostgresConnector(BackendConnectorBase[Connection]):
                 yield cursor
 
     def get_cursor(self) -> Cursor:
+        """Return a cursor.
+
+        Inside a transaction the cursor runs on the transaction's connection.
+        Otherwise, with pooling, it borrows a pooled connection that is
+        returned when the cursor is closed.
+        """
         self.ensure_connected()
         try:
+            transaction = self._transaction_state()
+            if transaction is not None:
+                return transaction.conn.cursor()
             if self._use_pooling:
-                conn = self._connection_pool.getconn()
-                cursor = conn.cursor()
-                cursor._pool_connection = conn  # compatibility bridge
+                pool = self._connection_pool
+                conn = pool.getconn()
+                try:
+                    cursor = _ManagedCursor(conn, row_factory=conn.row_factory)
+                except BaseException:
+                    pool.putconn(conn)
+                    raise
+                cursor._release = functools.partial(self._release_connection, conn)
                 return cursor
-            return self._connection.cursor()
+            conn = self._connection
+            cursor = _ManagedCursor(conn, row_factory=conn.row_factory)
+            cursor._release = functools.partial(self._recover_if_aborted, conn)
+            return cursor
         except DatabaseError as e:
             logger.error("Failed to create cursor: %s", e)
             raise ConnectionError(f"Failed to create cursor: {e}")
 
+    def _recover_if_aborted(self, conn: Optional[Connection]) -> None:
+        """Roll back a transaction PostgreSQL has put in the error state.
+
+        After a failed statement every further command is refused with "current
+        transaction is aborted" until a rollback. A shared connection would stay
+        poisoned for all later operations. (Nothing else is touched: a healthy
+        open transaction is left alone, and one already in the error state can
+        only be rolled back, so this is safe even for another thread's.)
+        """
+        try:
+            if (
+                conn is not None
+                and conn.closed is not True
+                and conn.info.transaction_status == TransactionStatus.INERROR
+            ):
+                conn.rollback()
+        except Exception as e:
+            logger.debug("Could not clear aborted transaction: %s", e)
+
+    def _release_connection(self, conn: Connection) -> None:
+        """Give a borrowed connection back, leaving it in a clean state."""
+        try:
+            if (
+                not conn.closed
+                and conn.info.transaction_status != TransactionStatus.IDLE
+            ):
+                # Reads leave an implicit transaction open (autocommit off);
+                # writes go through transaction(), so there is nothing to keep.
+                conn.rollback()
+        except Exception as e:
+            logger.debug("Could not reset pooled connection: %s", e)
+        finally:
+            pool = self._connection_pool
+            if pool is not None:
+                try:
+                    pool.putconn(conn)
+                except Exception as e:
+                    logger.warning("Error returning connection to pool: %s", e)
+
     def return_cursor(self, cursor: Cursor) -> None:
-        if hasattr(cursor, "_pool_connection"):
-            try:
-                pool_conn = cursor._pool_connection
-                cursor.close()
-                self._connection_pool.putconn(pool_conn)
-            except Exception as e:
-                logger.warning("Error returning cursor to pool: %s", e)
+        """Release a cursor from ``get_cursor`` (``cursor.close()`` does the same)."""
+        try:
+            cursor.close()
+        except Exception as e:
+            logger.warning("Error closing cursor: %s", e)
+
+    # Transactions
+
+    def _transaction_state(self) -> Optional[_Transaction]:
+        return getattr(self._local, "transaction", None)
+
+    def _end_transaction(self, transaction: _Transaction) -> None:
+        self._local.transaction = None
+        if transaction.owned:
+            self._release_connection(transaction.conn)
 
     def begin_transaction(self) -> None:
-        """Initiate a transaction lifecycle for the base context manager."""
+        """Start a transaction bound to one connection for the current thread.
+
+        Nested calls join the outer transaction: only the outermost
+        ``commit``/``rollback`` ends it, so an inner block can no longer commit
+        its caller's work early.
+        """
         self.ensure_connected()
 
         if self._autocommit:
@@ -324,13 +496,23 @@ class PostgresConnector(BackendConnectorBase[Connection]):
             )
             return
 
+        transaction = self._transaction_state()
+        if transaction is not None:
+            transaction.depth += 1
+            return
+
+        owned = self._use_pooling
+        conn = None
         try:
-            with self._connection_context() as conn:
-                if conn.autocommit:
-                    conn.autocommit = False
-                conn.execute("BEGIN")
-                logger.debug("PostgreSQL transaction initiated")
+            conn = self._connection_pool.getconn() if owned else self._connection
+            if conn.autocommit:
+                conn.autocommit = False
+            # psycopg issues BEGIN with the first statement (autocommit is off)
+            self._local.transaction = _Transaction(conn, owned)
+            logger.debug("PostgreSQL transaction initiated")
         except DatabaseError as e:
+            if owned and conn is not None:
+                self._connection_pool.putconn(conn)
             logger.error("Failed to begin transaction: %s", e)
             raise ConnectionError(f"Failed to begin transaction: {e}")
 
@@ -341,13 +523,32 @@ class PostgresConnector(BackendConnectorBase[Connection]):
             logger.debug("Autocommit enabled; explicit commit has no effect")
             return
 
+        transaction = self._transaction_state()
+        if transaction is None:  # nothing begun through begin_transaction()
+            try:
+                with self._connection_context() as conn:
+                    conn.commit()
+            except DatabaseError as e:
+                logger.error("Failed to commit transaction: %s", e)
+                raise ConnectionError(f"Failed to commit transaction: {e}")
+            return
+
+        if transaction.depth > 1:
+            transaction.depth -= 1
+            return
+
         try:
-            with self._connection_context() as conn:
-                conn.commit()
+            if transaction.rollback_only:
+                logger.warning("Rolling back: a nested transaction block failed")
+                transaction.conn.rollback()
+            else:
+                transaction.conn.commit()
             logger.debug("Committed PostgreSQL transaction")
         except DatabaseError as e:
             logger.error("Failed to commit transaction: %s", e)
             raise ConnectionError(f"Failed to commit transaction: {e}")
+        finally:
+            self._end_transaction(transaction)
 
     def rollback(self) -> None:
         self.ensure_connected()
@@ -356,13 +557,30 @@ class PostgresConnector(BackendConnectorBase[Connection]):
             logger.debug("Autocommit enabled; explicit rollback has no effect")
             return
 
+        transaction = self._transaction_state()
+        if transaction is None:
+            try:
+                with self._connection_context() as conn:
+                    conn.rollback()
+            except DatabaseError as e:
+                logger.error("Failed to rollback transaction: %s", e)
+                raise ConnectionError(f"Failed to rollback transaction: {e}")
+            return
+
+        if transaction.depth > 1:
+            # The outer block decides; it will roll back instead of committing.
+            transaction.depth -= 1
+            transaction.rollback_only = True
+            return
+
         try:
-            with self._connection_context() as conn:
-                conn.rollback()
+            transaction.conn.rollback()
             logger.debug("Rolled back PostgreSQL transaction")
         except DatabaseError as e:
             logger.error("Failed to rollback transaction: %s", e)
             raise ConnectionError(f"Failed to rollback transaction: {e}")
+        finally:
+            self._end_transaction(transaction)
 
     def execute_query(
         self,
@@ -389,8 +607,8 @@ class PostgresConnector(BackendConnectorBase[Connection]):
             with self._connection_context() as conn:
                 with conn.cursor() as cursor:
                     cursor.executemany(query, params_list)
-                if not self._autocommit:
-                    conn.commit()
+                if not self._autocommit and self._transaction_state() is None:
+                    conn.commit()  # inside transaction() the caller commits
             logger.debug(
                 "Executed batch query with %s parameter sets", len(params_list)
             )

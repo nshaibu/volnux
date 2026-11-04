@@ -9,6 +9,8 @@ PostgreSQL server and are skipped when none is reachable. Configure with:
     VOLNUX_TEST_PG_DATABASE (default: volnux_test)
     VOLNUX_TEST_PG_USERNAME (default: volnux)
     VOLNUX_TEST_PG_PASSWORD (default: volnux_test_password)
+    VOLNUX_TEST_PG_POOL     (set to 1 to run the integration tests on a pooled
+                             connection instead of a single one)
 """
 
 import asyncio
@@ -36,6 +38,8 @@ PG_CONFIG = dict(
     username=os.environ.get("VOLNUX_TEST_PG_USERNAME", "volnux"),
     password=os.environ.get("VOLNUX_TEST_PG_PASSWORD", "volnux_test_password"),
 )
+
+USE_POOLING = os.environ.get("VOLNUX_TEST_PG_POOL") == "1"
 
 _MIGRATION_ROOT = {"path": None}
 
@@ -196,7 +200,7 @@ _ALL_TABLES = [_schema(m) for m in (KeywordModel, PgChild, PgParent)] + [
 @pytest.fixture
 def pg_store(tmp_path):
     _MIGRATION_ROOT["path"] = str(tmp_path / "migrations")
-    store = PostgresStoreBackend(**PG_CONFIG, use_pooling=False)
+    store = PostgresStoreBackend(**PG_CONFIG, use_pooling=USE_POOLING)
 
     def drop_all():
         for table in _ALL_TABLES:

@@ -57,6 +57,9 @@ class SqliteConnector(BackendConnectorBase[sqlite3.Cursor]):
         ...     results = cursor.fetchall()
     """
 
+    #: A local connection rarely dies silently; probe at most once a second.
+    health_check_interval = 1.0
+
     # SQLite-specific defaults
     DEFAULT_TIMEOUT = 30.0
     DEFAULT_ISOLATION_LEVEL = None  # Autocommit mode
@@ -221,6 +224,7 @@ class SqliteConnector(BackendConnectorBase[sqlite3.Cursor]):
                 # Create initial cursor
                 self._cursor = self._connection.cursor()
                 self._is_connected = True
+                self._mark_verified()
 
                 logger.info(f"Connected to SQLite database: {self.config.database}")
 
@@ -282,19 +286,27 @@ class SqliteConnector(BackendConnectorBase[sqlite3.Cursor]):
         if not self._is_connected or self._connection is None:
             return False
 
+        # Runs before every store operation: trust a recent successful probe
+        # instead of executing a statement each time.
+        if self._recently_verified():
+            return True
+
         try:
             cursor = self._connection.cursor()
             cursor.execute("SELECT 1")
             cursor.fetchone()
             cursor.close()
+            self._mark_verified()
             return True
         except (sqlite3.Error, AttributeError) as e:
             logger.debug(f"Connection check failed: {e}")
             self._is_connected = False
+            self._mark_verified(False)
             return False
         except Exception as e:
             logger.warning(f"Unexpected error checking connection: {e}")
             self._is_connected = False
+            self._mark_verified(False)
             return False
 
     def ping(self) -> bool:

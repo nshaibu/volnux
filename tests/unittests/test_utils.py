@@ -65,7 +65,7 @@ def test_get_function_call_args():
 
 def test_build_event_arguments_from_pipeline():
     from volnux import EventBase, Pipeline
-    from volnux.fields import InputDataField
+    from volnux.execution.pipeline.fields import InputDataField
 
     class A(EventBase):
         def process(self, name, school):

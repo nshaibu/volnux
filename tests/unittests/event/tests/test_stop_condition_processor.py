@@ -17,14 +17,15 @@ import pytest
 
 
 from volnux.parser.options import StopCondition
-_STOP_CONDITION_AVAILABLE = True
 
+_STOP_CONDITION_AVAILABLE = True
 
 
 def _import_processor():
     """Import StopConditionProcessor from the checkpointing mixin module."""
     # Try several likely paths. Adjust to match your repo layout if needed.
     import importlib
+
     candidates = [
         "volnux.mixins._checkpointing",
         "volnux.mixins.checkpointing",
@@ -41,6 +42,7 @@ def _import_processor():
 
     try:
         from volnux.mixins.event import StopConditionProcessor  # type: ignore
+
         return StopConditionProcessor
     except ImportError:
         pass
@@ -62,8 +64,8 @@ except ImportError:
 pytestmark = pytest.mark.skipif(
     StopConditionProcessor is None or not _STOP_CONDITION_AVAILABLE,
     reason="Could not import StopConditionProcessor or StopCondition — adjust "
-           "the import in tests/test_stop_condition_processor.py to match "
-           "your repo layout.",
+    "the import in tests/test_stop_condition_processor.py to match "
+    "your repo layout.",
 )
 
 

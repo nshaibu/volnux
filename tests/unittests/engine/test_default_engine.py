@@ -21,7 +21,6 @@ from volnux.parser.protocols import GroupingStrategy
 from volnux.task.group import PipelineTaskGrouping
 
 
-
 class _Awaitable:
     """Makes any value awaitable (returns it from ``await expr``)."""
 
@@ -47,7 +46,6 @@ def _awaitable_fn(return_value=None):
         return _Awaitable(return_value)
 
     return _fn
-
 
 
 def _make_fake_sub_engine(tasks_processed=0, final_context=None):
@@ -158,7 +156,6 @@ def _make_sink_ctx(dispatch_side_effect=None):
     return ctx
 
 
-
 class TestDefaultWorkflowEngineInit:
     def test_default_params(self):
         engine = DefaultWorkflowEngine()
@@ -220,7 +217,6 @@ class TestDefaultWorkflowEngineInit:
         assert len(engine.sink_queue) == 0
 
 
-
 class TestQueueProperties:
     def test_task_queue_is_mutable_deque(self):
         engine = DefaultWorkflowEngine()
@@ -241,7 +237,6 @@ class TestQueueProperties:
     def test_sink_queue_is_same_reference(self):
         engine = DefaultWorkflowEngine()
         assert engine.sink_queue is engine._sink_queue
-
 
 
 class TestCheckpointAfterTaskOverride:
@@ -318,8 +313,6 @@ class TestCheckpointAfterTaskOverride:
         engine.current_task_node = TaskNode(task=MagicMock())
         await engine._checkpoint_after_task(mock_ctx, success=True)
         assert engine.current_task_node is None
-
-
 
 
 class TestExecute:
@@ -523,8 +516,6 @@ class TestExecute:
             assert result.tasks_processed == 1
 
 
-
-
 class TestExecuteStateReset:
     """Verify that execute() resets internal state for a fresh run."""
 
@@ -614,7 +605,6 @@ class TestExecuteStateReset:
             assert engine.current_task_node is None
 
 
-
 class TestExecuteCheckpointIntegration:
     """Verify that execute() calls checkpoint hooks when configured."""
 
@@ -679,9 +669,6 @@ class TestExecuteCheckpointIntegration:
             # are no-ops when _checkpointer is None.
             m_before.assert_awaited_once()
             m_after.assert_awaited_once()
-
-
-
 
 
 class TestExecuteEarlyTermination:
@@ -846,7 +833,6 @@ class TestExecuteTaskSwitching:
 
             assert result.status == EngineExecutionResult.FAILED
             assert result.error is switch_error
-
 
 
 class TestExecuteConditionalBranching:
@@ -1068,8 +1054,6 @@ class TestExecuteContextChaining:
             assert sink in engine.sink_queue
 
 
-
-
 class TestExecuteSinkNodes:
 
     @pytest.mark.asyncio
@@ -1206,8 +1190,6 @@ class TestExecuteSinkNodes:
             assert result.status == EngineExecutionResult.COMPLETED
 
 
-
-
 class TestDetectParallelTasks:
     def test_non_parallel_returns_none(self):
         engine = DefaultWorkflowEngine()
@@ -1274,7 +1256,6 @@ class TestDetectParallelTasks:
                 mock_logger.debug.assert_called_once()
                 call_args = mock_logger.debug.call_args[0][0]
                 assert "2 parallel tasks" in call_args
-
 
 
 class TestBuildContext:
@@ -1377,7 +1358,6 @@ class TestBuildContext:
             assert len(engine.sink_queue) == 0
 
 
-
 class TestShouldTerminate:
     def test_cancelled_returns_true(self):
         engine = DefaultWorkflowEngine()
@@ -1432,7 +1412,6 @@ class TestShouldTerminate:
                 mock_logger.debug.assert_called_once()
                 call_args = mock_logger.debug.call_args[0][0]
                 assert "Early termination" in call_args
-
 
 
 class TestMapTerminationStatus:
@@ -1793,7 +1772,6 @@ class TestDrainSinkNodes:
             assert "1 sink nodes" in call_args
 
 
-
 class TestDebugLogging:
 
     @pytest.mark.asyncio
@@ -1851,7 +1829,6 @@ class TestDebugLogging:
             assert any("1 tasks" in c for c in debug_calls)
 
 
-
 class TestExecuteCheckpointerStartup:
     """Checkpoint manager's async worker starts once, at root-engine
     startup only — never from a sub-engine."""
@@ -1903,7 +1880,6 @@ class TestExecuteCheckpointerStartup:
         assert result.status == EngineExecutionResult.COMPLETED
 
 
-
 class TestSpawnSubEngineCheckpointInheritance:
     """A sub-engine only ever inherits the parent's checkpoint manager —
     it must never build its own."""
@@ -1944,7 +1920,6 @@ class TestSpawnSubEngineCheckpointInheritance:
         assert child.parent_engine is parent
         assert child in parent.child_engines
         assert child._error_strategy == SubgraphErrorStrategy.ISOLATE
-
 
 
 class TestExecuteSubgraphs:

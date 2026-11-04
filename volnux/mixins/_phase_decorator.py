@@ -2,6 +2,7 @@ import functools
 import logging
 import inspect
 
+from volnux.exceptions import CONTROL_FLOW_EXCEPTIONS
 from volnux.execution.rehydrator.event.snapshot import EventPhase
 
 
@@ -31,8 +32,21 @@ def phase_step(phase: EventPhase):
                 self.__class__.__name__,
                 fn.__name__,
             )
+            # `_phase` is the last phase that COMPLETED (resume relies on it);
+            # `_active_phase` is the phase being executed right now.
+            previous_active = getattr(self, "_active_phase", None)
+            self._active_phase = phase
             try:
                 result = await fn(self, *args, **kwargs)
+            except CONTROL_FLOW_EXCEPTIONS as exc:
+                logger.debug(
+                    "Phase step %s left via %s for %s.%s",
+                    phase.name,
+                    type(exc).__name__,
+                    self.__class__.__name__,
+                    fn.__name__,
+                )
+                raise
             except Exception:
                 logger.exception(
                     "Phase step %s failed for %s.%s; phase not advanced",
@@ -41,6 +55,8 @@ def phase_step(phase: EventPhase):
                     fn.__name__,
                 )
                 raise
+            finally:
+                self._active_phase = previous_active
 
             self._phase = phase
             logger.debug(
@@ -62,8 +78,19 @@ def phase_step(phase: EventPhase):
                 self.__class__.__name__,
                 fn.__name__,
             )
+            previous_active = getattr(self, "_active_phase", None)
+            self._active_phase = phase
             try:
                 result = fn(self, *args, **kwargs)
+            except CONTROL_FLOW_EXCEPTIONS as exc:
+                logger.debug(
+                    "Phase step %s left via %s for %s.%s",
+                    phase.name,
+                    type(exc).__name__,
+                    self.__class__.__name__,
+                    fn.__name__,
+                )
+                raise
             except Exception:
                 logger.exception(
                     "Phase step %s failed for %s.%s; phase not advanced",
@@ -72,6 +99,8 @@ def phase_step(phase: EventPhase):
                     fn.__name__,
                 )
                 raise
+            finally:
+                self._active_phase = previous_active
 
             self._phase = phase
             logger.debug(

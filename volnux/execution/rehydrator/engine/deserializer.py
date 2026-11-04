@@ -59,7 +59,9 @@ class StateDeserializer:
             )
         else:
             path = data.get("event_class_import_path")
-            task = PipelineTask(event=import_class(path) if path else data["event_name"])
+            task = PipelineTask(
+                event=import_class(path) if path else data["event_name"]
+            )
 
         task.change_object_id(data["task_id"])
         task.namespace = data.get("namespace") or "local"

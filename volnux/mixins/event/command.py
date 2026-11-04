@@ -11,7 +11,14 @@ from volnux.flows.bridge.communications.tasks import (
 )
 from ..protocols.event import BaseEvent
 from ...result import EventResult
-from volnux.exceptions import SuspendTask
+from volnux.exceptions import (
+    CONTROL_FLOW_EXCEPTIONS,
+    SkipExecutionError,
+    StopProcessingError,
+    SuspendTask,
+    SwitchTask,
+)
+from volnux.execution.rehydrator.event.snapshot import EventPhase
 from volnux.concurrency.async_utils import to_thread
 
 logger = logging.getLogger(__name__)
@@ -114,7 +121,9 @@ class EventCommandMixin:
         try:
             while True:
                 try:
-                    command = await self._command_channel.receive_command(timeout=0.01)
+                    command = await self._command_channel.receive_command(
+                        timeout=getattr(self._command_channel, "poll_interval", 0.01)
+                    )
                     if command:
                         await self._handle_command(command)
                 except asyncio.TimeoutError:
@@ -129,6 +138,8 @@ class EventCommandMixin:
                         f"Error in command listener for task {self._task_id}: {e}",
                         exc_info=True,
                     )
+                    # A failing transport must not turn this loop into a hot spin
+                    await asyncio.sleep(1.0)
 
         except asyncio.CancelledError:
             logger.debug(f"Command listener for task {self._task_id} cancelled")
@@ -219,6 +230,34 @@ class EventCommandMixin:
                 exc_info=True,
             )
 
+    @staticmethod
+    def _control_flow_state(exc: BaseException) -> Optional[TaskState]:
+        """The state to report for a control-flow exception (None if it is a
+        genuine failure). goto() completes the task and switches branch; a
+        suspension waits on the outside world; a stop request ends the run."""
+        if isinstance(exc, SwitchTask):
+            return TaskState.COMPLETED
+        if isinstance(exc, SuspendTask):
+            return TaskState.SUSPENDED
+        if isinstance(exc, StopProcessingError):
+            return TaskState.CANCELLED
+        return None
+
+    def _annotate_error(self, exc: BaseException) -> None:
+        """Attach this event's identity to an exception leaving it, so the
+        coordinator's error result names the event and task that failed instead
+        of 'unknown'."""
+        if isinstance(getattr(exc, "params", None), dict):
+            return
+        try:
+            exc.params = {  # type: ignore[attr-defined]
+                "event_name": self.__class__.__name__,
+                "task_id": self._task_id,
+                "sequence_number": getattr(self, "_sequence_number", None),
+            }
+        except Exception:  # exception types with read-only attributes
+            pass
+
     async def _run_step(self, step, *args, **kwargs):
         """
         Executes a single step of a process, supporting both synchronous and asynchronous steps.
@@ -288,6 +327,19 @@ class EventCommandMixin:
                     )
                     continue
 
+                # A bypassed event skips the work phases but still builds its
+                # result (post-process) and cleans up (completed).
+                if self._bypassed and step_phase in (
+                    EventPhase.COMMUNICATING,
+                    EventPhase.PROCESSING,
+                ):
+                    logger.debug(
+                        "Skipping step %s for task_id=%s (event bypassed)",
+                        step.__name__,
+                        self._task_id,
+                    )
+                    continue
+
                 # Blocks here until RESUME sets the gate; returns immediately if already set
                 await self._pause_gate.wait()
 
@@ -298,7 +350,39 @@ class EventCommandMixin:
                     )
                     await self._run_step(step, *args, **kwargs)
 
+                except SkipExecutionError:
+                    # bypass() decided this event needs no work: not a failure.
+                    # The step is complete as far as the lifecycle is concerned.
+                    self._bypassed = True
+                    if step_phase is not None:
+                        self._phase = step_phase
+                    logger.info(
+                        "Task %s bypassed at step %s",
+                        self._task_id,
+                        step.__name__,
+                    )
+
+                except CONTROL_FLOW_EXCEPTIONS as e:
+                    # goto / stop / suspend steer execution; they are not
+                    # failures, so no ERROR log and no FAILED report.
+                    state = self._control_flow_state(e)
+                    logger.info(
+                        "Task %s left step %s via %s",
+                        self._task_id,
+                        step.__name__,
+                        type(e).__name__,
+                    )
+                    if state is not None:
+                        await self._send_update(
+                            MessageType.STATUS_UPDATE,
+                            state,
+                            {"reason": type(e).__name__, "step_name": step.__name__},
+                        )
+                    error_reported = True
+                    raise
+
                 except Exception as e:
+                    self._annotate_error(e)
                     logger.exception(
                         "Step %s failed for task_id=%s; checkpoint preserved at phase=%s",
                         step.__name__,
@@ -372,7 +456,10 @@ class EventCommandMixin:
             await self._send_update(MessageType.STATUS_UPDATE, TaskState.CANCELLED)
             raise
 
+        except CONTROL_FLOW_EXCEPTIONS:
+            raise  # already reported (or deliberately silent) above
         except Exception as e:
+            self._annotate_error(e)
             logger.error(
                 f"Task {self._task_id} failed with unexpected error at step "
                 f"{current_index + 1}/{total_steps}: {e}",
@@ -392,10 +479,9 @@ class EventCommandMixin:
                 )
             raise
 
-        # construct event result from the exec_status and exec_result attributes
-        result = (
-            self.on_success(self.exec_result)
-            if self.exec_status
-            else self.on_failure(self.exec_result)
-        )
-        return result
+        # _post_process already built the result. When it was skipped (a resume
+        # from a checkpoint taken after POST_PROCESS) rebuild it from the
+        # restored exec_status / exec_result.
+        if self._event_result is None:
+            self._event_result = self._build_event_result()
+        return self._event_result

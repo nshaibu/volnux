@@ -8,8 +8,8 @@ import pytest
 from volnux import default_batch_processors as batch_defaults
 from volnux.constants import EMPTY, UNKNOWN
 from volnux.exceptions import ImproperlyConfigured
-from volnux.fields import FileInputDataField, InputDataField
-from volnux.fields.file_proxy import FileProxy
+from volnux.execution.pipeline.fields import FileInputDataField, InputDataField
+from volnux.execution.pipeline.fields.file_proxy import FileProxy
 
 
 class TestInputDataField:
@@ -339,3 +339,53 @@ class TestFileProxy:
         proxy = FileProxy("test.txt", mode="r")
         lines = list(proxy)
         assert lines == ["line1\n", "line2\n"]
+
+
+# --- FileChunk / chunked streaming (BatchPipeline support) ------------------
+
+
+def test_iter_chunks_streams_text_and_binary_and_closes_the_file(tmp_path):
+    from volnux.execution.pipeline.fields import FileInputDataField
+
+    path = tmp_path / "f.txt"
+    path.write_text("0123456789abcdefghij12")
+
+    text = list(FileInputDataField(chunk_size=10).iter_chunks(str(path), 10))
+    assert [c.data for c in text] == ["0123456789", "abcdefghij", "12"]
+    assert [c.index for c in text] == [0, 1, 2]
+    assert text[0].source == str(path)
+
+    binary = list(FileInputDataField(mode="rb").iter_chunks(str(path), 10))
+    assert binary[0].data == b"0123456789"
+
+    assert (
+        list(FileInputDataField().iter_chunks(str(tmp_path / "f.txt"), 100))[0].data
+        == "0123456789abcdefghij12"
+    )
+
+
+def test_a_file_field_accepts_a_chunk_and_returns_it_unchanged():
+    from volnux.execution.pipeline.fields import FileChunk, FileInputDataField
+    from volnux.execution.pipeline import Pipeline
+    from volnux import EventBase
+
+    class ChunkEvent(EventBase):
+        def process(self, *a, **k):
+            return True, "x"
+
+    class ChunkPipe(Pipeline):
+        book = FileInputDataField(required=True)
+
+        class Meta:
+            pointy = "ChunkEvent"
+
+    chunk = FileChunk(data="abc", source="/nowhere/book.txt", index=0)
+    pipeline = ChunkPipe(book=chunk)  # no path check: it is data, not a path
+    assert pipeline.book is chunk
+
+
+def test_the_old_import_path_is_gone():
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("volnux.fields")

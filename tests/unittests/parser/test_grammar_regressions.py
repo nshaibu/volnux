@@ -42,7 +42,11 @@ class TestLexer(unittest.TestCase):
     def test_builtin_descriptor_names_are_keywords(self):
         self.assertEqual(
             lex("failure success failures"),
-            [("FAILURE", "failure"), ("SUCCESS", "success"), ("IDENTIFIER", "failures")],
+            [
+                ("FAILURE", "failure"),
+                ("SUCCESS", "success"),
+                ("IDENTIFIER", "failures"),
+            ],
         )
 
     def test_keywords_without_token_are_identifiers(self):
@@ -70,14 +74,18 @@ class TestLiteralTypes(unittest.TestCase):
         from volnux.parser.ast import LiteralType
 
         name = "volnux_definitely_not_imported_pkg.mod"
-        self.assertEqual(LiteralType.determine_literal_type(name), LiteralType.IMPORT_STRING)
+        self.assertEqual(
+            LiteralType.determine_literal_type(name), LiteralType.IMPORT_STRING
+        )
         self.assertNotIn("volnux_definitely_not_imported_pkg", sys.modules)
 
     def test_plain_strings_stay_strings(self):
         from volnux.parser.ast import LiteralType
 
         for value in ("hello", "has space.x", "1.2.3", ".lead", "trail."):
-            self.assertEqual(LiteralType.determine_literal_type(value), LiteralType.STRING, value)
+            self.assertEqual(
+                LiteralType.determine_literal_type(value), LiteralType.STRING, value
+            )
 
 
 class TestGrammar(unittest.TestCase):

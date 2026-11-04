@@ -379,7 +379,14 @@ class EventBase(
         )
 
     def __repr__(self) -> str:
-        return f"<{self.__class__.__name__} executor={self.executor.__name__}>"
+        # `executor` is a registry label (str) by default, a class or an instance
+        executor = self.executor
+        name = (
+            executor
+            if isinstance(executor, str)
+            else getattr(executor, "__name__", type(executor).__name__)
+        )
+        return f"<{self.__class__.__name__} executor={name}>"
 
     def get_init_args(self) -> typing.Dict[str, typing.Any]:
         return self._init_args
@@ -390,7 +397,9 @@ class EventBase(
     @classmethod
     def get_version_handler(cls) -> VersionHandler:
         """Get a version handler for this class"""
-        if cls._version_handler is None:
+        # Look in cls.__dict__, not cls._version_handler: attribute lookup would
+        # find the PARENT's cached handler and a subclass would reuse it.
+        if cls.__dict__.get("_version_handler") is None:
             cls._version_handler = VersionHandler.from_class(
                 cls, config_key="DEFAULT_EVENT_VERSIONING"
             )
@@ -575,8 +584,8 @@ class EventBase(
         event_called.emit(
             sender=self.__class__,
             event=self,
-            init_args=self.get_init_args(),
-            call_args=self.get_call_args(),
+            init_kwargs=self.get_init_args(),
+            call_kwargs=self.get_call_args(),
             hook_type="on_success",
             result=execution_result,
         )
@@ -610,8 +619,8 @@ class EventBase(
         event_called.emit(
             sender=self.__class__,
             event=self,
-            init_args=self.get_init_args(),
-            call_args=self.get_call_args(),
+            init_kwargs=self.get_init_args(),
+            call_kwargs=self.get_call_args(),
             hook_type="on_failure",
             result=execution_result,
         )

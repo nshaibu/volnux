@@ -25,7 +25,11 @@ from volnux.execution.rehydrator.engine.snapshot import (
 )
 from volnux.parser.operator import PipeType
 from volnux.parser.options import StopCondition
-from volnux.task import PipelineTask, PipelineTaskGrouping, build_pipeline_flow_from_pointy_code
+from volnux.task import (
+    PipelineTask,
+    PipelineTaskGrouping,
+    build_pipeline_flow_from_pointy_code,
+)
 
 
 class StepA(EventBase):
@@ -117,7 +121,9 @@ class TestDeserializeTask:
         assert snapshot.task_type == "normal"
 
     def test_group_task(self) -> None:
-        snapshot = StateDeserializer.deserialize_task(_make_task_data(task_type="group"))
+        snapshot = StateDeserializer.deserialize_task(
+            _make_task_data(task_type="group")
+        )
         assert snapshot.task_type == "group"
 
     def test_with_checkpoint(self) -> None:
@@ -175,9 +181,7 @@ class TestRebuildTask:
         assert rebuilt.options is None
 
     def test_options_survive_json(self) -> None:
-        root = build(
-            'StepA[stop_condition = "on_error", extra = 1] * 3'
-        )
+        root = build('StepA[stop_condition = "on_error", extra = 1] * 3')
 
         rebuilt = through_json(root)
 
@@ -200,8 +204,7 @@ class TestRebuildTask:
 
     def test_branches_and_sink(self) -> None:
         root = build(
-            "@descriptor: odd\n"
-            "StepA (failure -> StepB, odd |-> StepC) -> StepS"
+            "@descriptor: odd\n" "StepA (failure -> StepB, odd |-> StepC) -> StepS"
         )
 
         rebuilt = through_json(root)
@@ -218,9 +221,7 @@ class TestRebuildTask:
         assert rebuilt.sink_node.is_sink
 
     def test_group(self) -> None:
-        root = build(
-            "{ StepA -> StepB }[retry_attempts = 2] -> StepC"
-        )
+        root = build("{ StepA -> StepB }[retry_attempts = 2] -> StepC")
 
         rebuilt = through_json(root)
 
@@ -231,10 +232,10 @@ class TestRebuildTask:
         assert rebuilt.condition_node.on_success_event.event is StepC
 
     def test_rebuilt_graph_serializes_identically(self) -> None:
-        root = build(
-            "StepA[x = 1] * 2 (failure -> StepB, success -> StepC) -> {StepS}"
+        root = build("StepA[x = 1] * 2 (failure -> StepB, success -> StepC) -> {StepS}")
+        first = json.loads(
+            json.dumps(StateSerializer.serialize_task(root), default=str)
         )
-        first = json.loads(json.dumps(StateSerializer.serialize_task(root), default=str))
 
         again = json.loads(
             json.dumps(

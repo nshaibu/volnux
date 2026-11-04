@@ -171,6 +171,19 @@ class InMemoryKeyValueStoreBackend(
                 )
             return bucket[str(record_key)]
 
+    def get_many(
+        self,
+        schema_name: str,
+        record_keys: typing.Sequence[typing.Union[str, int]],
+        record_klass: typing.Type["KeyValueStoreIntegrationMixin"],
+    ) -> typing.Dict[str, "KeyValueStoreIntegrationMixin"]:
+        del record_klass
+        with self._acquire_lock():
+            bucket = self._get_schema_bucket(schema_name)
+            return {
+                str(key): bucket[str(key)] for key in record_keys if str(key) in bucket
+            }
+
     def filter(
         self,
         schema_name: str,

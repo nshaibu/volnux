@@ -185,3 +185,23 @@ def test_from_class_uses_scheme_namespace_resolution():
         handler = VersionHandler.from_class(EventWithoutNamespace, "EVENT_VERSIONING")
 
     assert handler.namespace == "configured-ns"
+
+
+def test_a_handler_built_from_a_class_reads_that_classes_metadata():
+    """get_info() used to hand the scheme the VersionHandler class itself, so a
+    class's declared version, namespace and changelog were never read."""
+    from volnux.versioning import SemanticVersioning
+
+    class Declared:
+        versioning_class = SemanticVersioning
+        version = "3.2.1"
+        namespace = "billing"
+        changelog = "added refunds"
+        deprecated = True
+
+    info = VersionHandler.from_class(Declared, "EVENT_VERSIONING").get_info()
+
+    assert info["version"] == "3.2.1"
+    assert info["namespace"] == "billing"
+    assert info["changelog"] == "added refunds"
+    assert info["deprecated"] is True

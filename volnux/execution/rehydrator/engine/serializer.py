@@ -113,5 +113,3 @@ class StateSerializer:
             "task_id": task_node.task.get_id(),
             "previous_context_id": task_node.previous_context.state_id,
         }
-
-

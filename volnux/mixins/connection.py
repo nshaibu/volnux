@@ -12,6 +12,7 @@ from typing import (
     AsyncGenerator,
 )
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 
 from volnux.backends.store import KeyValueStoreBackendBase
 from volnux.exceptions import (
@@ -30,6 +31,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound="BackendConnectionIntegrationMixin")
+
+# Per-task backend overrides installed by ``change_backend``. Using a ContextVar
+# (rather than swapping the class-level store) isolates the override to the
+# current task and its children, so concurrent tasks never see each other's
+# backend and nested ``change_backend`` blocks can't deadlock.
+_BACKEND_OVERRIDES: ContextVar[Dict[type, "KeyValueStoreBackendBase"]] = ContextVar(
+    "volnux_backend_overrides"
+)
 
 
 class BackendConnectionIntegrationMixin(ObjectIdentityMixin):
@@ -84,32 +93,27 @@ class BackendConnectionIntegrationMixin(ObjectIdentityMixin):
         cls: Type[T],
         storage_backend: "KeyValueStoreBackendBase",
     ) -> AsyncGenerator[Type[T], None]:
-        """ "Temporarily or permanently switch the class-level storage backend.
+        """Temporarily switch the storage backend used by this class.
 
-        Acts as a thread-safe context manager. Inside the ``with`` block,
-        all operations on this class (and its instances) use the provided
-        ``storage_backend``.
-
-        Upon exiting the context block, the original backend store and config
-        are atomically restored, even if an exception was raised inside the block.
+        Inside the ``async with`` block, every operation on this class (and its
+        instances) made by the current task, and tasks it spawns, uses
+        ``storage_backend``. Other tasks are unaffected. On exit the previous
+        backend is restored, even if an exception was raised. Blocks may nest.
 
         Usage:
             >>> mock_backend = RedisStoreBackend(host="mock-host")
-            >>> with User.change_backend(mock_backend):
-            ...     user = User.get("user_123")  # Uses mock_backend
+            >>> async with User.change_backend(mock_backend):
+            ...     user = await User.get("user_123")  # Uses mock_backend
             ...
-            >>> user = User.get("user_123")  # Automatically restored to real_backend
+            >>> user = await User.get("user_123")  # Back to the real backend
         """
-        async with cls._backend_lock:
-            previous_store = cls._backend_store
-            previous_initialized = cls._backend_initialized
-            try:
-                cls._backend_store = storage_backend
-                cls._backend_initialized = True
-                yield cls
-            finally:
-                cls._backend_store = previous_store
-                cls._backend_initialized = previous_initialized
+        overrides = dict(_BACKEND_OVERRIDES.get({}))
+        overrides[cls] = storage_backend
+        token = _BACKEND_OVERRIDES.set(overrides)
+        try:
+            yield cls
+        finally:
+            _BACKEND_OVERRIDES.reset(token)
 
     def __getstate__(self) -> Dict[str, Any]:
         """Prepare an object for serialization.
@@ -219,6 +223,10 @@ class BackendConnectionIntegrationMixin(ObjectIdentityMixin):
     @classmethod
     async def get_backend(cls) -> "KeyValueStoreBackendBase":
         """Get or initialize the shared backend store instance."""
+        override = _BACKEND_OVERRIDES.get({}).get(cls)
+        if override is not None:
+            return override
+
         if cls._backend_initialized:
             return cls._backend_store  # type: ignore[return-value]
 

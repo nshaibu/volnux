@@ -127,7 +127,7 @@ class ConfigEntry:
             "name": self.name,
             "value": self.value,
             "origin_mesh_node": self.origin_mesh_node,
-            "timestamp": self.timestamp
+            "timestamp": self.timestamp,
         }
         return json.dumps(payload, option=json.OPT_SORT_KEYS)
 

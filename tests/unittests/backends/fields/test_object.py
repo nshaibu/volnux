@@ -163,13 +163,17 @@ class TestPreFormatter:
         assert pre(None, 7) == deque([7])
 
     def test_coerce_can_replace_none(self):
-        config = ObjectConfig(coerce=lambda value: value if value is not None else Point())
+        config = ObjectConfig(
+            coerce=lambda value: value if value is not None else Point()
+        )
         assert _pre(ObjectField[Point, config])(None, None) == Point()
 
 
 class TestDefaultCodec:
     def test_primitives_and_containers(self):
-        assert default_serialize({"a": [1, "x", None, True]}) == {"a": [1, "x", None, True]}
+        assert default_serialize({"a": [1, "x", None, True]}) == {
+            "a": [1, "x", None, True]
+        }
         assert default_serialize((1, 2)) == [1, 2]
         assert default_serialize(deque([1])) == [1]
 
@@ -188,11 +192,17 @@ class TestDefaultCodec:
             point: Point = field(default_factory=Point)
             color: Color = Color.RED
 
-        assert default_serialize(Holder()) == {"point": {"x": 0, "y": 0}, "color": "red"}
+        assert default_serialize(Holder()) == {
+            "point": {"x": 0, "y": 0},
+            "color": "red",
+        }
 
     def test_getstate_setstate_class(self):
         payload = default_serialize(Stateful(5))
-        assert payload == {"__class__": f"{Stateful.__module__}.Stateful", "state": {"value": 5}}
+        assert payload == {
+            "__class__": f"{Stateful.__module__}.Stateful",
+            "state": {"value": 5},
+        }
         restored = default_deserialize(Stateful, payload)
         assert isinstance(restored, Stateful) and restored.value == 5
 
@@ -207,7 +217,10 @@ class TestDefaultCodec:
             def __setstate__(self, state):
                 pass
 
-        payload = {"__class__": f"{Stateful.__module__}.Stateful", "state": {"value": 1}}
+        payload = {
+            "__class__": f"{Stateful.__module__}.Stateful",
+            "state": {"value": 1},
+        }
         assert default_deserialize(None, payload).value == 1
 
     def test_unsupported_object_asks_for_a_serializer(self):

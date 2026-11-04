@@ -573,3 +573,97 @@ class TestAsCoroutine:
 
         with pytest.raises(ValueError, match="boom"):
             await as_coroutine(fn)
+
+
+class TestSubscribeOnError:
+    @pytest.mark.asyncio
+    async def test_on_error_keeps_the_subscription_running(self, model, backend):
+        subscription = FakeSubscription([message("a"), message("bad"), message("c")])
+        backend.subscribe.return_value = subscription
+        seen, errors = [], []
+
+        async def callback(record):
+            if record == "bad":
+                raise RuntimeError("boom")
+            seen.append(record)
+
+        async def on_error(exc, record):
+            errors.append((str(exc), record))
+
+        await model.subscribe(callback, on_error=on_error)
+
+        assert seen == ["a", "c"]
+        assert errors == [("boom", "bad")]
+        assert subscription.exited
+
+    @pytest.mark.asyncio
+    async def test_sync_on_error_and_psubscribe(self, model, backend):
+        backend.psubscribe.return_value = FakeSubscription([message("x")])
+        errors = []
+
+        def callback(record):
+            raise ValueError("nope")
+
+        await model.psubscribe(
+            callback=callback, on_error=lambda exc, rec: errors.append(rec)
+        )
+        assert errors == ["x"]
+
+    @pytest.mark.asyncio
+    async def test_failing_on_error_propagates(self, model, backend):
+        backend.subscribe.return_value = FakeSubscription([message("a")])
+
+        async def callback(record):
+            raise RuntimeError("first")
+
+        async def on_error(exc, record):
+            raise KeyError("second")
+
+        with pytest.raises(KeyError):
+            await model.subscribe(callback, on_error=on_error)
+
+
+class TestArgumentValidation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "method, kwargs",
+        [
+            ("pop", {"timeout": -1}),
+            ("pop_many", {"timeout": -0.5}),
+            ("dequeue", {"timeout": -1}),
+            ("stream_read", {"group_name": "g", "count": 0}),
+            ("stream_read", {"group_name": "g", "block_ms": -1}),
+            ("stream_read_and_ack", {"group_name": "g", "count": 0}),
+            (
+                "stream_claim_pending",
+                {"group_name": "g", "consumer_id": "c", "count": 0},
+            ),
+            (
+                "stream_claim_pending",
+                {"group_name": "g", "consumer_id": "c", "min_idle_ms": -1},
+            ),
+            ("stream_trim", {"max_len": -1}),
+            ("stream_append", {"record": "r", "max_len": -1}),
+        ],
+    )
+    async def test_invalid_arguments_rejected_before_reaching_backend(
+        self, model, backend, method, kwargs
+    ):
+        with pytest.raises(ValueError):
+            await getattr(model, method)(**kwargs)
+        for name in ("pop", "pop_many", "dequeue", "stream_read", "stream_trim"):
+            getattr(backend, name).assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_push_requires_an_instance(self, model, backend):
+        with pytest.raises(ValueError):
+            await model.push()
+        backend.push.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_zero_timeout_and_block_ms_remain_valid(self, model, backend):
+        backend.pop.return_value = None
+        await model.pop(timeout=0)
+        await model.stream_read("g", block_ms=0)
+        backend.pop.assert_awaited_once()
+        backend.stream_read.assert_awaited_once()

@@ -30,9 +30,11 @@ import pytest
 # Imports
 # ---------------------------------------------------------------------------
 
+
 def _import_mixin_and_types():
     """Try common module paths for the external-comm mixin."""
     import importlib
+
     candidates = [
         "volnux.mixins._external_communication",
         "volnux.mixins.external_communication",
@@ -49,6 +51,7 @@ def _import_mixin_and_types():
     # Fallback: maybe it lives inside volnux.mixins.event
     try:
         from volnux.mixins.event import ExternalCommunicationMixin, ExternalCommunicationType  # type: ignore
+
         return ExternalCommunicationMixin, ExternalCommunicationType
     except ImportError:
         pass
@@ -61,6 +64,7 @@ def _import_mixin_and_types():
 # ---------------------------------------------------------------------------
 # communicate — default no-op
 # ---------------------------------------------------------------------------
+
 
 class TestCommunicate:
 
@@ -79,15 +83,23 @@ class TestCommunicate:
 # Shared helpers for the three suspension methods
 # ---------------------------------------------------------------------------
 
+
 def _set_phase(event, phase_name: str):
-    """Helper: set event._phase to a named EventPhase."""
+    """Helper: put the event inside the named phase's step.
+
+    The guards check ``_active_phase`` (the phase being executed right now), not
+    ``_phase`` (the last phase that completed): ``phase_step`` only advances
+    ``_phase`` after a step returns, i.e. after communicate() is already over.
+    """
     from volnux.execution.rehydrator.event.snapshot import EventPhase
-    event._phase = EventPhase[phase_name]
+
+    event._active_phase = EventPhase[phase_name]
 
 
 # ---------------------------------------------------------------------------
 # wait_for_condition
 # ---------------------------------------------------------------------------
+
 
 class TestWaitForCondition:
 
@@ -112,6 +124,7 @@ class TestWaitForCondition:
     @pytest.mark.asyncio
     async def test_enqueues_checkpoint_before_suspending(self, event):
         from volnux.exceptions import ExternalCommunicationSuspensionRequest
+
         _set_phase(event, "COMMUNICATING")
         with patch.object(event, "enqueue_checkpoint", new=AsyncMock()) as mock_enqueue:
             with pytest.raises(ExternalCommunicationSuspensionRequest):
@@ -124,6 +137,7 @@ class TestWaitForCondition:
     @pytest.mark.asyncio
     async def test_raises_external_communication_suspension_request(self, event):
         from volnux.exceptions import ExternalCommunicationSuspensionRequest
+
         _, ExternalCommunicationType = _import_mixin_and_types()
         _set_phase(event, "COMMUNICATING")
         cond = lambda: True  # noqa: E731
@@ -151,6 +165,7 @@ class TestWaitForCondition:
     @pytest.mark.asyncio
     async def test_request_id_is_unique_uuid(self, event):
         from volnux.exceptions import ExternalCommunicationSuspensionRequest
+
         _set_phase(event, "COMMUNICATING")
 
         ids = []
@@ -174,6 +189,7 @@ class TestWaitForCondition:
         """title is required, but description defaults to "",
         timeout_hours to None, poll_interval_seconds to 30.0."""
         from volnux.exceptions import ExternalCommunicationSuspensionRequest
+
         _set_phase(event, "COMMUNICATING")
 
         with patch.object(event, "enqueue_checkpoint", new=AsyncMock()):
@@ -193,6 +209,7 @@ class TestWaitForCondition:
 # wait_for_event
 # ---------------------------------------------------------------------------
 
+
 class TestWaitForEvent:
 
     @pytest.mark.asyncio
@@ -208,6 +225,7 @@ class TestWaitForEvent:
     @pytest.mark.asyncio
     async def test_enqueues_checkpoint_before_suspending(self, event):
         from volnux.exceptions import ExternalCommunicationSuspensionRequest
+
         _set_phase(event, "COMMUNICATING")
         with patch.object(event, "enqueue_checkpoint", new=AsyncMock()) as mock_enqueue:
             with pytest.raises(ExternalCommunicationSuspensionRequest):
@@ -221,6 +239,7 @@ class TestWaitForEvent:
     @pytest.mark.asyncio
     async def test_raises_external_communication_suspension_request(self, event):
         from volnux.exceptions import ExternalCommunicationSuspensionRequest
+
         _, ExternalCommunicationType = _import_mixin_and_types()
         _set_phase(event, "COMMUNICATING")
 
@@ -247,6 +266,7 @@ class TestWaitForEvent:
     @pytest.mark.asyncio
     async def test_event_filter_defaults_to_empty_dict(self, event):
         from volnux.exceptions import ExternalCommunicationSuspensionRequest
+
         _set_phase(event, "COMMUNICATING")
 
         with patch.object(event, "enqueue_checkpoint", new=AsyncMock()):
@@ -262,6 +282,7 @@ class TestWaitForEvent:
     @pytest.mark.asyncio
     async def test_timeout_hours_defaults_to_none(self, event):
         from volnux.exceptions import ExternalCommunicationSuspensionRequest
+
         _set_phase(event, "COMMUNICATING")
 
         with patch.object(event, "enqueue_checkpoint", new=AsyncMock()):
@@ -279,6 +300,7 @@ class TestWaitForEvent:
 # request_human_input
 # ---------------------------------------------------------------------------
 
+
 class TestRequestHumanInput:
 
     @pytest.mark.asyncio
@@ -294,6 +316,7 @@ class TestRequestHumanInput:
     @pytest.mark.asyncio
     async def test_enqueues_checkpoint_before_suspending(self, event):
         from volnux.exceptions import ExternalCommunicationSuspensionRequest
+
         _set_phase(event, "COMMUNICATING")
         with patch.object(event, "enqueue_checkpoint", new=AsyncMock()) as mock_enqueue:
             with pytest.raises(ExternalCommunicationSuspensionRequest):
@@ -307,6 +330,7 @@ class TestRequestHumanInput:
     @pytest.mark.asyncio
     async def test_raises_external_communication_suspension_request(self, event):
         from volnux.exceptions import ExternalCommunicationSuspensionRequest
+
         _, ExternalCommunicationType = _import_mixin_and_types()
         _set_phase(event, "COMMUNICATING")
 
@@ -334,6 +358,7 @@ class TestRequestHumanInput:
     @pytest.mark.asyncio
     async def test_options_default_to_none(self, event):
         from volnux.exceptions import ExternalCommunicationSuspensionRequest
+
         _set_phase(event, "COMMUNICATING")
 
         with patch.object(event, "enqueue_checkpoint", new=AsyncMock()):
@@ -350,6 +375,7 @@ class TestRequestHumanInput:
     async def test_timeout_hours_defaults_to_24(self, event):
         """Default timeout_hours is 24 per source signature."""
         from volnux.exceptions import ExternalCommunicationSuspensionRequest
+
         _set_phase(event, "COMMUNICATING")
 
         with patch.object(event, "enqueue_checkpoint", new=AsyncMock()):

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 from volnux.config import VolnuxConfig
 from volnux.constants import MAX_BACKOFF, MAX_BACKOFF_FACTOR, MAX_RETRIES
-from volnux.exceptions import MaxRetryError
+from volnux.exceptions import CONTROL_FLOW_EXCEPTIONS, MaxRetryError
 from volnux.signal.signals import event_execution_retry, event_execution_retry_done
 from volnux.mixins.protocols.event import BaseEvent as _BaseEvent
 
@@ -126,14 +126,12 @@ class RetryMixin:
     def is_retryable(self, exception: Exception) -> bool:
         if self.retry_policy is None:
             return False
-        exception_evaluation = not self.retry_policy.retry_on_exceptions or any(
-            [
-                isinstance(exception, exc)
-                and exception.__class__.__name__ == exc.__name__
-                for exc in self.retry_policy.retry_on_exceptions
-                if exc
-            ]
-        )
+        if isinstance(exception, CONTROL_FLOW_EXCEPTIONS):
+            return False  # goto(), stop, suspend and bypass are not failures
+        configured = tuple(e for e in self.retry_policy.retry_on_exceptions if e)
+        # isinstance() already handles subclasses: retrying on OSError must also
+        # retry FileNotFoundError.
+        exception_evaluation = not configured or isinstance(exception, configured)
         return isinstance(exception, Exception) and exception_evaluation
 
     def is_exhausted(self: _BaseEvent) -> bool:
@@ -201,12 +199,13 @@ class RetryMixin:
                 self._retry_count += 1
                 return await func(*args, **kwargs)
             except MaxRetryError:
-                # ignore this
+                # The callable exhausted its own retries: stop here and report
+                # a plain failure (a documented contract; see test_retry_mixin).
                 break
             except Exception as exc:
                 if self.is_retryable(exc):
-                    if exception_causing_retry is None:
-                        exception_causing_retry = exc
+                    # Keep the LAST error: it is the one that finally gave up.
+                    exception_causing_retry = exc
                     back_off = await self._sleep_for_backoff()
 
                     await event_execution_retry.emit_async(

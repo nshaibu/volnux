@@ -34,6 +34,26 @@ T = TypeVar("T", bound="MessagingBackendIntegrationMixin")
 
 RecordCallback = Callable[[T], Union[Awaitable[None], None]]
 
+# Called with (exception, record) when a subscriber callback raises.
+ErrorCallback = Callable[[BaseException, Any], Union[Awaitable[None], None]]
+
+
+def _check_timeout(timeout: Optional[float]) -> None:
+    """Reject negative timeouts for every backend.
+
+    Without this the backends disagree: Redis raises, the in-memory store
+    treated a negative timeout as "already expired".
+    """
+    if timeout is not None and timeout < 0:
+        raise ValueError(f"timeout must be None or >= 0, got {timeout!r}")
+
+
+def _check_positive(name: str, value: Optional[int], allow_none: bool = False) -> None:
+    if value is None and allow_none:
+        return
+    if value is None or value < 1:
+        raise ValueError(f"{name} must be >= 1, got {value!r}")
+
 
 class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     """
@@ -74,6 +94,8 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         cls: Type[T],
         backend: "PubSubCapabilityMixin",
         callback: RecordCallback,
+        *,
+        on_error: Optional[ErrorCallback] = None,
     ) -> None:
         """
         Subscribes to the model's channel and invokes ``callback`` with each received record.
@@ -81,10 +103,15 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         Runs until the subscription ends (connection closed) or the calling task is cancelled.
 
         :param callback: Sync or async callable invoked with each deserialized record.
+        :param on_error: Optional sync or async callable ``(exception, record)``. When
+            given, an exception raised by ``callback`` is passed to it and the
+            subscription keeps running. When omitted (default), the exception ends
+            the subscription and propagates to the caller.
         """
         await cls._consume(
             backend.subscribe(await cls.get_schema_name(), record_class=cls),
             callback,
+            on_error,
         )
 
     @classmethod
@@ -94,6 +121,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         backend: "PubSubCapabilityMixin",
         *patterns: str,
         callback: RecordCallback,
+        on_error: Optional[ErrorCallback] = None,
     ) -> None:
         """
         Subscribes to the model's channel plus any channels matching ``patterns``
@@ -101,12 +129,14 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
 
         :param patterns: Additional channel patterns to subscribe to.
         :param callback: Sync or async callable invoked with each deserialized record.
+        :param on_error: Same as in ``subscribe``.
         """
         # Ordered de-duplication keeps the subscription order deterministic
         pattern_list = list(dict.fromkeys([await cls.get_schema_name(), *patterns]))
         await cls._consume(
             backend.psubscribe(*pattern_list, record_class=cls),
             callback,
+            on_error,
         )
 
     @classmethod
@@ -114,10 +144,19 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         cls,
         subscription: "AsyncSubscriptionContext",
         callback: RecordCallback,
+        on_error: Optional[ErrorCallback] = None,
     ) -> None:
         async with subscription as messages:
             async for message in messages:
-                await as_coroutine(callback, message.data)
+                try:
+                    await as_coroutine(callback, message.data)
+                except Exception as exc:  # CancelledError is a BaseException
+                    if on_error is None:
+                        raise
+                    logger.warning(
+                        "Subscriber callback failed for %s: %s", cls.__name__, exc
+                    )
+                    await as_coroutine(on_error, exc, message.data)
 
     # Push/Pop queues
 
@@ -136,6 +175,8 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         :param side: The end of the queue to push to (default: tail).
         :return: The length of the queue after the push.
         """
+        if not instances:
+            raise ValueError("push() requires at least one instance")
         return await backend.push(
             await cls.get_schema_name(),
             *instances,
@@ -158,7 +199,9 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
             returns ``None`` immediately if the queue is empty; ``0`` waits indefinitely.
         :param side: The end of the queue to pop from (default: head).
         :return: The item removed from the queue, or ``None`` if none was available.
+        :raises ValueError: If ``timeout`` is negative.
         """
+        _check_timeout(timeout)
         return await backend.pop(
             await cls.get_schema_name(),
             record_class=cls,
@@ -184,7 +227,9 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         :param timeout: Seconds to wait for the FIRST item (same semantics as ``pop``).
         :param side: The end of the queue to pop from (default: head).
         :return: The items removed, in pop order. Empty if no item arrived in time.
+        :raises ValueError: If ``timeout`` is negative.
         """
+        _check_timeout(timeout)
         return await backend.pop_many(
             await cls.get_schema_name(),
             record_class=cls,
@@ -217,7 +262,9 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         :param timeout: Same semantics as ``pop``: ``None`` does not wait, ``0`` waits
             indefinitely, ``> 0`` waits at most that many seconds.
         :return: The dequeued item, or ``None`` if none was available.
+        :raises ValueError: If ``timeout`` is negative.
         """
+        _check_timeout(timeout)
         return await backend.dequeue(
             await cls.get_schema_name(),
             record_class=cls,
@@ -268,7 +315,10 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         """Appends a record to the model's append-only stream log.
 
         :return: The backend-assigned entry ID.
+        :raises ValueError: If ``max_len`` is negative.
         """
+        if max_len is not None and max_len < 0:
+            raise ValueError(f"max_len must be None or >= 0, got {max_len!r}")
         return await backend.stream_append(
             stream_key=await cls.get_schema_name(),
             record=record,
@@ -301,7 +351,12 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         count: int = 1,
         block_ms: Optional[int] = 5000,
     ) -> List[StreamEntry[T]]:
-        """Reads undelivered entries from the stream for a consumer group."""
+        """Reads undelivered entries from the stream for a consumer group.
+
+        :raises ValueError: If ``count`` is below 1 or ``block_ms`` is negative.
+        """
+        _check_positive("count", count)
+        _check_timeout(block_ms)
         return await backend.stream_read(
             stream_key=await cls.get_schema_name(),
             group_name=group_name,
@@ -336,7 +391,12 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         min_idle_ms: int = 30_000,
         count: int = 100,
     ) -> List[StreamEntry[T]]:
-        """Claims orphaned pending stream entries from crashed workers."""
+        """Claims orphaned pending stream entries from crashed workers.
+
+        :raises ValueError: If ``min_idle_ms`` is negative or ``count`` is below 1.
+        """
+        _check_timeout(min_idle_ms)
+        _check_positive("count", count)
         return await backend.stream_claim_pending(
             stream_key=await cls.get_schema_name(),
             group_name=group_name,
@@ -366,7 +426,10 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         :param max_len: Maximum entries to retain.
         :param approximate: If True, allows performance-optimized approximate trimming.
         :return: Total number of evicted entries.
+        :raises ValueError: If ``max_len`` is negative.
         """
+        if max_len < 0:
+            raise ValueError(f"max_len must be >= 0, got {max_len!r}")
         return await backend.stream_trim(
             stream_key=await cls.get_schema_name(),
             max_len=max_len,
@@ -397,7 +460,10 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         :param count: Maximum batch size to retrieve.
         :param block_ms: Block time in milliseconds.
         :return: List of deserialized model instances directly.
+        :raises ValueError: If ``count`` is below 1 or ``block_ms`` is negative.
         """
+        _check_positive("count", count)
+        _check_timeout(block_ms)
         return await backend.stream_read_and_ack(
             stream_key=await cls.get_schema_name(),
             group_name=group_name,

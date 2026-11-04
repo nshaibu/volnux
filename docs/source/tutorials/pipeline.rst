@@ -20,10 +20,10 @@ This basic structure serves as the foundation for your pipeline. Next, we'll add
 Defining Input Fields
 ~~~~~~~~~~~~~~~~~~~~~
 
-Input fields define the data that flows through your pipeline. The ``volnux.fields`` module provides field types to specify data requirements::
+Input fields define the data that flows through your pipeline. The ``volnux.execution.pipeline.fields`` module provides field types to specify data requirements::
 
     from volnux import Pipeline
-    from volnux.fields import InputDataField
+    from volnux.execution.pipeline.fields import InputDataField
 
     class MyPipeline(Pipeline):
         # Define input fields as class attributes
@@ -245,7 +245,7 @@ Complete Example: Document Processing Pipeline
 Let's put everything together with a complete example of a document processing pipeline::
 
     from volnux import Pipeline
-    from volnux.fields import InputDataField
+    from volnux.execution.pipeline.fields import InputDataField
 
     class DocumentProcessingPipeline(Pipeline):
         """Pipeline for processing document files."""

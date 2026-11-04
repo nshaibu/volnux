@@ -135,9 +135,7 @@ class GovernanceEventPublisher:
         try:
             await self._sink(event)
         except Exception:  # noqa: BLE001 - one bad event must not kill delivery
-            logger.exception(
-                "Failed to publish governance event %s", event.event_type
-            )
+            logger.exception("Failed to publish governance event %s", event.event_type)
 
     def stop(self, *, timeout: float = 5.0) -> None:
         """Signal the thread to flush the buffer and stop. Idempotent."""

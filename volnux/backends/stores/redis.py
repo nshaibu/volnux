@@ -48,6 +48,8 @@ class RedisStoreBackend(
 
     NAMESPACE_SEPARATOR = ":"
 
+    supports_cross_process = True
+
     connector_klass = RedisConnector
 
     #  Number of items to fetch per HSCAN iteration

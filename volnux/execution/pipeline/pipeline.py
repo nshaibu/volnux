@@ -1,5 +1,6 @@
 import copy
 import functools
+import asyncio
 import inspect
 import logging
 import os
@@ -31,7 +32,7 @@ from volnux.exceptions import (
     PointyNotExecutable,
 )
 from volnux.execution.status import ExecutionStatus
-from volnux.fields import InputDataField
+from .fields import InputDataField
 from volnux.import_utils import import_string
 from volnux.mixins import ObjectIdentityMixin
 from volnux.parser.operator import PipeType
@@ -271,7 +272,12 @@ class PipelineMeta(type):
         if not parents:
             return super().__new__(cls, name, bases, namespace)
 
-        input_data_fields = OrderedDict(
+        # Fields are inherited from Pipeline parents (oldest base first); a
+        # field declared on the subclass replaces the parent's of the same name.
+        input_data_fields: "OrderedDict[str, InputDataField]" = OrderedDict()
+        for parent in reversed(parents):
+            input_data_fields.update(getattr(parent, PIPELINE_FIELDS, {}))
+        input_data_fields.update(
             (f_name, f)
             for f_name, f in namespace.items()
             if isinstance(f, InputDataField)
@@ -375,6 +381,11 @@ class Pipeline(ObjectIdentityMixin, InternalMetadataMixin, metaclass=PipelineMet
 
         self.execution_context: typing.Optional[ExecutionContext] = None
 
+        # Run control (see pause()/resume()/stop()). The gate exists only while
+        # the pipeline is paused, so a resting pipeline stays picklable.
+        self._stop_requested: bool = False
+        self._run_gate: typing.Optional[asyncio.Event] = None
+
         super().__init__()
 
         pipeline_post_init.emit(sender=self.__class__, pipeline=self)
@@ -459,6 +470,8 @@ class Pipeline(ObjectIdentityMixin, InternalMetadataMixin, metaclass=PipelineMet
             )
 
         self.execution_context = None
+        self._stop_requested = False
+        self._run_gate = None
 
         pipeline_state = self.get_pipeline_state()
         await run_workflow(pipeline_state.start, pipeline=self)
@@ -509,17 +522,47 @@ class Pipeline(ObjectIdentityMixin, InternalMetadataMixin, metaclass=PipelineMet
             execution_context=self.execution_context,
         )
 
+    def _release_run_gate(self) -> None:
+        gate, self._run_gate = self._run_gate, None
+        if gate is not None:
+            gate.set()
+
+    async def pause(self) -> int:
+        """Hold the run: tasks stop before their next step and no new task is
+        dispatched until ``resume()``.
+
+        A task cannot be interrupted in the middle of ``process()``; it holds at
+        the next step boundary. Returns how many running tasks were told to hold.
+        """
+        if self._run_gate is None:
+            self._run_gate = asyncio.Event()  # cleared: the engine waits on it
+        if not self.execution_context:
+            return 0
+        return await self.execution_context.get_latest_context().pause_tasks()
+
+    async def resume(self) -> int:
+        """Release a run held by ``pause()``. Returns how many tasks resumed."""
+        self._release_run_gate()
+        if not self.execution_context:
+            return 0
+        return await self.execution_context.get_latest_context().resume_tasks()
+
     async def stop(self) -> None:
         """
         Cancel the pipeline's active execution asynchronously.
 
-        Marks the latest execution context as cancelled and emits
-        ``pipeline_stop``. Async because ``cancel()`` may be a coroutine.
+        Running tasks are sent a CANCEL command through their control channel,
+        the latest execution context is marked cancelled and ``pipeline_stop``
+        is emitted. A paused run is released so it can wind down.
         """
+        self._stop_requested = True
+        self._release_run_gate()
         if not self.execution_context:
             return
         latest_context = self.execution_context.get_latest_context()
-        if hasattr(latest_context, "cancel"):
+        if hasattr(latest_context, "cancel_async"):
+            await latest_context.cancel_async()
+        elif hasattr(latest_context, "cancel"):
             result = latest_context.cancel()
             if inspect.isawaitable(result):
                 await result

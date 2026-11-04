@@ -196,7 +196,7 @@ def test_load_from_environment_variable_and_override_manually(monkeypatch, cfg):
     cfg.load_from_environ()
     assert cfg.get("API_URL") == "from-env"
 
-    cfg.add("API_URL", "from-store") # overridden
+    cfg.add("API_URL", "from-store")  # overridden
 
     assert cfg.get("API_URL") == "from-store"
 

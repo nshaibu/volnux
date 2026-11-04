@@ -149,7 +149,9 @@ class TestMonitoring:
         task = MagicMock(spec=PipelineTask)
         task.options = None
         task.condition_node = MagicMock()
-        context = ExecutionContext(task_profiles=task, pipeline=MagicMock(spec=Pipeline))
+        context = ExecutionContext(
+            task_profiles=task, pipeline=MagicMock(spec=Pipeline)
+        )
 
         with patch.object(ExecutionContext, "save", new=AsyncMock()) as save:
             manager.monitor(context)

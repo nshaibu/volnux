@@ -43,6 +43,7 @@ import pytest
 # Imports
 # ---------------------------------------------------------------------------
 
+
 def _import_mixin():
     """Try common module paths for the checkpointing mixin."""
     candidates = [
@@ -51,6 +52,7 @@ def _import_mixin():
         "volnux.mixins.event_checkpointing",
     ]
     import importlib
+
     last_err = None
     for path in candidates:
         try:
@@ -70,6 +72,7 @@ def _import_mixin():
 # _process_result_tuple
 # ---------------------------------------------------------------------------
 
+
 class TestProcessResultTuple:
     def test_valid_tuple_returns_unchanged(self):
         mod = _import_mixin()
@@ -79,6 +82,7 @@ class TestProcessResultTuple:
     def test_event_result_is_unwrapped_to_success_and_self(self):
         mod = _import_mixin()
         from volnux.result import EventResult
+
         er = EventResult(error=False, content={"k": "v"}, task_id="t1", event_name="E")
         success, returned = mod.EventCheckpointingMixin._process_result_tuple(er)
         assert success is False  # EventResult.success property
@@ -109,6 +113,7 @@ class TestProcessResultTuple:
 # _get_steps
 # ---------------------------------------------------------------------------
 
+
 class TestGetSteps:
     def test_get_steps_returns_six_lifecycle_methods(self, event):
         steps = event._get_steps()
@@ -136,6 +141,7 @@ class TestGetSteps:
 
     def test_each_step_has_phase_attribute(self, event):
         from volnux.execution.rehydrator.event.snapshot import EventPhase
+
         steps = event._get_steps()
         expected_phases = [
             EventPhase.INITIALIZED,
@@ -152,6 +158,7 @@ class TestGetSteps:
 # ---------------------------------------------------------------------------
 # _process_wrapper
 # ---------------------------------------------------------------------------
+
 
 class TestProcessWrapper:
     @pytest.mark.asyncio
@@ -198,6 +205,7 @@ class TestProcessWrapper:
     @pytest.mark.asyncio
     async def test_event_result_returned_unchanged(self, event):
         from volnux.result import EventResult
+
         er = EventResult(error=False, content={"k": "v"}, task_id="t1", event_name="E")
 
         async def _proc(*args, **kwargs):
@@ -226,6 +234,7 @@ class TestProcessWrapper:
 # enqueue_checkpoint
 # ---------------------------------------------------------------------------
 
+
 class TestEnqueueCheckpoint:
 
     @pytest.mark.asyncio
@@ -247,7 +256,9 @@ class TestEnqueueCheckpoint:
     async def test_calls_manager_enqueue_with_snapshot(self, event, checkpoint_manager):
         event.checkpoint_manager = checkpoint_manager
         sentinel_snapshot = MagicMock(name="snapshot")
-        with patch.object(event, "create_snapshot", new=AsyncMock(return_value=sentinel_snapshot)):
+        with patch.object(
+            event, "create_snapshot", new=AsyncMock(return_value=sentinel_snapshot)
+        ):
             await event.enqueue_checkpoint()
             checkpoint_manager.enqueue.assert_called_once_with(sentinel_snapshot)
 
@@ -258,7 +269,9 @@ class TestEnqueueCheckpoint:
         event.checkpoint_manager = checkpoint_manager
         # Make sure CHECKPOINT_REQUIRED is off
         volnux_config_stub.set("CHECKPOINT_REQUIRED", False)
-        with patch.object(event, "create_snapshot", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        with patch.object(
+            event, "create_snapshot", new=AsyncMock(side_effect=RuntimeError("boom"))
+        ):
             # Should not raise — error is logged, not propagated
             await event.enqueue_checkpoint()
 
@@ -268,7 +281,9 @@ class TestEnqueueCheckpoint:
     ):
         event.checkpoint_manager = checkpoint_manager
         volnux_config_stub.set("CHECKPOINT_REQUIRED", True)
-        with patch.object(event, "create_snapshot", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        with patch.object(
+            event, "create_snapshot", new=AsyncMock(side_effect=RuntimeError("boom"))
+        ):
             with pytest.raises(RuntimeError, match="boom"):
                 await event.enqueue_checkpoint()
 
@@ -276,6 +291,7 @@ class TestEnqueueCheckpoint:
 # ---------------------------------------------------------------------------
 # create_snapshot
 # ---------------------------------------------------------------------------
+
 
 class TestCreateSnapshot:
     @pytest.mark.asyncio
@@ -296,6 +312,7 @@ class TestCreateSnapshot:
 # _process (phase-stepped)
 # ---------------------------------------------------------------------------
 
+
 class TestProcess:
 
     @pytest.mark.asyncio
@@ -304,7 +321,8 @@ class TestProcess:
         going through _retry, sets exec_status/exec_result."""
         event.retry_policy = None
         with patch.object(
-            event, "_process_wrapper",
+            event,
+            "_process_wrapper",
             new=AsyncMock(return_value=(True, {"ok": True})),
         ) as mock_pw:
             await event._process()
@@ -315,12 +333,16 @@ class TestProcess:
     @pytest.mark.asyncio
     async def test_retry_policy_with_success(self, event):
         from volnux.mixins.event import RetryPolicy
+
         event.retry_policy = RetryPolicy(max_attempts=3)
         with patch.object(
-            event, "_process_wrapper",
+            event,
+            "_process_wrapper",
             new=AsyncMock(return_value=(True, {"ok": True})),
         ):
-            with patch.object(event, "_retry", new=AsyncMock(return_value=(True, {"ok": True}))) as mock_retry:
+            with patch.object(
+                event, "_retry", new=AsyncMock(return_value=(True, {"ok": True}))
+            ) as mock_retry:
                 await event._process()
                 mock_retry.assert_awaited_once()
                 assert event.exec_status is True
@@ -330,6 +352,7 @@ class TestProcess:
     async def test_retry_policy_with_max_retry_error_sets_failure(self, event):
         from volnux.mixins.event import RetryPolicy
         from volnux.exceptions import MaxRetryError
+
         event.retry_policy = RetryPolicy(max_attempts=2)
         inner = ValueError("the cause")
         max_retry = MaxRetryError(attempt=2, exception=inner, reason="exhausted")
@@ -341,8 +364,11 @@ class TestProcess:
     @pytest.mark.asyncio
     async def test_retry_policy_with_generic_exception_sets_failure(self, event):
         from volnux.mixins.event import RetryPolicy
+
         event.retry_policy = RetryPolicy(max_attempts=2)
-        with patch.object(event, "_retry", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        with patch.object(
+            event, "_retry", new=AsyncMock(side_effect=RuntimeError("boom"))
+        ):
             await event._process()
             assert event.exec_status is False
             assert isinstance(event.exec_result, RuntimeError)
@@ -353,6 +379,7 @@ class TestProcess:
         an error (only isinstance check), and it should propagate."""
         from volnux.mixins.event import RetryPolicy
         from volnux.exceptions import SwitchTask
+
         event.retry_policy = RetryPolicy(max_attempts=2)
         sentinel_exc = SwitchTask(
             current_task_id="t1", next_task_descriptor=2, result=None, reason="manual"
@@ -372,6 +399,7 @@ class TestProcess:
 # _pre_process (phase-stepped)
 # ---------------------------------------------------------------------------
 
+
 class TestPreProcess:
     @pytest.mark.asyncio
     async def test_bypass_not_implemented_returns_silently(self, event):
@@ -385,6 +413,7 @@ class TestPreProcess:
     @pytest.mark.asyncio
     async def test_bypass_returning_none_raises_empty_result_error(self, event):
         from volnux.exceptions import EmptyResultError
+
         with patch.object(event, "bypass", new=AsyncMock(return_value=None)):
             with pytest.raises(EmptyResultError):
                 await event._pre_process()
@@ -392,7 +421,10 @@ class TestPreProcess:
     @pytest.mark.asyncio
     async def test_bypass_returning_valid_tuple_raises_skip_execution(self, event):
         from volnux.exceptions import SkipExecutionError
-        with patch.object(event, "bypass", new=AsyncMock(return_value=(True, {"skipped": True}))):
+
+        with patch.object(
+            event, "bypass", new=AsyncMock(return_value=(True, {"skipped": True}))
+        ):
             with pytest.raises(SkipExecutionError):
                 await event._pre_process()
             # exec_status / exec_result should have been set BEFORE the raise
@@ -422,7 +454,9 @@ class TestPreProcess:
             assert event.exec_result == "skipped due to rule"
 
     async def test_bypass_with_unhandled_exception_propagates(self, event):
-        with patch.object(event, "bypass", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        with patch.object(
+            event, "bypass", new=AsyncMock(side_effect=RuntimeError("boom"))
+        ):
             with pytest.raises(RuntimeError, match="boom"):
                 await event._pre_process()
 
@@ -430,6 +464,7 @@ class TestPreProcess:
 # ---------------------------------------------------------------------------
 # _post_process (phase-stepped)
 # ---------------------------------------------------------------------------
+
 
 class TestPostProcess:
     def test_calls_on_success_when_exec_status_true(self, event):
@@ -459,6 +494,7 @@ class TestPostProcess:
 # _completed (phase-stepped)
 # ---------------------------------------------------------------------------
 
+
 class TestCompleted:
 
     @pytest.mark.asyncio
@@ -472,8 +508,11 @@ class TestCompleted:
     @pytest.mark.asyncio
     async def test_swallows_cleanup_exception(self, event, caplog):
         import logging
+
         event._external_resources = {}
-        with patch.object(event, "cleanup", new=AsyncMock(side_effect=RuntimeError("cleanup boom"))):
+        with patch.object(
+            event, "cleanup", new=AsyncMock(side_effect=RuntimeError("cleanup boom"))
+        ):
             with caplog.at_level(logging.ERROR):
                 # Should not raise
                 result = await event._completed()
@@ -560,6 +599,7 @@ class TestCompleted:
 # acquire_resource
 # ---------------------------------------------------------------------------
 
+
 class TestAcquireResource:
 
     @pytest.mark.asyncio
@@ -586,10 +626,10 @@ class TestAcquireResource:
         }
         # Patch _restore_resource to verify it's called with bind=False
         sentinel = MagicMock(name="restored")
-        with patch.object(event, "_restore_resource", new=AsyncMock(return_value=sentinel)) as mock_restore:
-            result = await event.acquire_resource(
-                "my_resource", _FakeProvider, {}
-            )
+        with patch.object(
+            event, "_restore_resource", new=AsyncMock(return_value=sentinel)
+        ) as mock_restore:
+            result = await event.acquire_resource("my_resource", _FakeProvider, {})
             assert result is sentinel
             mock_restore.assert_awaited_once()
             args, kwargs = mock_restore.call_args
@@ -608,12 +648,16 @@ class TestAcquireResource:
         async def _init_func(args_dict):
             return sentinel_resource
 
-        with patch.object(event, "_register_resource", new=AsyncMock()) as mock_register:
+        with patch.object(
+            event, "_register_resource", new=AsyncMock()
+        ) as mock_register:
             result = await event.acquire_resource(
                 "new_resource", "some.path", {"k": "v"}, init_func=_init_func
             )
             assert result is sentinel_resource
-            mock_register.assert_awaited_once_with("new_resource", sentinel_resource, "some.path")
+            mock_register.assert_awaited_once_with(
+                "new_resource", sentinel_resource, "some.path"
+            )
             event._resource_monitor.start.assert_awaited_once_with(event)
 
     @pytest.mark.asyncio
@@ -626,12 +670,11 @@ class TestAcquireResource:
         def _init_func(args_dict):
             async def _inner():
                 return sentinel
+
             return _inner()
 
         with patch.object(event, "_register_resource", new=AsyncMock()):
-            result = await event.acquire_resource(
-                "x", "p", {}, init_func=_init_func
-            )
+            result = await event.acquire_resource("x", "p", {}, init_func=_init_func)
             assert result is sentinel
 
     @pytest.mark.asyncio
@@ -653,10 +696,10 @@ class TestAcquireResource:
         event._resource_monitor = MagicMock()
         event._resource_monitor.is_started = MagicMock(return_value=True)
 
-        with patch.object(event, "_restore_resource", new=AsyncMock(return_value=sentinel)) as mock_restore:
-            result = await event.acquire_resource(
-                "x", _FakeProvider, {"k": "v"}
-            )
+        with patch.object(
+            event, "_restore_resource", new=AsyncMock(return_value=sentinel)
+        ) as mock_restore:
+            result = await event.acquire_resource("x", _FakeProvider, {"k": "v"})
             assert result is sentinel
             mock_restore.assert_awaited_once()
             # The ResourceState should have been saved on _external_resources
@@ -666,6 +709,7 @@ class TestAcquireResource:
 # ---------------------------------------------------------------------------
 # sub_phase
 # ---------------------------------------------------------------------------
+
 
 class TestSubPhase:
 
@@ -737,7 +781,8 @@ class TestSubPhase:
         with patch.object(event, "enqueue_checkpoint", new=AsyncMock()):
             with pytest.raises(SubPhaseSuspension):
                 await event.sub_phase(
-                    "block", _init,
+                    "block",
+                    _init,
                     suspend_on=lambda r: True,
                     serialise=lambda r: serialised,
                 )
@@ -762,9 +807,7 @@ class TestSubPhase:
 
         with patch.object(event, "enqueue_checkpoint", new=AsyncMock()):
             with pytest.raises(SubPhaseSuspension):
-                await event.sub_phase(
-                    "block", _init, suspend_on=lambda r: r["pending"]
-                )
+                await event.sub_phase("block", _init, suspend_on=lambda r: r["pending"])
             assert init_called is False  # init_func not re-executed
 
     @pytest.mark.asyncio
@@ -790,12 +833,14 @@ class TestSubPhase:
     async def test_serialise_deserialise_pair(self, event):
         """When both serialise and deserialise are provided, the returned
         value passes through deserialise."""
+
         def _init():
             return "raw-value"
 
         with patch.object(event, "enqueue_checkpoint", new=AsyncMock()):
             result = await event.sub_phase(
-                "block", _init,
+                "block",
+                _init,
                 serialise=lambda r: f"serialised:{r}",
                 deserialise=lambda s: s.replace("serialised:", "deserialised:"),
             )
@@ -807,6 +852,7 @@ class TestSubPhase:
     async def test_timeout_raises_asyncio_timeout_error(self, event):
         """When init_func exceeds the timeout, asyncio.TimeoutError is raised
         and the result is NOT cached."""
+
         async def _slow_init():
             await asyncio.sleep(1.0)
             return {"never": "reached"}
@@ -842,6 +888,7 @@ class TestSubPhase:
 # ---------------------------------------------------------------------------
 # _register_resource
 # ---------------------------------------------------------------------------
+
 
 class TestRegisterResource:
 
@@ -885,7 +932,10 @@ class TestRegisterResource:
 
         await event._register_resource("r", MagicMock(), _FakeProvider)
         state = event._external_resources["r"]
-        assert state["provider_path"] == f"{_FakeProvider.__module__}.{_FakeProvider.__name__}"
+        assert (
+            state["provider_path"]
+            == f"{_FakeProvider.__module__}.{_FakeProvider.__name__}"
+        )
 
     @pytest.mark.asyncio
     async def test_non_resource_provider_raises_type_error(self, event):
@@ -963,15 +1013,21 @@ class TestRegisterResource:
 # _restore_resource
 # ---------------------------------------------------------------------------
 
+
 class TestRestoreResource:
     @pytest.mark.asyncio
     async def test_missing_provider_path_returns_none_with_warning(self, event, caplog):
         import logging
+
         result = await event._restore_resource(
             "r", {"resource_name": "r", "data": {}}, bind=False
         )
         assert result is None
-        assert any("r" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+        assert any(
+            "r" in r.getMessage()
+            for r in caplog.records
+            if r.levelno >= logging.WARNING
+        )
 
     @pytest.mark.asyncio
     async def test_successful_restore_returns_resource(self, event):
@@ -994,7 +1050,8 @@ class TestRestoreResource:
             return_value=_FakeProvider,
         ):
             result = await event._restore_resource(
-                "r", {"resource_name": "r", "provider_path": path, "data": {"k": "v"}},
+                "r",
+                {"resource_name": "r", "provider_path": path, "data": {"k": "v"}},
                 bind=False,
             )
             assert result == sentinel_resource
@@ -1053,6 +1110,7 @@ class TestRestoreResource:
         """ImportError on the provider path is logged but does NOT raise —
         the event continues without the resource."""
         import logging
+
         with patch(
             "volnux.mixins._checkpointing.import_string",
             side_effect=ImportError("no such module"),
@@ -1062,15 +1120,21 @@ class TestRestoreResource:
                     "r", {"provider_path": "no.such.module", "data": {}}, bind=False
                 )
                 assert result is None
-            assert any("r" in r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
+            assert any(
+                "r" in r.getMessage()
+                for r in caplog.records
+                if r.levelno >= logging.ERROR
+            )
 
 
 # ---------------------------------------------------------------------------
 # get_phase
 # ---------------------------------------------------------------------------
 
+
 class TestGetPhase:
     def test_returns_current_phase(self, event):
         from volnux.execution.rehydrator.event.snapshot import EventPhase
+
         # event fixture's _phase was set to INITIALIZED by _setup_event
         assert event.get_phase() == EventPhase.INITIALIZED

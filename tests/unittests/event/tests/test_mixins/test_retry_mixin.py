@@ -32,12 +32,14 @@ import pytest
 # Imports
 # ---------------------------------------------------------------------------
 
+
 def _import_retry():
     from volnux.mixins.event import (
         RetryMixin,
         RetryPolicy,
         RetryConfigDict,
     )
+
     return RetryMixin, RetryPolicy, RetryConfigDict
 
 
@@ -45,10 +47,12 @@ def _import_retry():
 # RetryPolicy dataclass
 # ---------------------------------------------------------------------------
 
+
 class TestRetryPolicyDefaults:
     def test_default_max_attempts(self):
         _, RetryPolicy, _ = _import_retry()
         from volnux.constants import MAX_RETRIES
+
         # Defaults come from conf.get(...) which the stub returns default for.
         # So max_attempts default should be MAX_RETRIES.
         p = RetryPolicy()
@@ -57,12 +61,14 @@ class TestRetryPolicyDefaults:
     def test_default_backoff_factor(self):
         _, RetryPolicy, _ = _import_retry()
         from volnux.constants import MAX_BACKOFF_FACTOR
+
         p = RetryPolicy()
         assert p.backoff_factor == MAX_BACKOFF_FACTOR
 
     def test_default_max_backoff(self):
         _, RetryPolicy, _ = _import_retry()
         from volnux.constants import MAX_BACKOFF
+
         p = RetryPolicy()
         assert p.max_backoff == MAX_BACKOFF
 
@@ -88,6 +94,7 @@ class TestRetryPolicyDefaults:
 # ---------------------------------------------------------------------------
 # init_retry
 # ---------------------------------------------------------------------------
+
 
 class TestInitRetry:
     def test_dict_is_converted_to_retry_policy(self):
@@ -130,6 +137,7 @@ class TestInitRetry:
 # ---------------------------------------------------------------------------
 # config_retry_policy
 # ---------------------------------------------------------------------------
+
 
 class TestConfigRetryPolicy:
     def test_builds_retry_policy_with_provided_args(self):
@@ -216,6 +224,7 @@ class TestConfigRetryPolicy:
 # get_backoff_time
 # ---------------------------------------------------------------------------
 
+
 class TestGetBackoffTime:
     def _make_holder(self, retry_policy=None):
         RetryMixin, _, _ = _import_retry()
@@ -234,35 +243,51 @@ class TestGetBackoffTime:
 
     def test_retry_count_zero_returns_zero(self):
         RetryMixin, RetryPolicy, _ = _import_retry()
-        h = self._make_holder(retry_policy=RetryPolicy(max_attempts=3, backoff_factor=1.0))
+        h = self._make_holder(
+            retry_policy=RetryPolicy(max_attempts=3, backoff_factor=1.0)
+        )
         h._retry_count = 0
         assert h.get_backoff_time() == 0
 
     def test_retry_count_one_returns_zero(self):
         """Per source: `self._retry_count <= 1` → 0."""
         RetryMixin, RetryPolicy, _ = _import_retry()
-        h = self._make_holder(retry_policy=RetryPolicy(max_attempts=3, backoff_factor=1.0))
+        h = self._make_holder(
+            retry_policy=RetryPolicy(max_attempts=3, backoff_factor=1.0)
+        )
         h._retry_count = 1
         assert h.get_backoff_time() == 0
 
     def test_retry_count_two_with_factor_one(self):
         """backoff = 1.0 * 2^(2-1) = 2.0"""
         RetryMixin, RetryPolicy, _ = _import_retry()
-        h = self._make_holder(retry_policy=RetryPolicy(max_attempts=5, backoff_factor=1.0, max_backoff=100))
+        h = self._make_holder(
+            retry_policy=RetryPolicy(
+                max_attempts=5, backoff_factor=1.0, max_backoff=100
+            )
+        )
         h._retry_count = 2
         assert h.get_backoff_time() == 2.0
 
     def test_retry_count_three_with_factor_one(self):
         """backoff = 1.0 * 2^(3-1) = 4.0"""
         RetryMixin, RetryPolicy, _ = _import_retry()
-        h = self._make_holder(retry_policy=RetryPolicy(max_attempts=5, backoff_factor=1.0, max_backoff=100))
+        h = self._make_holder(
+            retry_policy=RetryPolicy(
+                max_attempts=5, backoff_factor=1.0, max_backoff=100
+            )
+        )
         h._retry_count = 3
         assert h.get_backoff_time() == 4.0
 
     def test_backoff_capped_at_max_backoff(self):
         """When computed backoff exceeds max_backoff, return max_backoff."""
         RetryMixin, RetryPolicy, _ = _import_retry()
-        h = self._make_holder(retry_policy=RetryPolicy(max_attempts=99, backoff_factor=100.0, max_backoff=30.0))
+        h = self._make_holder(
+            retry_policy=RetryPolicy(
+                max_attempts=99, backoff_factor=100.0, max_backoff=30.0
+            )
+        )
         h._retry_count = 5  # 100 * 2^4 = 1600, capped at 30
         assert h.get_backoff_time() == 30.0
 
@@ -270,6 +295,7 @@ class TestGetBackoffTime:
 # ---------------------------------------------------------------------------
 # _sleep_for_backoff
 # ---------------------------------------------------------------------------
+
 
 class TestSleepForBackoff:
 
@@ -296,7 +322,9 @@ class TestSleepForBackoff:
             pass
 
         h = _Holder()
-        h.retry_policy = RetryPolicy(max_attempts=5, backoff_factor=1.0, max_backoff=100)
+        h.retry_policy = RetryPolicy(
+            max_attempts=5, backoff_factor=1.0, max_backoff=100
+        )
         h._retry_count = 2  # backoff = 2.0
         with patch("volnux.mixins.event.asyncio.sleep", new=AsyncMock()) as mock_sleep:
             result = await h._sleep_for_backoff()
@@ -307,6 +335,7 @@ class TestSleepForBackoff:
 # ---------------------------------------------------------------------------
 # is_retryable
 # ---------------------------------------------------------------------------
+
 
 class TestIsRetryable:
     def test_none_policy_returns_false(self):
@@ -382,6 +411,7 @@ class TestIsRetryable:
 # is_exhausted
 # ---------------------------------------------------------------------------
 
+
 class TestIsExhausted:
     def test_none_policy_returns_true(self):
         RetryMixin, _, _ = _import_retry()
@@ -431,6 +461,7 @@ class TestIsExhausted:
 # _retry
 # ---------------------------------------------------------------------------
 
+
 class TestRetry:
     def _make_holder(self, retry_policy=None):
         RetryMixin, RetryPolicy, _ = _import_retry()
@@ -464,7 +495,9 @@ class TestRetry:
     @pytest.mark.asyncio
     async def test_first_attempt_success_no_retry(self):
         RetryMixin, RetryPolicy, _ = _import_retry()
-        h = self._make_holder(retry_policy=RetryPolicy(max_attempts=3, retry_on_exceptions=[ValueError]))
+        h = self._make_holder(
+            retry_policy=RetryPolicy(max_attempts=3, retry_on_exceptions=[ValueError])
+        )
         call_count = 0
 
         async def _func(*args, **kwargs):
@@ -480,7 +513,11 @@ class TestRetry:
     @pytest.mark.asyncio
     async def test_retryable_then_success(self):
         RetryMixin, RetryPolicy, _ = _import_retry()
-        h = self._make_holder(retry_policy=RetryPolicy(max_attempts=3, retry_on_exceptions=[ValueError], backoff_factor=0.0))
+        h = self._make_holder(
+            retry_policy=RetryPolicy(
+                max_attempts=3, retry_on_exceptions=[ValueError], backoff_factor=0.0
+            )
+        )
         attempt = 0
 
         async def _func(*args, **kwargs):
@@ -500,14 +537,22 @@ class TestRetry:
     @pytest.mark.asyncio
     async def test_exhaustion_raises_max_retry_error(self):
         RetryMixin, RetryPolicy, _ = _import_retry()
-        h = self._make_holder(retry_policy=RetryPolicy(max_attempts=2, retry_on_exceptions=[ValueError], backoff_factor=0.0))
+        h = self._make_holder(
+            retry_policy=RetryPolicy(
+                max_attempts=2, retry_on_exceptions=[ValueError], backoff_factor=0.0
+            )
+        )
 
         async def _func(*args, **kwargs):
             raise ValueError("always fails")
 
         from volnux.exceptions import MaxRetryError
+
         with patch.object(h, "_sleep_for_backoff", new=AsyncMock(return_value=0)):
-            with patch("volnux.signal.signals.event_execution_retry_done.emit_async", new=AsyncMock()):
+            with patch(
+                "volnux.signal.signals.event_execution_retry_done.emit_async",
+                new=AsyncMock(),
+            ):
                 with pytest.raises(MaxRetryError) as exc_info:
                     await h._retry(_func)
                 # The exception carried should be the most recent ValueError
@@ -516,7 +561,9 @@ class TestRetry:
     @pytest.mark.asyncio
     async def test_non_retryable_exception_propagates(self):
         RetryMixin, RetryPolicy, _ = _import_retry()
-        h = self._make_holder(retry_policy=RetryPolicy(max_attempts=5, retry_on_exceptions=[ValueError]))
+        h = self._make_holder(
+            retry_policy=RetryPolicy(max_attempts=5, retry_on_exceptions=[ValueError])
+        )
 
         async def _func(*args, **kwargs):
             raise TypeError("not retryable")
@@ -529,12 +576,16 @@ class TestRetry:
         """When func raises MaxRetryError, _retry catches it and breaks
         out of the loop, returning (False, None)."""
         RetryMixin, RetryPolicy, _ = _import_retry()
-        h = self._make_holder(retry_policy=RetryPolicy(max_attempts=5, retry_on_exceptions=[ValueError]))
+        h = self._make_holder(
+            retry_policy=RetryPolicy(max_attempts=5, retry_on_exceptions=[ValueError])
+        )
 
         from volnux.exceptions import MaxRetryError
 
         async def _func(*args, **kwargs):
-            raise MaxRetryError(attempt=99, exception=ValueError("inner"), reason="inner exhausted")
+            raise MaxRetryError(
+                attempt=99, exception=ValueError("inner"), reason="inner exhausted"
+            )
 
         # Should not raise — MaxRetryError is caught inside the try block
         result = await h._retry(_func)
@@ -543,7 +594,11 @@ class TestRetry:
     @pytest.mark.asyncio
     async def test_emits_event_execution_retry_signal_on_retry(self):
         RetryMixin, RetryPolicy, _ = _import_retry()
-        h = self._make_holder(retry_policy=RetryPolicy(max_attempts=3, retry_on_exceptions=[ValueError], backoff_factor=0.0))
+        h = self._make_holder(
+            retry_policy=RetryPolicy(
+                max_attempts=3, retry_on_exceptions=[ValueError], backoff_factor=0.0
+            )
+        )
 
         attempt = 0
 
@@ -555,21 +610,32 @@ class TestRetry:
             return True, "ok"
 
         with patch.object(h, "_sleep_for_backoff", new=AsyncMock(return_value=0)):
-            with patch("volnux.signal.signals.event_execution_retry.emit_async", new=AsyncMock()) as mock_emit:
+            with patch(
+                "volnux.signal.signals.event_execution_retry.emit_async",
+                new=AsyncMock(),
+            ) as mock_emit:
                 await h._retry(_func)
                 mock_emit.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_emits_event_execution_retry_done_on_exhaustion(self):
         RetryMixin, RetryPolicy, _ = _import_retry()
-        h = self._make_holder(retry_policy=RetryPolicy(max_attempts=2, retry_on_exceptions=[ValueError], backoff_factor=0.0))
+        h = self._make_holder(
+            retry_policy=RetryPolicy(
+                max_attempts=2, retry_on_exceptions=[ValueError], backoff_factor=0.0
+            )
+        )
 
         async def _func(*args, **kwargs):
             raise ValueError("always fails")
 
         with patch.object(h, "_sleep_for_backoff", new=AsyncMock(return_value=0)):
-            with patch("volnux.signal.signals.event_execution_retry_done.emit_async", new=AsyncMock()) as mock_emit:
+            with patch(
+                "volnux.signal.signals.event_execution_retry_done.emit_async",
+                new=AsyncMock(),
+            ) as mock_emit:
                 from volnux.exceptions import MaxRetryError
+
                 with pytest.raises(MaxRetryError):
                     await h._retry(_func)
                 mock_emit.assert_awaited()

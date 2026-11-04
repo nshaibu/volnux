@@ -127,7 +127,7 @@ class TestCommandExecution:
             return None
 
         cursor.blpop.side_effect = slow_blpop
-        await asyncio.gather(*(backend.pop("q", Item, timeout=1) for _ in range(4)))
+        await asyncio.gather(*(backend.pop("q", Item, timeout=0.05) for _ in range(4)))
         assert active["max"] == 1
         assert cursor.blpop.call_count == 4
 
@@ -446,7 +446,7 @@ class TestPop:
     async def test_blocking(self, backend, cursor, side, command):
         getattr(cursor, command).return_value = ("q", payload("1"))
         assert await backend.pop("q", Item, timeout=2, side=side) == Item("1")
-        getattr(cursor, command).assert_called_once_with("q", timeout=2.0)
+        getattr(cursor, command).assert_called_once_with("q", timeout=1.0)  # one slice
 
     @pytest.mark.asyncio
     async def test_blocking_timeout_expired(self, backend, cursor):
@@ -457,7 +457,7 @@ class TestPop:
     async def test_timeout_zero_blocks_indefinitely(self, backend, cursor):
         cursor.blpop.return_value = ("q", payload("1"))
         await backend.pop("q", Item, timeout=0)
-        cursor.blpop.assert_called_once_with("q", timeout=0.0)
+        cursor.blpop.assert_called_once_with("q", timeout=1.0)  # one slice
 
     @pytest.mark.asyncio
     async def test_negative_timeout(self, backend, cursor):
@@ -550,7 +550,7 @@ class TestPopMany:
             "q", Item, limit=2, timeout=3, side=QueueSide.RIGHT
         )
         assert [i.id for i in result] == ["1", "2"]
-        cursor.brpop.assert_called_once_with("q", timeout=3.0)
+        cursor.brpop.assert_called_once_with("q", timeout=1.0)  # one slice
         cursor.rpop.assert_called_once_with("q", 1)
 
     @pytest.mark.asyncio
@@ -864,3 +864,98 @@ class TestTranslateOffset:
         assert translate(StreamOffset.BEGINNING) == "0"
         assert translate(StreamOffset.LATEST) == "$"
         assert translate("5-0") == "5-0"
+
+
+class TestBlockingPopCancellation:
+    """A caller that leaves mid-BLPOP must not cause an item to be dropped."""
+
+    @staticmethod
+    def blocking_cursor(cursor, deliver_after):
+        """blpop that returns an item once `deliver_after` seconds have passed,
+        honouring the slice timeout it is given (like a real server)."""
+        start = time.monotonic()
+        delivered = {"done": False}
+
+        def blpop(key, timeout):
+            while time.monotonic() - start < deliver_after:
+                if time.monotonic() - start + 0.01 > deliver_after:
+                    break
+                time.sleep(0.01)
+                if time.monotonic() - start >= timeout:
+                    return None
+            if delivered["done"]:
+                return None
+            delivered["done"] = True
+            return (key, payload("late"))
+
+        cursor.blpop.side_effect = blpop
+        return delivered
+
+    @pytest.mark.asyncio
+    async def test_item_popped_after_caller_left_is_pushed_back(self, backend, cursor):
+        self.blocking_cursor(cursor, deliver_after=0.3)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(backend.pop("q", Item, timeout=5), 0.1)
+
+        await asyncio.sleep(1.5)  # worker finishes its slice, restore task runs
+        cursor.lpush.assert_called_once_with("q", payload("late"))
+
+    @pytest.mark.asyncio
+    async def test_brpop_item_is_restored_to_the_tail(self, backend, cursor):
+        self.blocking_cursor(cursor, deliver_after=0.3)
+        cursor.brpop.side_effect = cursor.blpop.side_effect
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                backend.pop("q", Item, timeout=5, side=QueueSide.RIGHT), 0.1
+            )
+
+        await asyncio.sleep(1.5)
+        cursor.rpush.assert_called_once_with("q", payload("late"))
+
+    @pytest.mark.asyncio
+    async def test_worker_stops_within_one_slice_after_cancellation(
+        self, backend, cursor
+    ):
+        calls = []
+
+        def blpop(key, timeout):
+            calls.append(timeout)
+            time.sleep(min(timeout, 0.2))
+            return None
+
+        cursor.blpop.side_effect = blpop
+        backend._BLOCKING_SLICE = 0.2
+        task = asyncio.ensure_future(backend.pop("q", Item, timeout=0))  # forever
+        await asyncio.sleep(0.5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        settled = len(calls)
+        await asyncio.sleep(0.6)
+
+        assert len(calls) <= settled + 1  # at most the in-flight slice finishes
+        cursor.lpush.assert_not_called()  # nothing popped, nothing to restore
+
+    @pytest.mark.asyncio
+    async def test_semaphore_slot_held_until_worker_really_finishes(self, cursor):
+        backend = FakeBackend(cursor, pool_size=3)  # limit = 1
+        backend._BLOCKING_SLICE = 0.3
+        cursor.blpop.side_effect = lambda key, timeout: time.sleep(timeout)
+
+        task = asyncio.ensure_future(backend.pop("q", Item, timeout=0))
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert backend._get_blocking_semaphore().locked()  # worker still in its slice
+        await asyncio.sleep(0.6)
+        assert not backend._get_blocking_semaphore().locked()
+
+    @pytest.mark.asyncio
+    async def test_normal_pop_is_unaffected(self, backend, cursor):
+        cursor.blpop.return_value = ("q", payload("1"))
+        assert (await backend.pop("q", Item, timeout=3)) == Item("1")
+        cursor.lpush.assert_not_called()

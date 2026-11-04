@@ -384,7 +384,11 @@ def p_identifier_list(p):
                     | identifier_list SEPARATOR IDENTIFIER
     """
     label = LiteralNode(p[len(p) - 1], type=LiteralType.STRING)
-    p[0] = _IdentifierList([label]) if len(p) == 2 else _IdentifierList(p[1].value + [label])
+    p[0] = (
+        _IdentifierList([label])
+        if len(p) == 2
+        else _IdentifierList(p[1].value + [label])
+    )
 
 
 def p_variable_declaration(p):

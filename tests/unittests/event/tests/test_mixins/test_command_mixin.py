@@ -37,6 +37,7 @@ import pytest
 # Imports
 # ---------------------------------------------------------------------------
 
+
 def _import_mixin_and_types():
     from volnux.mixins.event import EventCommandMixin
     from volnux.flows.bridge.communications.tasks import (
@@ -45,6 +46,7 @@ def _import_mixin_and_types():
         TaskState,
         TaskCommand,
     )
+
     return EventCommandMixin, CommandType, MessageType, TaskState, TaskCommand
 
 
@@ -61,6 +63,7 @@ def _make_command(command_type, payload=None):
 # ---------------------------------------------------------------------------
 # _send_update
 # ---------------------------------------------------------------------------
+
 
 class TestSendUpdate:
 
@@ -90,7 +93,8 @@ class TestSendUpdate:
         _, _, MessageType, TaskState, _ = _import_mixin_and_types()
         event._command_channel = command_channel
         await event._send_update(
-            MessageType.STATUS_UPDATE, TaskState.RUNNING,
+            MessageType.STATUS_UPDATE,
+            TaskState.RUNNING,
             extra={"step": 2, "total": 5},
         )
         sent_msg = command_channel.send_message.call_args.args[0]
@@ -105,6 +109,7 @@ class TestSendUpdate:
         """If channel.send_message raises, _send_update logs but doesn't
         propagate."""
         import logging
+
         _, _, MessageType, TaskState, _ = _import_mixin_and_types()
         command_channel.send_message = AsyncMock(side_effect=RuntimeError("send boom"))
         event._command_channel = command_channel
@@ -118,6 +123,7 @@ class TestSendUpdate:
 # _command_listener
 # ---------------------------------------------------------------------------
 
+
 class TestCommandListener:
 
     @pytest.mark.asyncio
@@ -127,7 +133,9 @@ class TestCommandListener:
         await event._command_listener()
 
     @pytest.mark.asyncio
-    async def test_with_channel_loops_and_handles_commands(self, event, command_channel):
+    async def test_with_channel_loops_and_handles_commands(
+        self, event, command_channel
+    ):
         """The listener polls receive_command and calls _handle_command."""
         # Make receive_command yield one command then raise CancelledError
         sentinel_cmd = MagicMock(name="command")
@@ -142,7 +150,9 @@ class TestCommandListener:
             mock_handle.assert_awaited_once_with(sentinel_cmd)
 
     @pytest.mark.asyncio
-    async def test_timeout_is_swallowed_and_loop_continues(self, event, command_channel):
+    async def test_timeout_is_swallowed_and_loop_continues(
+        self, event, command_channel
+    ):
         """asyncio.TimeoutError from receive_command is swallowed; loop
         continues until cancelled."""
         sentinel_cmd = MagicMock(name="command")
@@ -163,9 +173,12 @@ class TestCommandListener:
             mock_handle.assert_awaited_once_with(sentinel_cmd)
 
     @pytest.mark.asyncio
-    async def test_unexpected_exception_logged_loop_continues(self, event, command_channel, caplog):
+    async def test_unexpected_exception_logged_loop_continues(
+        self, event, command_channel, caplog
+    ):
         """Non-timeout, non-cancel exceptions are logged but loop continues."""
         import logging
+
         sentinel_cmd = MagicMock(name="command")
         command_channel.receive_command = AsyncMock(
             side_effect=[
@@ -184,7 +197,9 @@ class TestCommandListener:
 
     @pytest.mark.asyncio
     async def test_cancelled_error_propagates(self, event, command_channel):
-        command_channel.receive_command = AsyncMock(side_effect=asyncio.CancelledError())
+        command_channel.receive_command = AsyncMock(
+            side_effect=asyncio.CancelledError()
+        )
         event._command_channel = command_channel
         with pytest.raises(asyncio.CancelledError):
             await event._command_listener()
@@ -193,6 +208,7 @@ class TestCommandListener:
 # ---------------------------------------------------------------------------
 # _handle_command
 # ---------------------------------------------------------------------------
+
 
 class TestHandleCommand:
 
@@ -245,7 +261,9 @@ class TestHandleCommand:
                     pass
 
     @pytest.mark.asyncio
-    async def test_update_priority_sets_preempted_and_cancels_worker(self, event, command_channel):
+    async def test_update_priority_sets_preempted_and_cancels_worker(
+        self, event, command_channel
+    ):
         _, CommandType, MessageType, TaskState, _ = _import_mixin_and_types()
         event._command_channel = command_channel
         event._preempted = False
@@ -319,7 +337,9 @@ class TestHandleCommand:
             }
 
     @pytest.mark.asyncio
-    async def test_query_status_when_gate_set_sends_running(self, event, command_channel):
+    async def test_query_status_when_gate_set_sends_running(
+        self, event, command_channel
+    ):
         _, CommandType, MessageType, TaskState, _ = _import_mixin_and_types()
         event._command_channel = command_channel
         event._pause_gate.set()
@@ -328,7 +348,9 @@ class TestHandleCommand:
         assert sent.payload == {"state": TaskState.RUNNING.value}
 
     @pytest.mark.asyncio
-    async def test_query_status_when_gate_clear_sends_paused(self, event, command_channel):
+    async def test_query_status_when_gate_clear_sends_paused(
+        self, event, command_channel
+    ):
         _, CommandType, MessageType, TaskState, _ = _import_mixin_and_types()
         event._command_channel = command_channel
         event._pause_gate.clear()
@@ -339,6 +361,7 @@ class TestHandleCommand:
     @pytest.mark.asyncio
     async def test_unknown_command_logs_warning(self, event, command_channel, caplog):
         import logging
+
         _, CommandType, _, _, _ = _import_mixin_and_types()
         event._command_channel = command_channel
         # Build a command with an unknown command_type
@@ -349,10 +372,13 @@ class TestHandleCommand:
         assert any("unknown" in r.getMessage().lower() for r in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_handler_exception_does_not_propagate(self, event, command_channel, caplog):
+    async def test_handler_exception_does_not_propagate(
+        self, event, command_channel, caplog
+    ):
         """If _send_update raises inside _handle_command, the exception is
         caught and logged (not propagated)."""
         import logging
+
         _, CommandType, _, _, _ = _import_mixin_and_types()
         event._command_channel = command_channel
         # Make _send_update raise — but actually _send_update itself swallows.
@@ -369,6 +395,7 @@ class TestHandleCommand:
 # ---------------------------------------------------------------------------
 # _run_step
 # ---------------------------------------------------------------------------
+
 
 class TestRunStep:
 
@@ -392,6 +419,7 @@ class TestRunStep:
 
         def _step(*args, **kwargs):
             import threading
+
             called_from_thread.append(threading.current_thread().name)
             return "sync-ok"
 
@@ -428,6 +456,7 @@ class TestRunStep:
 # steps_runner
 # ---------------------------------------------------------------------------
 
+
 class TestStepsRunner:
     def _patch_steps(self, event, steps):
         """Replace _get_steps to return our list."""
@@ -453,8 +482,12 @@ class TestStepsRunner:
 
         steps = [_step_a, _step_b]
         with self._patch_steps(event, steps):
-            with patch.object(event, "enqueue_checkpoint", new=AsyncMock()) as mock_enqueue:
-                with patch.object(event, "on_success", return_value=MagicMock(name="result")) as mock_os:
+            with patch.object(
+                event, "enqueue_checkpoint", new=AsyncMock()
+            ) as mock_enqueue:
+                with patch.object(
+                    event, "on_success", return_value=MagicMock(name="result")
+                ) as mock_os:
                     result = await event.steps_runner()
 
         assert calls == ["a", "b"]
@@ -470,7 +503,9 @@ class TestStepsRunner:
         assert sent.payload == {"state": TaskState.COMPLETED.value}
 
     @pytest.mark.asyncio
-    async def test_step_failure_sends_error_and_reraises(self, event, command_channel, caplog):
+    async def test_step_failure_sends_error_and_reraises(
+        self, event, command_channel, caplog
+    ):
         _, _, MessageType, TaskState, _ = _import_mixin_and_types()
         event._command_channel = command_channel
 
@@ -489,8 +524,10 @@ class TestStepsRunner:
         # An ERROR / FAILED message should have been sent
         sent_msgs = [c.args[0] for c in command_channel.send_message.call_args_list]
         error_msgs = [
-            m for m in sent_msgs
-            if m.message_type == MessageType.ERROR and m.payload.get("state") == TaskState.FAILED.value
+            m
+            for m in sent_msgs
+            if m.message_type == MessageType.ERROR
+            and m.payload.get("state") == TaskState.FAILED.value
         ]
         assert len(error_msgs) == 1
         assert error_msgs[0].payload["error"] == "step failure"
@@ -522,6 +559,7 @@ class TestStepsRunner:
     async def test_phase_skip_skips_completed_steps(self, event, command_channel):
         """Steps whose _phase <= self._phase are skipped."""
         from volnux.execution.rehydrator.event.snapshot import EventPhase
+
         event._command_channel = command_channel
 
         # Set _phase to COMMUNICATING → steps with phase <= COMMUNICATING are skipped
@@ -548,10 +586,13 @@ class TestStepsRunner:
         assert executed == ["executed"]
 
     @pytest.mark.asyncio
-    async def test_step_without_phase_attribute_is_executed(self, event, command_channel):
+    async def test_step_without_phase_attribute_is_executed(
+        self, event, command_channel
+    ):
         """Steps with no _phase attribute are always executed."""
         event._command_channel = command_channel
         from volnux.execution.rehydrator.event.snapshot import EventPhase
+
         event._phase = EventPhase.COMPLETED  # everything is "complete"
 
         executed = []
@@ -572,6 +613,7 @@ class TestStepsRunner:
         """When _preempted is True and a CancelledError is raised mid-step,
         steps_runner converts it to SuspendTask."""
         from volnux.exceptions import SuspendTask
+
         _, _, MessageType, TaskState, _ = _import_mixin_and_types()
         event._command_channel = command_channel
         event._preempted = True
@@ -589,8 +631,7 @@ class TestStepsRunner:
         # A QUEUED status should have been sent before the SuspendTask raise
         sent_msgs = [c.args[0] for c in command_channel.send_message.call_args_list]
         queued_msgs = [
-            m for m in sent_msgs
-            if m.payload.get("state") == TaskState.QUEUED.value
+            m for m in sent_msgs if m.payload.get("state") == TaskState.QUEUED.value
         ]
         assert len(queued_msgs) == 1
 
@@ -612,16 +653,18 @@ class TestStepsRunner:
 
         sent_msgs = [c.args[0] for c in command_channel.send_message.call_args_list]
         cancelled_msgs = [
-            m for m in sent_msgs
-            if m.payload.get("state") == TaskState.CANCELLED.value
+            m for m in sent_msgs if m.payload.get("state") == TaskState.CANCELLED.value
         ]
         assert len(cancelled_msgs) == 1
 
     @pytest.mark.asyncio
-    async def test_outer_exception_no_double_report(self, event, command_channel, caplog):
+    async def test_outer_exception_no_double_report(
+        self, event, command_channel, caplog
+    ):
         """If a step's exception is already reported by the per-step handler,
         the outer except-Exception branch must NOT report again."""
         import logging
+
         _, _, MessageType, TaskState, _ = _import_mixin_and_types()
         event._command_channel = command_channel
 
@@ -637,7 +680,6 @@ class TestStepsRunner:
         # Count FAILED status messages — should be exactly 1 (from per-step handler)
         sent_msgs = [c.args[0] for c in command_channel.send_message.call_args_list]
         failed_msgs = [
-            m for m in sent_msgs
-            if m.payload.get("state") == TaskState.FAILED.value
+            m for m in sent_msgs if m.payload.get("state") == TaskState.FAILED.value
         ]
         assert len(failed_msgs) == 1

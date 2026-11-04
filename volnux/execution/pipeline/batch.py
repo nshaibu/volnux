@@ -1,3 +1,4 @@
+import inspect
 import logging
 import multiprocessing as mp
 import queue as _queue
@@ -12,13 +13,14 @@ from functools import partial
 
 from .wrapper import PipelineWrapper
 from ...config import VolnuxConfig
+from ...constants import EMPTY
 from ...exceptions import (
     ImproperlyConfigured,
     PipelineConfigurationError,
 )
 from ...typing import BatchProcessType
 from ...utils import validate_batch_processor
-from ...fields import InputDataField
+from .fields import FileInputDataField, InputDataField
 from ...import_utils import import_string
 from ...mixins import ObjectIdentityMixin
 from ...signal.signals import (
@@ -53,6 +55,7 @@ class BatchPipelineStatus(Enum):
     RUNNING = "running"
     FINISHED = "finished"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -140,6 +143,9 @@ class _BatchProcessingMonitor(threading.Thread):
         self._metrics_lock = threading.Lock()
         self.active_pipelines: typing.Set[str] = set()
         self.pipeline_start_times: typing.Dict[str, float] = {}
+        # wrapper ids already counted as finished (a failed worker reports
+        # both an end and a failure event: count it once)
+        self._finished_wrappers: typing.Set[str] = set()
 
         self._shutdown_flag = threading.Event()
         self._shutdown_called = False
@@ -155,12 +161,6 @@ class _BatchProcessingMonitor(threading.Thread):
         not the same class reference as self.batch.__class__ in the main process.
         """
         try:
-            pipeline_execution_start.connect(
-                sender=None, listener=self._on_pipeline_started
-            )
-            pipeline_execution_end.connect(
-                sender=None, listener=self._on_pipeline_ended
-            )
             pipeline_metrics_updated.connect(
                 sender=None, listener=self._on_metrics_updated
             )
@@ -182,12 +182,6 @@ class _BatchProcessingMonitor(threading.Thread):
         if not self._signals_connected:
             return
         try:
-            pipeline_execution_start.disconnect(
-                sender=None, listener=self._on_pipeline_started
-            )
-            pipeline_execution_end.disconnect(
-                sender=None, listener=self._on_pipeline_ended
-            )
             pipeline_metrics_updated.disconnect(
                 sender=None, listener=self._on_metrics_updated
             )
@@ -228,6 +222,10 @@ class _BatchProcessingMonitor(threading.Thread):
     def _emit_metrics_updated(self) -> None:
         if self.metrics is None:
             return
+        with self._metrics_lock:
+            self.metrics.total_pipelines = max(
+                self.metrics.total_pipelines, self.batch._configured_pipelines_count
+            )
         pipeline_metrics_updated.emit(
             sender=self.batch.__class__,
             batch_id=self.batch.id,
@@ -241,7 +239,9 @@ class _BatchProcessingMonitor(threading.Thread):
         with self._metrics_lock:
             if self.metrics and not self.metrics.start_time:
                 self.metrics.start_time = time.time()
-                self.metrics.total_pipelines = kwargs.get("total_pipelines", 1)
+                self.metrics.total_pipelines = max(
+                    self.metrics.total_pipelines, kwargs.get("total_pipelines") or 0
+                )
         logger.info(
             "Batch started: %s — expected %d pipeline(s)",
             self._get_sender_name(sender),
@@ -264,65 +264,35 @@ class _BatchProcessingMonitor(threading.Thread):
                 extra={"batch_id": self.batch.id},
             )
 
-    def _on_pipeline_started(self, sender, **kwargs) -> None:
-        pipeline = kwargs.get("pipeline")
-        if pipeline is None:
-            return
-
-        # pipeline may be a Pipeline instance or a string ID — normalise
-        pipeline_key = getattr(pipeline, "id", str(pipeline))
-
+    def _record_started(self, key: str, timestamp: typing.Optional[float]) -> None:
         with self._metrics_lock:
-            self.active_pipelines.add(pipeline_key)
-            self.pipeline_start_times[pipeline_key] = kwargs.get(
-                "timestamp", time.time()
-            )
+            if key in self.active_pipelines or key in self._finished_wrappers:
+                return
+            self.active_pipelines.add(key)
+            self.pipeline_start_times[key] = timestamp or time.time()
             if self.metrics:
                 self.metrics.started += 1
                 self.metrics.active = len(self.active_pipelines)
-
         self._emit_metrics_updated()
         logger.info(
-            "Pipeline started: %s from %s — active=%d",
-            pipeline_key,
-            self._get_sender_name(sender),
+            "Pipeline started: %s - active=%d",
+            key,
             len(self.active_pipelines),
-            extra={"pipeline_id": pipeline_key},
+            extra={"pipeline_id": key},
         )
 
-    def _on_pipeline_ended(self, sender, **kwargs) -> None:
-        execution_context = kwargs.get("execution_context")
-        if not execution_context:
-            logger.warning("Pipeline ended signal received with no execution_context")
-            return
-
-        pipeline = getattr(execution_context, "pipeline", None)
-        if pipeline is None:
-            logger.warning(
-                "execution_context.pipeline is None — cannot record completion"
-            )
-            return
-
-        pipeline_key = getattr(pipeline, "id", str(pipeline))
-
-        # Determine success before acquiring the lock — can call methods
-        success = True
-        if hasattr(execution_context, "get_latest_execution_context"):
-            try:
-                latest = execution_context.get_latest_execution_context()
-                success = not latest.execution_failed()
-            except Exception as exc:
-                logger.debug("Could not get latest context: %s", exc)
-                success = not kwargs.get("exception")
-        else:
-            success = not kwargs.get("exception")
-
+    def _record_finished(
+        self, key: str, success: bool, timestamp: typing.Optional[float]
+    ) -> None:
         with self._metrics_lock:
-            self.active_pipelines.discard(pipeline_key)
-            start_time = self.pipeline_start_times.pop(pipeline_key, None)
+            if key in self._finished_wrappers:
+                return
+            self._finished_wrappers.add(key)
+            self.active_pipelines.discard(key)
+            start_time = self.pipeline_start_times.pop(key, None)
             duration = None
             if start_time is not None:
-                duration = kwargs.get("timestamp", time.time()) - start_time
+                duration = max(0.0, (timestamp or time.time()) - start_time)
 
             if self.metrics:
                 if duration is not None:
@@ -334,19 +304,12 @@ class _BatchProcessingMonitor(threading.Thread):
                 self.metrics.active = len(self.active_pipelines)
 
         self._emit_metrics_updated()
-
-        duration_str = f" — {duration:.2f}s" if duration is not None else ""
         logger.info(
-            "Pipeline %s: %s from %s%s",
+            "Pipeline %s: %s%s",
             "completed" if success else "failed",
-            pipeline_key,
-            self._get_sender_name(sender),
-            duration_str,
-            extra={
-                "pipeline_id": pipeline_key,
-                "success": success,
-                "duration": duration,
-            },
+            key,
+            f" - {duration:.2f}s" if duration is not None else "",
+            extra={"pipeline_id": key, "success": success, "duration": duration},
         )
 
     def _on_metrics_updated(self, sender, **kwargs) -> None:
@@ -389,11 +352,7 @@ class _BatchProcessingMonitor(threading.Thread):
         if self.metrics:
             with self._metrics_lock:
                 self.metrics.start_time = time.time()
-                self.metrics.total_pipelines = (
-                    len(self.batch._field_batch_op_map)
-                    if self.batch._field_batch_op_map
-                    else 1
-                )
+                self.metrics.total_pipelines = self.batch._configured_pipelines_count
             self._emit_batch_started()
 
         try:
@@ -459,35 +418,39 @@ class _BatchProcessingMonitor(threading.Thread):
             )
 
     def _handle_wrapper_lifecycle_event(self, message_data: typing.Dict) -> None:
-        """Handle wrapper-specific lifecycle events from worker processes."""
+        """Count pipelines from the wrappers' lifecycle events.
+
+        These are the authoritative start/end records: one set per worker run,
+        keyed by wrapper id. (Re-emitting them as pipeline signals as well made
+        every pipeline count twice.)
+        """
         event_type = message_data.get("event_type")
         wrapper_id = message_data.get("wrapper_id")
         pipeline_id = message_data.get("pipeline_id")
+        timestamp = message_data.get("timestamp")
+        key = wrapper_id or pipeline_id or "unknown"
 
         if event_type == "pipeline_execution_start":
-            pipeline_execution_start.emit(
-                sender=self.batch.__class__,
-                pipeline=message_data.get("pipeline"),
-            )
+            self._record_started(key, timestamp)
         elif event_type == "pipeline_execution_end":
-            pipeline_execution_end.emit(
-                sender=self.batch.__class__,
-                execution_context=message_data.get("execution_context"),
-            )
-        elif event_type == "wrapper_finished":
-            duration = message_data.get("execution_duration")
-            logger.debug(
-                "Wrapper %s finished%s",
-                wrapper_id,
-                f" in {duration:.2f}s" if duration else "",
-                extra={"wrapper_id": wrapper_id, "pipeline_id": pipeline_id},
-            )
+            self._record_started(key, timestamp)  # no-op when already started
+            self._record_finished(key, bool(message_data.get("success")), timestamp)
         elif event_type == "wrapper_failed":
             error_message = message_data.get("error_message", "unknown error")
             logger.error(
                 "Wrapper %s failed: %s",
                 wrapper_id,
                 error_message,
+                extra={"wrapper_id": wrapper_id, "pipeline_id": pipeline_id},
+            )
+            self._record_started(key, timestamp)
+            self._record_finished(key, False, timestamp)
+        elif event_type == "wrapper_finished":
+            duration = message_data.get("execution_duration")
+            logger.debug(
+                "Wrapper %s finished%s",
+                wrapper_id,
+                f" in {duration:.2f}s" if duration else "",
                 extra={"wrapper_id": wrapper_id, "pipeline_id": pipeline_id},
             )
         else:
@@ -516,43 +479,38 @@ class _BatchProcessingMonitor(threading.Thread):
 
 class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
     """
-    Executes a Pipeline template across multiple input batches using
-    a process pool, with inter-process signal monitoring.
+    Runs a Pipeline template over streamed batches of data.
+
+    The batch takes the same fields as its ``pipeline_template``. Fields with a
+    batch processor (a list field, a ``{field}_batch`` method, ...) are chunked
+    lazily; every chunk becomes its own Pipeline instance, carrying that chunk
+    and the shared non-batch fields, and is streamed into a process pool.
 
     Class attributes
     ----------------
     pipeline_template:   Pipeline subclass to execute for each batch item.
-    listen_to_signals:   Signal import strings are forwarded from worker processes.
+    listen_to_signals:   Signal import strings forwarded from the worker
+                         processes (default ``None``: every registered signal,
+                         resolved when the batch runs).
     max_workers:         Process pool size (default: from config).
-    memory_limit:        Absolute memory limit in bytes for the pool.
-    max_memory_percent:  Trigger batch size reduction above this % usage.
+    max_in_flight:       Pipelines submitted but not yet finished (default:
+                         twice ``max_workers``). Pipelines are created only as
+                         slots free up, so memory stays flat for large inputs.
+    max_memory_percent:  Above this process-memory percentage the in-flight
+                         window shrinks by 20% (down to 1).
 
     Architecture
     ------------
-                 Main thread (caller)
-                 ┌──────────────────────────────────────────┐
-                 │ BatchPipeline.execute()                  │
-                 │   ├─ _gather_and_init_field_batch_iterators()
-                 │   ├─ mp.Manager().Queue()  → signals_queue
-                 │   ├─ _BatchProcessingMonitor.start()     │
-                 │   └─ ProcessPoolExecutor                 │
-                 │        ├─ submit(pipeline_1) → future_1  │──► Worker process
-                 │        ├─ submit(pipeline_2) → future_2  │──► Worker process
-                 │        └─ ...done callback per future    │
-                 └──────────────────────────────────────────┘
-
-                 Monitor thread (_BatchProcessingMonitor)
-                 ┌──────────────────────────────────────────┐
-                 │ run()                                    │
-                 │   └─ signals_queue.get() loop            │
-                 │        └─ construct_signal() / lifecycle │
-                 └──────────────────────────────────────────┘
-
-                 Worker processes (_pipeline_executor)
-                 ┌──────────────────────────────────────────┐
-                 │ PipelineWrapper.run()                    │
-                 │   └─ signals → signals_queue (via IPC)   │
-                 └──────────────────────────────────────────┘
+        Event loop (caller)                      Worker processes
+        ┌────────────────────────────────┐      ┌────────────────────────┐
+        │ execute(on_result)             │      │ _pipeline_executor     │
+        │   producer: next chunk ->      │ ───► │  PipelineWrapper.run() │
+        │   pipeline -> submit (window)  │      │  signals -> queue (IPC)│
+        │   result task per future  ◄────│ ──── └────────────────────────┘
+        └────────────────────────────────┘
+        Monitor thread: drains the signals queue, re-emits forwarded signals
+        in this process and keeps the metrics from the wrappers' lifecycle
+        events.
 
     Usage
     -----
@@ -560,26 +518,29 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
         pipeline_template = MyPipeline
         max_workers = 4
 
-    batch = MyBatch(items=my_item_list)
-    batch.execute()
-    results = batch.results
+    async def on_result(result):          # a ``_BatchResult(pipeline, exception)``
+        ...
+
+    summary = await MyBatch(items=my_items).execute(on_result)
+    # {"completed": int, "failed": int, "total": int}
     """
 
     pipeline_template: typing.Type["Pipeline"] = None
-    listen_to_signals: typing.List[str] = SoftSignal.registered_signals()
+    listen_to_signals: typing.Optional[typing.List[str]] = None
     __signature__ = None
     max_workers: int = None
+    max_in_flight: typing.Optional[int] = None
     memory_limit: int = None
     max_memory_percent: float = 90.0
+
+    # Minimum seconds between two memory-pressure shrinks of the window
+    _window_cooldown: float = 5.0
 
     def __init__(self, *args, **kwargs):
         from .pipeline import Pipeline
 
-        super().__init__(*args, **kwargs)
+        super().__init__()
 
-        # self.lock = mp.Lock()
-        # self.results: typing.List[_BatchResult] = []
-        self._async_lock = asyncio.Lock()
         self.status: BatchPipelineStatus = BatchPipelineStatus.PENDING
 
         pipeline_template = self.get_pipeline_template()
@@ -589,7 +550,10 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
                 "No pipeline_template set. Subclass BatchPipeline and set "
                 "pipeline_template to a Pipeline subclass."
             )
-        if not issubclass(pipeline_template, Pipeline):
+        if not (
+            inspect.isclass(pipeline_template)
+            and issubclass(pipeline_template, Pipeline)
+        ):
             raise ImproperlyConfigured(
                 f"pipeline_template must be a Pipeline subclass, "
                 f"got {pipeline_template!r}."
@@ -602,15 +566,23 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
         for field_name, value in bounded_args.arguments.items():
             setattr(self, field_name, value)
 
-        # Batch operator maps — built lazily in execute()
+        # Batch operator maps - built lazily in execute()
         self._field_batch_op_map: typing.Dict[InputDataField, typing.Iterator] = {}
         self._configured_pipelines: typing.Set["Pipeline"] = set()
         self._configured_pipelines_count: int = 0
 
         self._signals_queue: typing.Optional[mp.Queue] = None
         self._monitor_thread: typing.Optional[_BatchProcessingMonitor] = None
+        self._resolved_signals: typing.List[str] = []
 
-        # Per-instance batch size overrides — avoids mutating class-level field objects
+        # Streaming window: pipelines submitted and not yet finished, and how
+        # many may be (shrunk under memory pressure).
+        self._in_flight: int = 0
+        self._window_limit: typing.Optional[int] = None
+        self._last_window_shrink: float = 0.0
+        self._slot_freed: typing.Optional[asyncio.Event] = None
+
+        # Per-instance batch size overrides - avoids mutating class-level field objects
         self._instance_batch_sizes: typing.Dict[str, int] = {}
 
     def get_pipeline_template(self):
@@ -624,26 +596,33 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
         return self._signals_queue
 
     def check_memory_usage(self) -> None:
-        """Monitor memory usage and reduce batch sizes if above threshold."""
+        """Shrink the in-flight window when this process is under memory pressure."""
         import psutil
 
         if psutil.Process().memory_percent() > self.max_memory_percent:
-            self._adjust_batch_size()
+            self._shrink_window()
 
-    def _adjust_batch_size(self) -> None:
+    def _shrink_window(self) -> None:
         """
-        Reduce effective batch sizes by 20% when memory pressure is detected.
+        Reduce how many pipelines may be in flight by 20% (never below 1).
 
-        Uses per-instance overrides rather than mutating the class-level
-        InputDataField objects — which are shared across all BatchPipeline
-        instances of the same template class.
+        Pipelines are created lazily as slots free up, so a smaller window is
+        what actually lowers memory use; chunk sizes are baked into the
+        iterators when the batch starts. Throttled by ``_window_cooldown`` so a
+        sustained spike does not collapse the window within a few seconds.
         """
-        for field_obj in self._field_batch_op_map:
-            fname = field_obj.name
-            current_size = self._instance_batch_sizes.get(fname, field_obj.batch_size)
-            new_size = max(1, int(current_size * 0.8))
-            self._instance_batch_sizes[fname] = new_size
-        logger.info("BatchPipeline: batch sizes reduced (instance=%s)", self.id)
+        if self._window_limit is None:
+            return
+        now = time.monotonic()
+        if now - self._last_window_shrink < self._window_cooldown:
+            return
+        self._last_window_shrink = now
+        self._window_limit = max(1, int(self._window_limit * 0.8))
+        logger.info(
+            "BatchPipeline: memory pressure, in-flight window reduced to %d (batch=%s)",
+            self._window_limit,
+            self.id,
+        )
 
     def _get_effective_batch_size(self, field_obj) -> int:
         """Return the effective batch size for a field, respecting instance overrides."""
@@ -678,36 +657,84 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
         batch_processor: BatchProcessType,
     ) -> None:
         self._validate_batch_processor(batch_processor)
-        batch_size = self._get_effective_batch_size(field_obj)
-        if field_obj not in self._field_batch_op_map:
-            self._field_batch_op_map[field_obj] = batch_processor(
-                getattr(self, field_obj.name), batch_size
+        # iter(): the validator accepts any iterable, the batch calls next()
+        self._field_batch_op_map[field_obj] = iter(
+            batch_processor(
+                getattr(self, field_obj.name),
+                self._get_effective_batch_size(field_obj),
             )
-        else:
-            self._field_batch_op_map[field_obj] = batch_processor(
-                self._field_batch_op_map[field_obj], batch_size
-            )
+        )
 
     def _gather_and_init_field_batch_iterators(self) -> None:
+        """
+        Build one batch iterator per batched field.
+
+        A ``{field}_batch(self, values, batch_size)`` method replaces the
+        field's own batch processor; otherwise the field's processor is used.
+        Chaining the two would hand the method the default chunks instead of
+        the raw values.
+        """
         for field_name, field_obj in self.get_fields():
-            batch_size = self._get_effective_batch_size(field_obj)
-            if field_obj.has_batch_operation:
+            custom = getattr(self, f"{field_name}_batch", None)
+            if callable(custom):
+                self._gather_field_batch_methods(field_obj, custom)
+            elif isinstance(field_obj, FileInputDataField):
+                self._gather_file_field(field_name, field_obj)
+            elif field_obj.has_batch_operation:
                 self._validate_batch_processor(field_obj.batch_processor)
-                self._field_batch_op_map[field_obj] = field_obj.batch_processor(
-                    getattr(self, field_name, []), batch_size
+                self._field_batch_op_map[field_obj] = iter(
+                    field_obj.batch_processor(
+                        getattr(self, field_name, []),
+                        self._get_effective_batch_size(field_obj),
+                    )
                 )
-            method_name = f"{field_name}_batch"
-            if hasattr(self, method_name):
-                self._gather_field_batch_methods(field_obj, getattr(self, method_name))
+
+    def _gather_file_field(
+        self, field_name: str, field_obj: "FileInputDataField"
+    ) -> None:
+        """Stream a file field's file as ``FileChunk``s (opened lazily, closed
+        when the iterator is exhausted or dropped)."""
+        path = getattr(self, field_name, None)
+        if path is None and field_obj.default is not EMPTY:
+            path = field_obj.default
+        if path is None:
+            return  # nothing to stream
+        self._field_batch_op_map[field_obj] = field_obj.iter_chunks(
+            path, self._get_effective_batch_size(field_obj)
+        )
+
+    _COLLECTION_TYPES: typing.ClassVar[tuple] = (list, tuple, set, frozenset)
+    _SCALAR_TYPES: typing.ClassVar[tuple] = (int, float, str, bool)
 
     @staticmethod
     def _convert_value_to_field_data_type(field_obj: InputDataField, value: typing.Any):
+        """
+        Coerce a batch step's value to what the field accepts.
+
+        Batch processors yield chunks as tuples; a ``list`` / ``List[str]``
+        field wants a list. Untyped fields and values the field already
+        accepts pass through, and so does anything that can't be converted
+        safely (bytes are never stringified) - the Pipeline's own field
+        validation then reports a clear error.
+        """
         if value is None:
             return None
-        value_dtype = type(value)
-        if value_dtype in field_obj.data_type:
+        accepted = field_obj._isinstance_types
+        if not accepted or isinstance(value, accepted):
             return value
-        return field_obj.data_type[0](value)
+
+        collections = BatchPipeline._COLLECTION_TYPES
+        for target in accepted:
+            if target in collections and isinstance(value, collections):
+                return target(value)
+        if isinstance(value, BatchPipeline._SCALAR_TYPES):
+            for target in accepted:
+                if target in BatchPipeline._SCALAR_TYPES:
+                    try:
+                        return target(value)
+                    except (TypeError, ValueError):
+                        continue
+        return value
 
     def _execute_field_batch_processors(
         self,
@@ -754,8 +781,10 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
 
         Args:
             on_result: Callback invoked for **each** ``_BatchResult`` as it
-                       completes. Must be thread-safe — it is called from the
-                       thread that resolves each process-pool future.
+                       completes. May be a plain function or a coroutine
+                       function; it runs on the event loop that called
+                       ``execute``. An exception it raises is logged and does
+                       not stop the batch.
 
         Returns:
             Summary dict once all work is complete::
@@ -767,16 +796,20 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
 
         _completed = 0
         _failed = 0
-        _summary_lock = asyncio.Lock()
 
         async def _tally_and_forward(batch_result: _BatchResult) -> None:
             nonlocal _completed, _failed
-            async with _summary_lock:
-                if batch_result.exception is None:
-                    _completed += 1
-                else:
-                    _failed += 1
-            on_result(batch_result)
+            # No await between the read-modify-write: atomic on the event loop.
+            if batch_result.exception is None:
+                _completed += 1
+            else:
+                _failed += 1
+            try:
+                outcome = on_result(batch_result)
+                if inspect.isawaitable(outcome):
+                    await outcome
+            except Exception:
+                logger.exception("BatchPipeline: on_result callback raised")
 
         if not self._field_batch_op_map:
             self._gather_and_init_field_batch_iterators()
@@ -786,7 +819,7 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
 
         try:
             if not self._field_batch_op_map:
-                # Non-batch path — single pipeline, awaited directly
+                # Non-batch path - single pipeline, awaited directly
                 self._configured_pipelines_count += 1
                 pipeline = self._initialise_template(**non_batch_kwargs)
                 try:
@@ -811,93 +844,174 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
 
             self.status = BatchPipelineStatus.FINISHED
 
+        except asyncio.CancelledError:
+            self.status = BatchPipelineStatus.CANCELLED
+            raise
         except Exception as exc:
             self.status = BatchPipelineStatus.FAILED
             logger.error("BatchPipeline.execute() failed: %s", exc, exc_info=True)
             raise
 
-        async with _summary_lock:
-            return {
-                "completed": _completed,
-                "failed": _failed,
-                "total": self._configured_pipelines_count,
-            }
+        return {
+            "completed": _completed,
+            "failed": _failed,
+            "total": self._configured_pipelines_count,
+        }
+
+    def _get_window_size(self, max_workers: int) -> int:
+        return max(1, self.max_in_flight or 2 * max_workers)
+
+    async def _wait_for_free_slot(self) -> None:
+        """Block the producer while the in-flight window is full."""
+        assert self._slot_freed is not None
+        while self._in_flight >= (self._window_limit or 1):
+            # No await between the check and the clear, so a release cannot
+            # slip in between them and be missed.
+            self._slot_freed.clear()
+            await self._slot_freed.wait()
 
     async def _execute_batch(
         self,
         non_batch_kwargs: typing.Dict[str, typing.Any],
         on_result: typing.Callable[["_BatchResult"], typing.Awaitable[None]],
     ) -> None:
-        manager = mp.Manager()
-        mp_context = mp.get_context("spawn")
+        """
+        Stream pipelines into the process pool.
 
+        A producer pulls the next chunk only when the in-flight window has a
+        free slot, builds the Pipeline for it and submits it; one small task
+        per future forwards its result and frees the slot. So at most
+        ``max_in_flight`` pipelines exist at a time, however large the input,
+        and results are delivered as they finish.
+        """
+        mp_context = mp.get_context("spawn")
+        manager = mp_context.Manager()
         self._signals_queue = manager.Queue()
+        self._resolved_signals = list(
+            self.listen_to_signals
+            if self.listen_to_signals is not None
+            else SoftSignal.registered_signals()
+        )
         self._monitor_thread = _BatchProcessingMonitor(self)
 
         loop = asyncio.get_running_loop()
+        max_workers = self.max_workers or conf.MAX_BATCH_PROCESSING_WORKERS
+        self._window_limit = self._get_window_size(max_workers)
+        self._in_flight = 0
+        self._slot_freed = asyncio.Event()
+
+        executor = ProcessPoolExecutor(max_workers=max_workers, mp_context=mp_context)
+        result_tasks: typing.Set["asyncio.Future[None]"] = set()
+        completed_normally = False
+        unwinding = False  # set before our own cancellation of the result tasks
+
+        async def _deliver(async_future: "asyncio.Future[typing.Any]") -> None:
+            try:
+                await self._handle_future(
+                    async_future, on_result, unwinding=lambda: unwinding
+                )
+            finally:
+                self._in_flight -= 1
+                assert self._slot_freed is not None
+                self._slot_freed.set()
 
         try:
-            self._monitor_thread.start()  # non-blocking — just spawns the OS thread
+            self._monitor_thread.start()  # non-blocking - just spawns the OS thread
 
-            pending: typing.List[asyncio.Future] = []
+            batches = self._execute_field_batch_processors(self._field_batch_op_map)
+            exhausted = object()
 
-            with ProcessPoolExecutor(
-                max_workers=self.max_workers or conf.MAX_BATCH_PROCESSING_WORKERS,
-                mp_context=mp_context,
-            ) as executor:
-                for kwargs in self._execute_field_batch_processors(
-                    self._field_batch_op_map
-                ):
-                    if not any(v is not None for v in kwargs.values()):
-                        continue
+            while True:
+                await self._wait_for_free_slot()
 
-                    merged_kwargs = {**kwargs, **non_batch_kwargs}
-                    pipeline = self._initialise_template(**merged_kwargs)
+                # A processor may block (a file, a network read): never on the loop
+                kwargs = await asyncio.to_thread(next, batches, exhausted)
+                if kwargs is exhausted:
+                    break
+                if not any(v is not None for v in kwargs.values()):
+                    continue
 
-                    cf_future = executor.submit(
-                        self._pipeline_executor,
-                        pipeline=pipeline,
-                        focus_on_signals=self.listen_to_signals,
-                        signals_queue=self._signals_queue,
+                self._configured_pipelines_count += 1
+                try:
+                    pipeline = self._initialise_template(
+                        **{**kwargs, **non_batch_kwargs}
                     )
-                    self._configured_pipelines_count += 1
-                    async_future = asyncio.wrap_future(cf_future, loop=loop)
-                    pending.append(
-                        asyncio.ensure_future(
-                            self._handle_future(async_future, on_result)
-                        )
-                    )
+                except Exception as exc:
+                    # One bad chunk is that item's failure, not the batch's
+                    logger.error("Could not build pipeline for a chunk: %s", exc)
+                    await on_result(_BatchResult(None, exception=exc))
+                    continue
 
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
+                cf_future = executor.submit(
+                    self._pipeline_executor,
+                    pipeline=pipeline,
+                    focus_on_signals=self._resolved_signals,
+                    signals_queue=self._signals_queue,
+                )
+                self._in_flight += 1
+                task = asyncio.ensure_future(
+                    _deliver(asyncio.wrap_future(cf_future, loop=loop))
+                )
+                result_tasks.add(task)
+                task.add_done_callback(result_tasks.discard)
 
-        except Exception as exc:
-            logger.error(
-                "Error during batch pipeline execution: %s", exc, exc_info=True
-            )
+            if result_tasks:
+                await asyncio.gather(*list(result_tasks), return_exceptions=True)
+            completed_normally = True
+
+        except BaseException as exc:
+            if not isinstance(exc, asyncio.CancelledError):
+                logger.error(
+                    "Error during batch pipeline execution: %s", exc, exc_info=True
+                )
+            unwinding = True
+            for task in list(result_tasks):
+                task.cancel()
             raise
         finally:
+            # Workers that have not started are dropped; running ones are
+            # waited for off the loop so the loop stays responsive.
+            await asyncio.to_thread(
+                executor.shutdown, True, cancel_futures=not completed_normally
+            )
+            await self._stop_monitor()
+            self._signals_queue = None
+            await asyncio.to_thread(manager.shutdown)
+
+    async def _stop_monitor(self) -> None:
+        """Send the stop sentinel and wait for the monitor thread, off the loop."""
+        monitor = self._monitor_thread
+        if monitor is None:
+            return
+        try:
             if self._signals_queue is not None:
                 self._signals_queue.put(None)
-            if self._monitor_thread is not None:
-                # join() blocks until the monitor thread exits — offload it
-                # so the event loop remains responsive during the wait.
-                await asyncio.to_thread(self._monitor_thread.join, 30.0)
-                if self._monitor_thread.is_alive():
-                    logger.warning(
-                        "BatchMonitor thread did not exit within 30s — "
-                        "signals may have been dropped"
-                    )
+        except Exception:
+            logger.debug("BatchPipeline: could not send monitor stop", exc_info=True)
+            monitor._shutdown_flag.set()
+        await asyncio.to_thread(monitor.join, 30.0)
+        if monitor.is_alive():
+            logger.warning(
+                "BatchMonitor thread did not exit within 30s - signals may have been dropped"
+            )
 
     @staticmethod
     async def _handle_future(
-        async_future: "asyncio.Future[typing.Any]", on_result: _ResultCallback
+        async_future: "asyncio.Future[typing.Any]",
+        on_result: _ResultCallback,
+        unwinding: typing.Callable[[], bool] = lambda: False,
     ) -> None:
         """
         Await a single process-pool future and forward its outcome to ``on_result``.
+
+        A future the pool dropped (e.g. ``shutdown(cancel_futures=True)``) is a
+        failed result. When the batch itself is unwinding (``unwinding()``) the
+        cancellation is ours: propagate it instead of reporting. A cancelled
+        task cancels the future it awaits, so the future's own state cannot
+        tell the two apart.
         """
         pipeline = None
-        exception = None
+        exception: typing.Optional[BaseException] = None
 
         try:
             data = await async_future
@@ -906,8 +1020,10 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
                 if isinstance(data, (tuple, list)) and len(data) == 2
                 else (data, None)
             )
-        except CancelledError as exc:
-            logger.warning("Pipeline future was cancelled: %s", exc)
+        except (asyncio.CancelledError, CancelledError) as exc:
+            if unwinding():
+                raise  # this task itself was cancelled: unwind, don't report
+            logger.warning("Pipeline future was cancelled")
             exception = exc
         except TimeoutError as exc:
             logger.error("Pipeline future timed out: %s", exc)
@@ -916,10 +1032,9 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
             logger.error("Pipeline future failed: %s", exc, exc_info=True)
             exception = exc
 
-        result = on_result(_BatchResult(pipeline, exception=exception))
-        if asyncio.iscoroutine(result):
-            await result
-        return result
+        outcome = on_result(_BatchResult(pipeline, exception=exception))
+        if inspect.isawaitable(outcome):
+            await outcome
 
     def _prepare_args_for_non_batch_fields(self) -> typing.Dict[str, typing.Any]:
         args = {}

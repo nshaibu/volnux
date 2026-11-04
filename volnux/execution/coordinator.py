@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
 from volnux.exceptions import (
+    TaskCancelledError,
     SwitchTask,
     # ExternalCommunicationSuspensionRequest,
     StopProcessingError,
@@ -99,26 +100,49 @@ class ExecutionCoordinator:
         else:
             raise ValueError(f"Invalid suspension type: {request.suspension_type}")
 
-    async def _execute_async(self) -> Tuple[Any, Any]:
-        flow = self._setup_execution_flow()
-        self._flow = flow
+    async def _run_flow(self, flow: "BaseFlow") -> Tuple[Any, Any]:
+        """Submit the flow and wait for its tasks to finish.
 
+        ``flow.run()`` returns as soon as the task is *submitted*; the work is
+        only done once the returned future resolves, so both steps belong
+        inside the timeout.
+        """
+        future = await flow.run()
+        logger.info("Task submitted, waiting for results")
+        return await self._result_processor.process_futures([future])
+
+    async def _stop_flow(self, flow: Optional["BaseFlow"]) -> None:
+        """Best effort: tell the running tasks to stop; never raises."""
+        if flow is None:
+            return
+        try:
+            await flow.cancel()
+        except Exception:
+            logger.warning("Failed to cancel the execution flow", exc_info=True)
+
+    async def _execute_async(self) -> Tuple[Any, Any]:
+        flow: Optional["BaseFlow"] = None
+        self._flow = None
         results = None
         errors = None
 
         try:
+            flow = self._setup_execution_flow()
+            self._flow = flow
+            # Lets ExecutionContext.cancel_async()/pause_tasks() reach this flow
+            self.execution_context._active_flow = flow
+
             await self.execution_context.update_status_async(ExecutionStatus.RUNNING)
             logger.info("Starting task execution")
 
-            run_coro = flow.run()
-            future = (
-                await asyncio.wait_for(run_coro, timeout=self._timeout)
-                if self._timeout
-                else await run_coro
-            )
+            if self._timeout:
+                results, errors = await asyncio.wait_for(
+                    self._run_flow(flow), timeout=self._timeout
+                )
+            else:
+                results, errors = await self._run_flow(flow)
 
             logger.info("Task execution completed, processing results")
-            results, errors = await self._result_processor.process_futures([future])
 
             # Update status based on results
             if errors:
@@ -129,10 +153,19 @@ class ExecutionCoordinator:
             error_results = await self._result_processor.process_errors(errors)
             results.extend(error_results)
 
+            cancelled = any(isinstance(e, TaskCancelledError) for e in errors)
             await self.execution_context.bulk_update_async(
-                ExecutionStatus.COMPLETED, errors, results
+                ExecutionStatus.CANCELLED if cancelled else ExecutionStatus.COMPLETED,
+                errors,
+                results,
             )
             self.execution_context.metrics.end_time = time.time()
+
+            if cancelled:
+                logger.info("Execution cancelled")
+                # Tasks are already stopped: emit the signal, send no more commands
+                await self.execution_context.cancel_async(propagate=False)
+                return results, errors
 
             stop_processing_requested = (
                 self.execution_context.get_stop_processing_request()
@@ -160,7 +193,8 @@ class ExecutionCoordinator:
                             f"Task profile has no configured descriptor "
                             f"{switch_request.next_task_descriptor}"
                         )
-                        await self.execution_context.cancel_async()
+                        # the tasks have finished: nothing to send commands to
+                        await self.execution_context.cancel_async(propagate=False)
                         switch_request.descriptor_configured = False
                     else:
                         switch_request.descriptor_configured = True
@@ -173,9 +207,8 @@ class ExecutionCoordinator:
 
         except SuspendTask as sps:
             logger.info(
-                "Coordinator: workflow '%s' task '%s' suspended at sub_phase '%s'",
+                "Coordinator: workflow '%s' suspended at phase '%s'",
                 self.execution_context.workflow_name,
-                sps.get_phase(),
                 sps.get_phase(),
             )
 
@@ -186,10 +219,31 @@ class ExecutionCoordinator:
 
         except asyncio.TimeoutError as e:
             logger.error(f"Execution exceeded timeout of {self._timeout}s")
+            # wait_for cancelled the wait, not the tasks behind it
+            await self._stop_flow(flow)
             await self.execution_context.failed_async()
             raise ExecutionTimeoutError(
                 f"Task execution timed out after {self._timeout}s"
             ) from e
+
+        # Must precede the RuntimeError handler below: StopProcessingError is a
+        # RuntimeError, and a requested stop is a controlled cancellation, not a
+        # failure.
+        except StopProcessingError as e:
+            logger.info(f"Execution stopped due to stop condition: {e}")
+            await self.execution_context.cancel_async(propagate=False)
+            return results, errors
+
+        except asyncio.CancelledError:
+            # The coordinator itself was cancelled (e.g. the run was torn
+            # down): don't leave the tasks running behind it.
+            logger.info("Execution coordinator cancelled")
+            await self._stop_flow(flow)
+            try:
+                await self.execution_context.cancel_async(propagate=False)
+            except Exception:
+                logger.warning("Failed to mark the context cancelled", exc_info=True)
+            raise
 
         except (RuntimeError, ValueError) as e:
             logger.error(
@@ -198,19 +252,20 @@ class ExecutionCoordinator:
             await self.execution_context.failed_async()
             raise ExecutionError(f"Task execution failed: {e}") from e
 
-        except StopProcessingError as e:
-            logger.info(f"Execution stopped due to stop condition: {e}")
-            await self.execution_context.cancel_async()
-            return results, errors
-
         except Exception as e:
             logger.error(f"Unexpected execution error: {e}", exc_info=True)
             await self.execution_context.failed_async()
             raise
 
         finally:
-            if self._flow:
-                await self._flow.close()
+            self.execution_context._active_flow = None
+            self._flow = None
+            if flow is not None:
+                try:
+                    await flow.close()
+                except Exception:
+                    # never let cleanup replace the real outcome
+                    logger.warning("Failed to close the execution flow", exc_info=True)
 
         return results, errors
 
@@ -233,10 +288,11 @@ class ExecutionCoordinator:
         return await self._execute_async()
 
     async def cancel(self) -> None:
-        if self._flow:
+        flow = self._flow
+        if flow is not None:
             logger.warning("Cancelling execution flow")
-            await self._flow.cancel()
-            await self.execution_context.update_status_async(ExecutionStatus.CANCELLED)
+            await flow.cancel()
+            await self.execution_context.cancel_async(propagate=False)
 
     def __repr__(self) -> str:
         return (

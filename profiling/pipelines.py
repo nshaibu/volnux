@@ -1,6 +1,6 @@
 from volnux import Pipeline
 from volnux.pipeline import BatchPipeline
-from volnux.fields import InputDataField
+from volnux.execution.pipeline.fields import InputDataField
 
 # this is done because for some reason you have to import the events when you want to run it as a batch pipeline
 from events import EventOne, EventTwo, EventThree, EventFour

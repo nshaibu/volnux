@@ -277,7 +277,9 @@ class TestSemaUnknownDirective(unittest.TestCase):
 
     def test_description_must_be_string(self):
         result = _analyse("@description: true FetchData")
-        self.assertTrue(_has_error_containing(result, "'@description' must be a string"))
+        self.assertTrue(
+            _has_error_containing(result, "'@description' must be a string")
+        )
 
     def test_known_directive_mode_no_error(self):
         result = _analyse('@mode: "CFG" FetchData')
@@ -381,7 +383,11 @@ class TestSemaTypeMismatch(unittest.TestCase):
 
     def test_executor_names_are_not_validated(self):
         # executors are resolved at runtime, so any string is accepted
-        for name in ("DEFAULT_EXECUTOR", "my_runtime_executor", "acme.executors.Custom"):
+        for name in (
+            "DEFAULT_EXECUTOR",
+            "my_runtime_executor",
+            "acme.executors.Custom",
+        ):
             result = _analyse(f'Worker[executor = "{name}"]')
             self.assertFalse(_has_warning_containing(result, "executor"), name)
 
@@ -1058,9 +1064,15 @@ class TestSemaNamespaces(unittest.TestCase):
     """Namespaces are user-defined and resolved at runtime, so sema accepts any."""
 
     def test_custom_namespaces_are_not_errors(self):
-        for source in ("acme::FetchData", "MAP<acme::FetchData>", "my_ns::A -> other::B"):
+        for source in (
+            "acme::FetchData",
+            "MAP<acme::FetchData>",
+            "my_ns::A -> other::B",
+        ):
             result = _analyse(source)
-            self.assertFalse(result.has_errors, (source, [d.message for d in result.errors]))
+            self.assertFalse(
+                result.has_errors, (source, [d.message for d in result.errors])
+            )
 
 
 class TestSemaConditionalExpressions(unittest.TestCase):
@@ -1074,7 +1086,9 @@ class TestSemaConditionalExpressions(unittest.TestCase):
             "A (failure -> B * 2, success |-> C * 3)",
         ):
             result = _analyse(source)
-            self.assertFalse(result.has_errors, (source, [d.message for d in result.errors]))
+            self.assertFalse(
+                result.has_errors, (source, [d.message for d in result.errors])
+            )
 
     def test_conditional_without_subject_task(self):
         result = _analyse("(failure -> C, success -> B)")
@@ -1091,7 +1105,9 @@ class TestSemaConditionalExpressions(unittest.TestCase):
 
     def test_duplicate_named_descriptor(self):
         result = _analyse("A (failure -> B, 0 -> C)")
-        self.assertTrue(_has_error_containing(result, "Duplicate descriptor 'failure' (0)"))
+        self.assertTrue(
+            _has_error_containing(result, "Duplicate descriptor 'failure' (0)")
+        )
 
 
 if __name__ == "__main__":

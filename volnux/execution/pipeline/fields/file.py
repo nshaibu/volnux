@@ -1,5 +1,6 @@
 import os
 import typing
+from dataclasses import dataclass
 
 from .field import InputDataField
 from .file_proxy import FileProxy
@@ -9,7 +10,22 @@ from volnux.constants import EMPTY
 if typing.TYPE_CHECKING:
     from volnux.execution.pipeline import Pipeline
 
-__all__ = ["FileInputDataField"]
+__all__ = ["FileInputDataField", "FileChunk"]
+
+
+@dataclass(frozen=True)
+class FileChunk:
+    """
+    One chunk of a file, as handed to a pipeline by a ``BatchPipeline``.
+
+    ``data`` is ``str`` for a text-mode field and ``bytes`` for a binary one.
+    A plain value object: picklable, so it travels to a worker process.
+    """
+
+    data: typing.Union[str, bytes]
+    source: str
+    index: int
+
 
 # Map mode characters to os.access flags for permission validation
 _MODE_ACCESS_FLAGS: dict[str, int] = {
@@ -129,15 +145,49 @@ class FileInputDataField(InputDataField):
             batch_processor=batch_defaults.file_stream_batch_processor,
         )
 
+    def open_stream(self, path: typing.Union[str, os.PathLike]) -> typing.IO:
+        """Open ``path`` with this field's mode, encoding and buffering."""
+        kwargs: dict = {"mode": self._file_mode, "buffering": self._file_buffering}
+        if "b" not in self._file_mode:
+            kwargs.update(
+                encoding=self._file_encoding,
+                errors=self._file_errors,
+                newline=self._file_newline,
+            )
+        return open(path, **kwargs)
+
+    def iter_chunks(
+        self, path: typing.Union[str, os.PathLike], chunk_size: int
+    ) -> typing.Iterator[FileChunk]:
+        """
+        Stream ``path`` as ``FileChunk``s of ``chunk_size`` characters (bytes in
+        binary mode). The file is open only while the iterator is consumed.
+        """
+        with self.open_stream(path) as stream:
+            for index, data in enumerate(
+                iter(lambda: stream.read(chunk_size), stream.read(0))
+            ):
+                yield FileChunk(data=data, source=os.fspath(path), index=index)
+
     def __set__(self, instance: "Pipeline", value: typing.Any) -> None:
         """
-        Set and validate the file path.
+        Set and validate the file path (or take a ``FileChunk`` as is).
 
         Raises:
             TypeError:  If value is not str or PathLike.
             ValueError: If the path does not exist, is not a file, or is not
                         accessible with the configured mode.
         """
+        if isinstance(value, FileChunk):
+            # A chunk of a file streamed by a BatchPipeline: the data itself,
+            # not a path - nothing to check on disk.
+            instance.__dict__[self.name] = value
+            try:
+                self.set_field_cache_value(instance, value)
+            except Exception:
+                pass
+            return
+
         if value is not None:
             if not os.path.isfile(value):
                 raise ValueError(
@@ -181,6 +231,8 @@ class FileInputDataField(InputDataField):
 
         path: typing.Union[str, os.PathLike, None] = super().__get__(instance, owner)
 
+        if isinstance(path, FileChunk):
+            return path  # type: ignore[return-value]
         if not path:
             return None
 

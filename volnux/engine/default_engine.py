@@ -376,6 +376,15 @@ class DefaultWorkflowEngine(WorkflowEngine):
                 executable_node = self.task_queue.popleft()
                 self.tasks_processed += 1
 
+                # Pipeline.pause() holds the run between tasks; stop() wakes it
+                await self._wait_while_paused(pipeline)
+                if getattr(pipeline, "_stop_requested", False) is True:
+                    return EngineResult(
+                        status=EngineExecutionResult.TERMINATED_EARLY,
+                        final_context=self.final_context,
+                        tasks_processed=self.tasks_processed,
+                    )
+
                 if self.enable_debug_logging:
                     logger.debug(f"[Engine] Processing task: {executable_node.task}")
 
@@ -635,6 +644,13 @@ class DefaultWorkflowEngine(WorkflowEngine):
             self.sink_queue.append(task.sink_node)
 
         return context
+
+    @staticmethod
+    async def _wait_while_paused(pipeline: Pipeline) -> None:
+        """Block while the pipeline is paused (its run gate exists and is clear)."""
+        gate = getattr(pipeline, "_run_gate", None)
+        if isinstance(gate, asyncio.Event):
+            await gate.wait()
 
     def _should_terminate(self, execution_context: ExecutionContext) -> bool:
         """

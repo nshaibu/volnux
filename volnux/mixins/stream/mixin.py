@@ -109,7 +109,7 @@ class StreamingMixin:
 
     Resume
     ------
-    Generators are not serialisable. On resume self._stream_generator is
+    Generators are not serializable. On resume self._stream_generator is
     None. _reduce detects sub_phase_index > 0 as the resume signal and
     re-calls process() to obtain a fresh generator. The fast-forward loop
     consumes chunks below sub_phase_index without re-pushing them.

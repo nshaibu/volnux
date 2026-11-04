@@ -63,6 +63,7 @@ _EVENT_BASE_MODULE = os.environ.get("VOLNUX_EVENT_BASE_MODULE", "volnux.event.ba
 # stub so any later `.get(key, default=...)` returns the supplied default,
 # making the test suite fully deterministic without touching a real backend.
 
+
 class _StubVolnuxConfig:
     """Deterministic stand-in for VolnuxConfig used by the event test suite."""
 
@@ -175,6 +176,7 @@ def _load_event_base():
 # 4. Registry isolation — snapshot & restore around every test
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def _isolate_event_registry():
     """Snapshot & restore the global event registry around every test.
@@ -216,6 +218,7 @@ def _isolate_event_registry():
 # 5. Asyncio configuration
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def event_loop():
     """Yield a fresh event loop per test."""
@@ -227,6 +230,7 @@ def event_loop():
 # ---------------------------------------------------------------------------
 # 6. Concrete dummy event subclass + builder fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def dummy_event_cls():
@@ -324,6 +328,7 @@ def event(make_event, checkpoint_manager):
 # 7. VolnuxConfig stub accessor
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def volnux_config_stub():
     """Expose the stub VolnuxConfig instance so tests can install overrides."""
@@ -336,6 +341,7 @@ def volnux_config_stub():
 # ---------------------------------------------------------------------------
 # 8. Helpers for steps_runner tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def make_step():

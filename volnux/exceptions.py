@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime, timezone
 from dataclasses import dataclass, field, InitVar
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 if TYPE_CHECKING:
     from volnux.event import EventBase
@@ -233,7 +233,9 @@ class SkipExecutionError(Exception):
     pass
 
 
-@dataclass
+# eq=False: dataclass(eq=True) would set __hash__ to None, but exceptions must stay
+# hashable (they are collected into sets and used as dict keys by result routing).
+@dataclass(eq=False)
 class ExternalCommunicationSuspensionRequest(SuspendTask):
     """
     Represents a request to suspend a task waiting for external communication
@@ -263,6 +265,10 @@ class ExternalCommunicationSuspensionRequest(SuspendTask):
     :type event_type: Optional[str]
     :ivar event_filter: Dictionary containing filters for the event listener.
     :type event_filter: Dict[str, Any]
+    :ivar condition_fn: For CONDITION requests, the callable polled until it returns truthy.
+    :type condition_fn: Optional[Callable[[], Any]]
+    :ivar poll_interval_seconds: For CONDITION requests, seconds between polls.
+    :type poll_interval_seconds: Optional[float]
     :ivar message: Message to be displayed when the suspension request is raised.
     :type message: str
     :ivar created_at: ISO 8601 formatted string representing the timestamp of when the request was created.
@@ -275,14 +281,13 @@ class ExternalCommunicationSuspensionRequest(SuspendTask):
     title: str
     description: str
     payload: Dict[str, Any]
-    title: str
-    description: str
-    payload: Dict[str, Any]
     options: Optional[List[str]]
     timeout_hours: Optional[int]
     task: InitVar["BaseEvent"]
     event_type: Optional[str] = None
     event_filter: Dict[str, Any] = field(default_factory=dict)
+    condition_fn: Optional[Callable[[], Any]] = None
+    poll_interval_seconds: Optional[float] = None
     message: str = "Task suspended for higher priority execution"
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -291,12 +296,31 @@ class ExternalCommunicationSuspensionRequest(SuspendTask):
     def __post_init__(self, task: "BaseEvent") -> None:
         # request_type is an ExternalCommunicationType, imported only under
         # TYPE_CHECKING to avoid a circular import with volnux.mixins.event.external
-        suspension_type = (
-            SuspensionType.HITL
-            if getattr(self.request_type, "value", None) == "hitl"
-            else SuspensionType.EXTERNAL_EVENT
+        suspension_type = {
+            "hitl": SuspendTask.SuspensionType.HITL,
+            "event": SuspendTask.SuspensionType.EXTERNAL_EVENT,
+            "condition": SuspendTask.SuspensionType.CONDITION,
+        }.get(
+            getattr(self.request_type, "value", None),
+            SuspendTask.SuspensionType.EXTERNAL_EVENT,
         )
         super().__init__(task, suspension_type=suspension_type, message=self.message)
+
+
+#: Exceptions that steer execution rather than report a failure. Retry logic and
+#: failure handling must let them through untouched: retrying a ``goto()``
+#: (SwitchTask) or a requested stop/suspension/bypass is always wrong.
+CONTROL_FLOW_EXCEPTIONS = (
+    SwitchTask,
+    StopProcessingError,
+    SuspendTask,  # includes ExternalCommunicationSuspensionRequest
+    SkipExecutionError,
+)
+
+
+class TaskCancelledError(Exception):
+    """A task was cancelled before it produced a result (a CANCEL command or
+    ``Pipeline.stop()``). Not a failure: the run ends as CANCELLED."""
 
 
 class TaskSwitchingError(PipelineError):

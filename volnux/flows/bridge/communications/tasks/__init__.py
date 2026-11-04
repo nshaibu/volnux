@@ -4,13 +4,13 @@ of executor bridges.
 
 This module provides the functionality to create communication bridges
 required for task execution and coordination between various components.
-The supported executor types include local, thread, process, and celery.
+Tasks in this process use the local bridge; tasks outside it (process pool,
+Celery) use the messaging bridge over the configured Redis/Kafka backend.
 
 Exports:
 - TaskCommunicationBridge: Abstract base class for task communication bridges.
 - LocalTaskCommunicationBridge: Concrete implementation for local task communication.
-- ProcessTaskCommunicationBridge: Implementation for process-based task communication.
-- CeleryTaskCommunicationBridge: Implementation for celery-based task communication.
+- MessagingTaskCommunicationBridge: Implementation over a messaging backend.
 - TaskExecutionHandle: Represents a handle for task execution.
 - create_communication_bridge: Factory function to create a communication bridge.
 
@@ -27,12 +27,13 @@ from .base import (
     TaskState,
     TaskStatus,
     CommandType,
+    ChannelUnavailable,
+    TERMINAL_STATES,
+    parse_task_state,
 )
 
 from .local import LocalTaskCommunicationBridge
-from .process import ProcessTaskCommunicationBridge
-from .celery import CeleryTaskCommunicationBridge
-from .remote import RemoteTaskCommunicationBridge
+from .messaging import MessagingTaskCommunicationBridge
 
 if TYPE_CHECKING:
     from volnux.execution.context import ExecutionContext
@@ -44,22 +45,23 @@ def create_communication_bridge(
     **kwargs,
 ) -> TaskCommunicationBridge:
     """
-    Factory function to create the appropriate communication bridge.
+    Create the bridge matching where a task runs.
 
     Args:
         context: Execution context
-        executor_type: Type of executor ("local", "process", "remote", "celery")
+        executor_type: ``"local"``/``"thread"`` for tasks in this process,
+            ``"process"``/``"celery"``/``"messaging"`` for tasks outside it.
         **kwargs: Additional arguments for specific bridge types
 
     Returns:
-        Appropriate TaskCommunicationBridge instance
+        The matching TaskCommunicationBridge instance
     """
     bridges = {
         "local": LocalTaskCommunicationBridge,
         "thread": LocalTaskCommunicationBridge,
-        "process": ProcessTaskCommunicationBridge,
-        "remote": RemoteTaskCommunicationBridge,
-        "celery": CeleryTaskCommunicationBridge,
+        "process": MessagingTaskCommunicationBridge,
+        "celery": MessagingTaskCommunicationBridge,
+        "messaging": MessagingTaskCommunicationBridge,
     }
 
     bridge_class = bridges.get(executor_type.lower())
@@ -72,11 +74,16 @@ def create_communication_bridge(
 __all__ = [
     "TaskCommunicationBridge",
     "LocalTaskCommunicationBridge",
-    "ProcessTaskCommunicationBridge",
+    "MessagingTaskCommunicationBridge",
+    "ChannelUnavailable",
     "TaskExecutionHandle",
     "create_communication_bridge",
     "TaskCommand",
     "CommandType",
     "MessageType",
     "TaskMessage",
+    "TaskState",
+    "TaskStatus",
+    "TERMINAL_STATES",
+    "parse_task_state",
 ]

@@ -32,6 +32,13 @@ class ParallelFlow(BaseFlow):
     """
 
     async def get_flow_executor(self, *args, **kwargs) -> Type[BaseExecutor]:
+        """The group's executor: the one chosen in pointy for the decision task,
+        else the process pool (the default for parallel work)."""
+        decision = self.context.get_decision_task_profile()
+        if decision is not None:
+            chosen = self.get_task_executor_from_options(decision)
+            if chosen is not None:
+                return chosen
         return _GLOBAL_EXECUTOR_REGISTRY.get("process")
 
     def gather_parallel_events(
@@ -91,12 +98,19 @@ class ParallelFlow(BaseFlow):
                 f"decision_task: {task_profile.get_id()})"
             )
 
-            with self._initialize_executor(executor_class, executor_config) as executor:
-                future = await self._map_events_to_executor(
-                    executor, event_execution_config=event_config
-                )
+            # The executor is owned by the flow and shut down in BaseFlow.close(),
+            # after the coordinator has awaited the results. (Shutting it down
+            # here, as a `with` block did, closes the pool right after submit.)
+            executor = self._initialize_executor(executor_class, executor_config)
+            futures = await self._map_events_to_executor(
+                executor, event_execution_config=event_config
+            )
 
-            return future
+            # ONE future for the whole group, resolving to a list of per-event
+            # results (and exceptions, which ResultProcessor routes to errors).
+            # Returning the bare list of futures broke asyncio.gather() in
+            # ResultProcessor.process_futures().
+            return asyncio.gather(*futures, return_exceptions=True)
         except ValueError as e:
             logger.error(f"Configuration error in ParallelFlow.run(): {e}")
             raise
@@ -120,6 +134,3 @@ class ParallelFlow(BaseFlow):
                 f"Failed to execute parallel events: {e}\n"
                 f"Events: {', '.join(event_names) if event_names else 'N/A'}"
             ) from e
-        finally:
-            if executor:
-                await self.shutdown_executor(executor)

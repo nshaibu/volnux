@@ -107,10 +107,12 @@ class CheckPointConfig(BaseModel):
         CheckPointPolicyConfig, Attrib(default_factory=lambda: CheckPointPolicyConfig())
     ]
     runtime: MiniAnnotated[
-        CheckPointRuntimeConfig, Attrib(default_factory=lambda: CheckPointRuntimeConfig())
+        CheckPointRuntimeConfig,
+        Attrib(default_factory=lambda: CheckPointRuntimeConfig()),
     ]
     storage: MiniAnnotated[
-        CheckPointStorageConfig, Attrib(default_factory=lambda: CheckPointStorageConfig())
+        CheckPointStorageConfig,
+        Attrib(default_factory=lambda: CheckPointStorageConfig()),
     ]
 
     class Config:

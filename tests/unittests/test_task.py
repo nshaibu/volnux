@@ -140,4 +140,3 @@ class TestTask(unittest.TestCase):
         del cls.B
         del cls.C
         del cls.S
-

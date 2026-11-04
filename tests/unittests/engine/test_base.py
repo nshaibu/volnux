@@ -9,10 +9,10 @@ from volnux.engine.base import (
     EngineExecutionResult,
     EngineResult,
     TaskNode,
-    WorkflowEngine, SubgraphErrorStrategy,
+    WorkflowEngine,
+    SubgraphErrorStrategy,
 )
 from volnux.engine.checkpoint_config import CheckPointConfig, CheckPointFrequency
-
 
 
 class _ConcreteEngine(WorkflowEngine):
@@ -62,7 +62,6 @@ class TestEngineExecutionResult:
         assert EngineExecutionResult.COMPLETED in values
         assert EngineExecutionResult.TERMINATED_EARLY in values
         assert EngineExecutionResult.FAILED in values
-
 
 
 class TestTaskNode:
@@ -338,7 +337,6 @@ class TestWorkflowEngine:
         result = await engine.execute(root_task=MagicMock(), pipeline=MagicMock())
         assert isinstance(result, EngineResult)
         assert result.status == EngineExecutionResult.COMPLETED
-
 
     def test_task_queue_is_accessible(self):
         engine = _ConcreteEngine()

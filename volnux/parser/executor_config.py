@@ -54,12 +54,21 @@ class ExecutorInitializerConfig:
         return config_dict
 
     def update(self, other: "ExecutorInitializerConfig") -> "ExecutorInitializerConfig":
+        """Return a new config: ``self`` with everything ``other`` actually set.
+
+        A field of ``other`` counts as set when it differs from the field's
+        default. Defaults such as ``timeout=30`` or ``use_encryption=False``
+        therefore never overwrite what ``self`` configured, and fields ``self``
+        left UNSET are filled in. (Explicitly passing a value equal to the default
+        cannot be told apart from not passing it, so it does not override.)
+        """
         if not isinstance(other, ExecutorInitializerConfig):
             raise TypeError(f"Cannot add {self} to {other}")
-        config_dict = self.to_dict()
-        for field_name, value in config_dict.items():
-            if value is ConfigState.UNSET and other.is_configured(field_name):
-                config_dict[field_name] = getattr(other, field_name)
-            elif other.is_configured(field_name):
-                config_dict[field_name] = getattr(other, field_name)
-        return ExecutorInitializerConfig(**config_dict)
+        merged = {}
+        for fd in fields(self):
+            value = getattr(self, fd.name)
+            candidate = getattr(other, fd.name)
+            if candidate is not ConfigState.UNSET and candidate != fd.default:
+                value = candidate
+            merged[fd.name] = value
+        return ExecutorInitializerConfig(**merged)

@@ -15,7 +15,9 @@ logger = logging.getLogger(__name__)
 # Operators in a chain that connect tasks (as opposed to expression operators).
 _SEQUENCE_OPS = frozenset({"->", "|->"})
 
-_BINARY_OPERATORS: typing.Dict[str, typing.Callable[[typing.Any, typing.Any], typing.Any]] = {
+_BINARY_OPERATORS: typing.Dict[
+    str, typing.Callable[[typing.Any, typing.Any], typing.Any]
+] = {
     "+": operator.add,
     "-": operator.sub,
     "*": operator.mul,

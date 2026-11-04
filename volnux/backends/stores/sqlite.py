@@ -1,3 +1,4 @@
+import typing
 import logging
 import sqlite3
 import orjson as json
@@ -819,6 +820,48 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         except sqlite3.Error as e:
             logger.error(f"Error getting record: {e}")
             raise SqlOperationError(f"Error getting record: {e}")
+        finally:
+            if cursor:
+                cursor.close()
+
+    # SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999 on older builds.
+    _GET_MANY_CHUNK = 500
+
+    def get_many(
+        self,
+        schema_name: str,
+        record_keys: typing.Sequence[Union[str, int]],
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+    ) -> Dict[str, "KeyValueStoreIntegrationMixin"]:
+        """Retrieve several records with ``WHERE id IN (...)`` queries."""
+        keys = list(record_keys)
+        if not keys:
+            return {}
+        self._ensure_connected()
+
+        found: Dict[str, "KeyValueStoreIntegrationMixin"] = {}
+        cursor = None
+        try:
+            cursor = self.connector.get_cursor()
+            for i in range(0, len(keys), self._GET_MANY_CHUNK):
+                chunk = keys[i : i + self._GET_MANY_CHUNK]
+                placeholders = ", ".join("?" for _ in chunk)
+                cursor.execute(
+                    f"SELECT * FROM {_safe_name(schema_name)} "
+                    f"WHERE id IN ({placeholders})",
+                    chunk,
+                )
+                for row in cursor.fetchall():
+                    row_dict = self._sqlite_row_and_tuple_to_dict(row, cursor)
+                    found[str(row_dict["id"])] = self._deserialize_record(
+                        row_dict, record_klass
+                    )
+            return found
+        except SerializationError:
+            raise
+        except sqlite3.Error as e:
+            logger.error(f"Error getting records: {e}")
+            raise SqlOperationError(f"Error getting records: {e}")
         finally:
             if cursor:
                 cursor.close()

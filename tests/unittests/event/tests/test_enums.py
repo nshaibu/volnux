@@ -56,14 +56,29 @@ class TestEventCategory:
     def test_documented_members_present(self):
         _, EventCategory = _import_enums()
         documented = {
-            "EXTRACT", "TRANSFORM", "LOAD", "INGEST", "DATABASE", "HTTP",
-            "MESSAGING", "FILE", "CACHE", "VALIDATE", "ANALYZE", "MONITOR",
-            "AUTOMATION", "NOTIFICATION", "CLEANUP", "AI", "AGENT", "OTHER",
+            "EXTRACT",
+            "TRANSFORM",
+            "LOAD",
+            "INGEST",
+            "DATABASE",
+            "HTTP",
+            "MESSAGING",
+            "FILE",
+            "CACHE",
+            "VALIDATE",
+            "ANALYZE",
+            "MONITOR",
+            "AUTOMATION",
+            "NOTIFICATION",
+            "CLEANUP",
+            "AI",
+            "AGENT",
+            "OTHER",
         }
         actual = {m.name for m in EventCategory}
-        assert documented.issubset(actual), (
-            f"Missing documented categories: {documented - actual}"
-        )
+        assert documented.issubset(
+            actual
+        ), f"Missing documented categories: {documented - actual}"
 
     def test_each_member_value_equals_name(self):
         """Every EventCategory member has value == name (uppercase string)."""
@@ -80,7 +95,9 @@ class TestEventCategory:
     def test_member_hashable_and_unique(self):
         """Members must be usable in frozenset (used by EventBase.categories)."""
         _, EventCategory = _import_enums()
-        fs = frozenset({EventCategory.EXTRACT, EventCategory.LOAD, EventCategory.EXTRACT})
+        fs = frozenset(
+            {EventCategory.EXTRACT, EventCategory.LOAD, EventCategory.EXTRACT}
+        )
         assert len(fs) == 2
 
     def test_other_is_default_for_event_base(self):

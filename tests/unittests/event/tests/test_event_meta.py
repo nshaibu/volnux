@@ -101,6 +101,7 @@ class TestEventMetaRegistration:
         # So the ImproperlyConfigured raised inside __new__ will propagate
         # out of class creation. We expect it to surface.
         with pytest.raises(ImproperlyConfigured):
+
             class _ListCategoryEvent(EventBase):  # type: ignore[misc, valid-type]
                 categories = [EventCategory.OTHER]  # type: ignore[assignment]
 
@@ -112,6 +113,7 @@ class TestEventMetaRegistration:
         from volnux.exceptions import ImproperlyConfigured
 
         with pytest.raises(ImproperlyConfigured):
+
             class _BadCategoryEvent(EventBase):  # type: ignore[misc, valid-type]
                 categories = frozenset({"NOT_A_CATEGORY"})  # type: ignore[arg-type]
 
@@ -130,10 +132,12 @@ class TestEventMetaRegistration:
 
         # Patch `get_version_handler` on EventBase to raise RuntimeError.
         with patch.object(
-            EventBase, "get_version_handler",
+            EventBase,
+            "get_version_handler",
             side_effect=RuntimeError("simulated versioning failure"),
         ):
             with caplog.at_level(logging.WARNING):
+
                 class _FailingVersionEvent(EventBase):  # type: ignore[misc, valid-type]
                     async def process(self, *args, **kwargs):
                         return True, {}
@@ -142,8 +146,7 @@ class TestEventMetaRegistration:
         assert _FailingVersionEvent is not None
         # And a warning was logged
         assert any(
-            "simulated versioning failure" in r.getMessage()
-            for r in caplog.records
+            "simulated versioning failure" in r.getMessage() for r in caplog.records
         ), "Expected a warning log when versioning raises RuntimeError"
 
 

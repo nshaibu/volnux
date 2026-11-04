@@ -2,6 +2,8 @@ import asyncio
 import contextlib
 import functools
 import logging
+import threading
+import time
 from typing import (
     Any,
     Iterable,
@@ -48,6 +50,10 @@ def _decode(value: Any) -> Any:
     return value.decode() if isinstance(value, bytes) else value
 
 
+# Strong references to in-flight restore tasks (bare tasks can be garbage collected).
+_PENDING_RESTORES: "set[asyncio.Future[Any]]" = set()
+
+
 class RedisMessagingMixin:
     """Shared command execution for the Redis messaging capability mixins.
 
@@ -84,6 +90,99 @@ class RedisMessagingMixin:
             return await loop.run_in_executor(
                 _BLOCKING_EXECUTOR,
                 functools.partial(self._execute_sync, command, *args, **kwargs),
+            )
+
+    # A blocking pop is issued as a series of BLPOP/BRPOP calls of at most this
+    # many seconds. A thread blocked inside one call cannot be interrupted, so
+    # slicing bounds how long a worker outlives a cancelled caller.
+    _BLOCKING_SLICE = 1.0
+
+    def _blocking_pop_sync(
+        self,
+        command: str,
+        key: str,
+        timeout: float,
+        cancelled: threading.Event,
+    ) -> Any:
+        """Worker-thread loop behind a blocking pop (``timeout=0`` = forever).
+
+        Stops between slices once ``cancelled`` is set.
+        """
+        deadline = None if timeout == 0 else time.monotonic() + timeout
+        while not cancelled.is_set():
+            slice_timeout = self._BLOCKING_SLICE
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                slice_timeout = min(slice_timeout, remaining)
+            result = self._execute_sync(command, key, timeout=slice_timeout)
+            if result is not None:
+                return result
+        return None
+
+    async def _blocking_pop(self, command: str, key: str, timeout: float) -> Any:
+        """Cancellation-safe blocking pop.
+
+        If the caller is cancelled (or times out via ``wait_for``) while the
+        worker thread is inside BLPOP/BRPOP, the thread may still receive an
+        item afterwards. That item has no consumer any more, so it is pushed
+        back to the end it was taken from instead of being dropped.
+        """
+        loop = asyncio.get_running_loop()
+        semaphore = self._get_blocking_semaphore()
+        cancelled = threading.Event()
+
+        await semaphore.acquire()
+        try:
+            future = loop.run_in_executor(
+                _BLOCKING_EXECUTOR,
+                functools.partial(
+                    self._blocking_pop_sync, command, key, timeout, cancelled
+                ),
+            )
+        except BaseException:
+            semaphore.release()
+            raise
+        # The slot is held until the worker really finishes, not merely until
+        # the caller stops waiting, so the pool-size cap stays accurate.
+        future.add_done_callback(lambda _f: semaphore.release())
+
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            cancelled.set()
+            future.add_done_callback(
+                functools.partial(self._restore_orphaned_pop, command, key)
+            )
+            raise
+
+    def _restore_orphaned_pop(
+        self, command: str, key: str, future: "asyncio.Future[Any]"
+    ) -> None:
+        """Done-callback: push back an item popped for a caller that left."""
+        if future.cancelled() or future.exception() is not None:
+            return  # nothing was popped (errors are the dead caller's to lose)
+        result = future.result()
+        if result is None:
+            return
+        _, raw = result
+        restore = "lpush" if command == "blpop" else "rpush"
+        task = asyncio.ensure_future(self._restore_item(restore, key, raw))
+        _PENDING_RESTORES.add(task)
+        task.add_done_callback(_PENDING_RESTORES.discard)
+
+    async def _restore_item(self, command: str, key: str, raw: Any) -> None:
+        try:
+            await self._execute(command, key, raw)
+            logger.info("Restored item popped for a cancelled caller on '%s'", key)
+        except Exception:
+            logger.critical(
+                "Could not restore an item popped for a cancelled caller on '%s'; "
+                "the message is lost: %r",
+                key,
+                raw,
+                exc_info=True,
             )
 
     def _get_blocking_semaphore(self) -> asyncio.Semaphore:
@@ -311,8 +410,8 @@ class RedisStorePushPopMixin(RedisMessagingMixin, PushPopCapabilityMixin):
             if timeout is None:
                 raw = await self._execute("lpop" if left else "rpop", key)
             else:
-                result = await self._execute_blocking(
-                    "blpop" if left else "brpop", key, timeout=float(timeout)
+                result = await self._blocking_pop(
+                    "blpop" if left else "brpop", key, float(timeout)
                 )
                 if result is None:
                     return None
@@ -371,6 +470,10 @@ class RedisStorePushPopMixin(RedisMessagingMixin, PushPopCapabilityMixin):
                         break
                     raws.append(raw)
         return [self._deserialize(raw, record_class) for raw in raws]
+
+    async def queue_delete(self, key: str) -> bool:
+        with _redis_errors(f"Failed to delete queue {key}"):
+            return bool(await self._execute("delete", key))
 
     async def queue_length(self, key: str) -> int:
         with _redis_errors(f"Failed to get queue length for {key}"):

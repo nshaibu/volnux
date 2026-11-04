@@ -110,6 +110,12 @@ class RedisConnector(BackendConnectorBase[Redis]):
                 "decode_responses": self.config.extra_params.get(
                     "decode_responses", True
                 ),
+                # redis-py pings a connection before reusing it once it has been
+                # idle this long (and reconnects dropped sockets on its own), so
+                # no per-operation PING is needed to keep connections healthy.
+                "health_check_interval": self.config.extra_params.get(
+                    "health_check_interval", 30
+                ),
             }
 
             # Add authentication if provided
@@ -213,16 +219,28 @@ class RedisConnector(BackendConnectorBase[Redis]):
             self._is_connected = False
 
     def is_connected(self) -> bool:
-        """Check if the connector is currently connected to Redis.
+        """Whether the connector believes it is connected. No network I/O.
+
+        This is called before every operation, so it must not ``PING``. Dropped
+        sockets are repaired by redis-py itself (it reconnects on the next
+        command, and ``health_check_interval`` covers idle connections), and a
+        real failure surfaces as a ``RedisError`` from the command that hit it.
+        Use ``ping()`` to verify the server explicitly.
+        """
+        return self._is_connected and self._client is not None
+
+    def ping(self) -> bool:
+        """Test if the Redis server is alive and responsive (one ``PING``).
 
         Returns:
-            True if connected and connection is healthy, False otherwise.
+            True if the server answers, False otherwise (and the connector is
+            marked disconnected so the next ``ensure_connected`` reconnects).
         """
         if not self._is_connected or self._client is None:
             return False
 
         try:
-            return self._client.ping()
+            return bool(self._client.ping())
         except (RedisConnectionError, RedisTimeoutError, RedisError):
             self._is_connected = False
             return False
@@ -230,14 +248,6 @@ class RedisConnector(BackendConnectorBase[Redis]):
             logger.warning(f"Unexpected error checking Redis connection: {e}")
             self._is_connected = False
             return False
-
-    def ping(self) -> bool:
-        """Test if the Redis connection is alive and responsive.
-
-        Returns:
-            True if the connection responds successfully, False otherwise.
-        """
-        return self.is_connected()
 
     def get_cursor(self) -> Redis:
         """Get the Redis client for executing commands.

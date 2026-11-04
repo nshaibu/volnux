@@ -10,6 +10,7 @@ from volnux.exceptions import ExternalCommunicationSuspensionRequest
 class ExternalCommunicationType(Enum):
     HITL = "hitl"
     EVENT = "event"
+    CONDITION = "condition"
 
 
 class ExternalCommunicationMixin:
@@ -109,7 +110,7 @@ class ExternalCommunicationMixin:
                 )
                 # When we reach process(), the file exists
         """
-        if self._phase != EventPhase.COMMUNICATING:
+        if self._active_phase != EventPhase.COMMUNICATING:
             raise RuntimeError(
                 "wait_for_condition() can only be called from communicate() hook"
             )
@@ -161,7 +162,7 @@ class ExternalCommunicationMixin:
                     timeout_hours=1,
                 )
         """
-        if self._phase != EventPhase.COMMUNICATING:
+        if self._active_phase != EventPhase.COMMUNICATING:
             raise RuntimeError(
                 "wait_for_event() can only be called from communicate() hook"
             )
@@ -199,10 +200,17 @@ class ExternalCommunicationMixin:
                 type="human_response"
             ).first()
 
+        Must be called from the ``communicate()`` hook. On resumption
+        ``communicate()`` runs again from the top and finds the human's answer
+        in ``previous_result``, so ``process()`` only ever sees the decision.
+
         Usage::
 
-            async def process(self, order: dict, **kwargs):
-                if order["amount"] > 100_000:
+            async def communicate(self, order: dict, **kwargs):
+                response = self.previous_result.filter(
+                    type="human_response"
+                ).first() if self.previous_result else None
+                if response is None and order["amount"] > 100_000:
                     await self.request_human_input(
                         title="High-value order requires approval",
                         description=f"Order {order['id']} exceeds threshold.",
@@ -210,16 +218,16 @@ class ExternalCommunicationMixin:
                         options=["approve", "reject"],
                         timeout_hours=4,
                     )
-                    # Resumes here after human responds
-                    response = self.previous_result.filter(
-                        type="human_response"
-                    ).first()
-                    if response.content["decision"] == "reject":
-                        return False, {"reason": "human_rejected"}
 
+            async def process(self, order: dict, **kwargs):
+                response = self.previous_result.filter(
+                    type="human_response"
+                ).first() if self.previous_result else None
+                if response and response.content["decision"] == "reject":
+                    return False, {"reason": "human_rejected"}
                 return True, {"order": order}
         """
-        if self._phase != EventPhase.COMMUNICATING:
+        if self._active_phase != EventPhase.COMMUNICATING:
             raise RuntimeError(
                 "request_human_input() can only be called from communicate() hook"
             )

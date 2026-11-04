@@ -8,7 +8,7 @@ from treelib import Tree
 from volnux import EventBase, Pipeline
 from volnux.constants import PIPELINE_FIELDS, PIPELINE_STATE
 from volnux.exceptions import EventDoesNotExist, EventDone
-from volnux.fields import FileInputDataField, InputDataField
+from volnux.execution.pipeline.fields import FileInputDataField, InputDataField
 
 # fix deadlock in python3.11 for state management
 multiprocessing.set_start_method("spawn", force=True)
@@ -235,3 +235,45 @@ class PipelineTest(unittest.TestCase):
         del cls.M
         del cls.N
         del cls.pipeline_klass
+
+
+class _InheritEvent(EventBase):
+    def process(self, *args, **kwargs):
+        return True, "ok"
+
+
+class _BasePipeline(Pipeline):
+    first = InputDataField(data_type=str, required=True)
+    shared = InputDataField(data_type=int, default=1)
+
+    class Meta:
+        pointy = "_InheritEvent"
+
+
+class _ChildPipeline(_BasePipeline):
+    second = InputDataField(data_type=str, default="b")
+    shared = InputDataField(data_type=int, default=2)  # overrides the parent's
+
+    class Meta:
+        pointy = "_InheritEvent"
+
+
+def test_a_subclassed_pipeline_inherits_its_parents_fields():
+    """The metaclass collected only the class's own namespace, so a subclass
+    silently lost every field of its parent."""
+    names = [name for name, _ in _ChildPipeline.get_fields()]
+    assert set(names) == {"first", "shared", "second"}
+    assert [name for name, _ in _BasePipeline.get_fields()] == ["first", "shared"]
+
+
+def test_a_child_field_overrides_the_parents_field_of_the_same_name():
+    fields = dict(_ChildPipeline.get_fields())
+    assert fields["shared"].default == 2
+    assert dict(_BasePipeline.get_fields())["shared"].default == 1
+
+
+def test_a_subclassed_pipeline_accepts_and_requires_inherited_fields():
+    child = _ChildPipeline(first="x")
+    assert (child.first, child.second, child.shared) == ("x", "b", 2)
+    with pytest.raises(TypeError):
+        _ChildPipeline()  # the parent's required field is still required

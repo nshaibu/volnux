@@ -22,6 +22,16 @@ KEY_VALUE_STORE_CONFIG = {
     #     "port": 6379,
     # },
 }
+# Kafka (pip install 'volnux[kafka]') provides key-value records, pub/sub, queues
+# and streams from one backend:
+# KEY_VALUE_STORE_CONFIG = {
+#     "ENGINE": "volnux.backends.stores.kafka.KafkaStoreBackend",
+#     "CONNECTOR_CONFIG": {
+#         "bootstrap_servers": "broker1:9092,broker2:9092",
+#         # "username": "...", "password": "...", "ssl_enabled": True,
+#         # "num_partitions": 1, "replication_factor": 3,
+#     },
+# }
 
 DEFAULT_CONNECTION_TIMEOUT = 30  # seconds
 DATA_CHUNK_SIZE = 4096

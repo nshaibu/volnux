@@ -394,3 +394,28 @@ def test_backup_creates_backup_file(tmp_path):
         assert rows == [("alice",)]
     finally:
         connector.disconnect()
+
+
+def test_is_connected_probes_at_most_once_per_interval(sqlite_connector):
+    connection = MagicMock()
+    sqlite_connector._connection = connection
+    sqlite_connector._is_connected = True
+    sqlite_connector.health_check_interval = 60
+    sqlite_connector._verified_at = 0.0
+
+    for _ in range(50):
+        assert sqlite_connector.is_connected() is True
+
+    assert connection.cursor.call_count == 1  # one probe, then trusted
+
+
+def test_is_connected_with_zero_interval_probes_every_call(sqlite_connector):
+    connection = MagicMock()
+    sqlite_connector._connection = connection
+    sqlite_connector._is_connected = True
+    sqlite_connector.health_check_interval = 0
+
+    for _ in range(3):
+        sqlite_connector.is_connected()
+
+    assert connection.cursor.call_count == 3
