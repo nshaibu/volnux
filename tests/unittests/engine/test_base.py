@@ -37,6 +37,9 @@ class _ConcreteEngine(WorkflowEngine):
     async def execute(self, root_task, pipeline):
         return EngineResult(status=EngineExecutionResult.COMPLETED)
 
+    async def resume(self, pipeline):
+        return EngineResult(status=EngineExecutionResult.COMPLETED)
+
 
 class TestEngineExecutionResult:
     """Tests for the EngineExecutionResult enum."""
@@ -345,3 +348,62 @@ class TestWorkflowEngine:
     def test_sink_queue_is_accessible(self):
         engine = _ConcreteEngine()
         assert engine.sink_queue == []
+
+
+class TestResumeContract:
+    """Every workflow engine can be resumed: the interface is on WorkflowEngine itself."""
+
+    def test_resume_is_part_of_the_abstract_interface(self):
+        assert "resume" in WorkflowEngine.__abstractmethods__
+
+    def test_an_engine_that_cannot_resume_cannot_be_instantiated(self):
+        class NoResume(WorkflowEngine):
+            task_queue = sink_queue = property(lambda self: [])
+
+            async def spawn_sub_engine(self, *a, **k):
+                return self
+
+            async def execute(self, root_task, pipeline):
+                return EngineResult(status=EngineExecutionResult.COMPLETED)
+
+        with pytest.raises(TypeError, match="resume"):
+            NoResume()
+
+    def test_every_engine_can_stage_a_resumed_event(self):
+        engine = _ConcreteEngine()
+        engine.stage_resumed_event("t1", "event-1")
+        assert engine._resumed_events == {"t1": "event-1"}
+
+    def test_staged_events_belong_to_one_engine(self):
+        a, b = _ConcreteEngine(), _ConcreteEngine()
+        a.stage_resumed_event("t1", "event")
+        assert b._resumed_events == {}
+
+    def test_staging_again_replaces_the_event(self):
+        engine = _ConcreteEngine()
+        engine.stage_resumed_event("t1", "old")
+        engine.stage_resumed_event("t1", "new")
+        assert engine._resumed_events == {"t1": "new"}
+
+    @pytest.mark.asyncio
+    async def test_a_concrete_engine_resumes(self):
+        result = await _ConcreteEngine().resume(pipeline=None)
+        assert result.status == EngineExecutionResult.COMPLETED
+
+    def test_the_default_engine_uses_the_inherited_staging(self):
+        from volnux.engine.default_engine import DefaultWorkflowEngine
+
+        assert "stage_resumed_event" not in vars(DefaultWorkflowEngine)
+        assert "resume" in vars(DefaultWorkflowEngine)
+        engine = DefaultWorkflowEngine()
+        engine.stage_resumed_event("t1", "event")
+        assert engine._resumed_events == {"t1": "event"}
+
+    def test_the_resume_helper_accepts_any_engine_class(self):
+        import inspect
+        import typing
+
+        from volnux.engine.resume import resume_suspended_workflow
+
+        hints = typing.get_type_hints(resume_suspended_workflow)
+        assert hints["engine_class"] == typing.Type[WorkflowEngine]

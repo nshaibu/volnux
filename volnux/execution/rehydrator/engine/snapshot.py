@@ -6,6 +6,7 @@ from formax import BaseModel, MiniAnnotated, Attrib, ValidationFlags
 
 from volnux.engine.base import WorkflowEngine
 from volnux import __version__ as volnux_version
+from volnux.backends.storage_route import StorageRoute
 from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 if typing.TYPE_CHECKING:
@@ -18,7 +19,8 @@ logger = logging.getLogger(__name__)
 
 class QueueTaskTemplate(typing.TypedDict, total=True):
     task_id: str
-    previous_context_id: str
+    # None for the root node, which follows no context
+    previous_context_id: typing.Optional[str]
     position_in_queue: int
 
 
@@ -74,11 +76,14 @@ class TaskSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
         validation = ValidationFlags.NONE
 
     @classmethod
-    def get_schema_name(cls) -> str:
-        return "volnux:snapshot:task"
+    def get_storage_route(cls) -> StorageRoute:
+        return StorageRoute(components=["volnux", "snapshot", "task"])
 
     async def restore(self) -> "TaskType":
-        pass
+        """The live task (with its whole graph) this snapshot describes."""
+        from .deserializer import StateDeserializer
+
+        return StateDeserializer.rebuild_task(self.dump("dict"))
 
 
 class EngineStateSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
@@ -121,8 +126,12 @@ class EngineStateSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
         validation = ValidationFlags.NONE
 
     @classmethod
-    def get_schema_name(cls) -> str:
-        return "volnux:snapshot:engine"
+    def get_storage_route(cls) -> StorageRoute:
+        return StorageRoute(components=["volnux", "snapshot", "engine"])
 
     async def restore(self) -> WorkflowEngine:
-        pass
+        """Not available on the snapshot alone: an engine is rebuilt together with the
+        contexts and tasks it refers to, by ``LazyRehydrator.resume_from``."""
+        raise NotImplementedError(
+            "Use LazyRehydrator.resume_from(context_id, engine_class) to restore an engine"
+        )

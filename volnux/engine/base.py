@@ -75,17 +75,31 @@ class WorkflowEngine(ABC):
             SubgraphErrorStrategy.TREAT_AS_FAILURE
         )
 
+        # task id -> event rehydrated from a checkpoint, to run in place of the fresh
+        # event that task would otherwise build (see stage_resumed_event)
+        self._resumed_events: typing.Dict[str, typing.Any] = {}
+
         self._checkpointer: typing.Optional[VolnuxCheckPointManager] = None
+        # True when this engine built the manager itself (and must stop it);
+        # a manager handed in through enable_checkpointing() belongs to the caller.
+        self._owns_checkpointer: bool = False
         self.checkpoint_config: typing.Optional[CheckPointConfig] = None
+        self._checkpoint_frequency: CheckPointFrequency = CheckPointFrequency.PER_TASK
 
         if enable_checkpointing:
             self.checkpoint_config = (
                 checkpoint_config if checkpoint_config else CheckPointConfig()
             )
+            self._checkpoint_frequency = self.checkpoint_config.policy.frequency
 
     def is_root_engine(self) -> bool:
         """Check if this is the top-level engine."""
         return self.parent_engine is None
+
+    @property
+    def checkpoint_manager(self) -> typing.Optional[VolnuxCheckPointManager]:
+        """The checkpoint manager in use (the root engine's, for sub-engines)."""
+        return self._checkpointer
 
     def get_root_engine(self) -> "WorkflowEngine":
         """Traverse up to find the root engine."""
@@ -110,6 +124,31 @@ class WorkflowEngine(ABC):
             all_children.append(child)
             all_children.extend(child.get_all_child_engines())
         return all_children
+
+    def stage_resumed_event(self, task_id: str, event: typing.Any) -> None:
+        """Stage an event rehydrated from a checkpoint for ``task_id``.
+
+        When the engine reaches that task it runs this event (with its state, phase
+        and injected results) instead of building a fresh one. Call it before
+        ``resume()``.
+        """
+        self._resumed_events[task_id] = event
+
+    @abstractmethod
+    async def resume(self, pipeline: Pipeline) -> EngineResult:
+        """
+        Continue a workflow from where a rehydrated engine stopped.
+
+        The engine comes from ``LazyRehydrator.resume_from``: its work queue holds
+        the interrupted task first, then whatever was still to do, and its sink
+        queue the deferred sinks. The interrupted task runs again (with any event
+        staged through ``stage_resumed_event``) and the workflow proceeds as an
+        uninterrupted run would.
+
+        Returns the result of the resumed run: it may complete, fail, or suspend
+        again.
+        """
+        pass
 
     @abstractmethod
     async def spawn_sub_engine(
@@ -190,7 +229,47 @@ class WorkflowEngine(ABC):
         Enable automatic checkpointing for this engine.
         """
         self._checkpointer = checkpointer
+        self._owns_checkpointer = False
         self._checkpoint_frequency = checkpoint_frequency
+
+    async def _start_checkpointing(self) -> None:
+        """Root engine only: make sure a manager exists and is running.
+
+        The manager is an asyncio component (two tasks on the running loop), not a
+        process. When checkpointing is enabled and the caller supplied none, the
+        engine builds one from ``checkpoint_config`` and owns its lifetime.
+        Sub-engines never start or stop it; they share the root's.
+        """
+        if not self.is_root_engine():
+            return
+        if self._checkpointer is None and self.checkpoint_config is not None:
+            self._checkpointer = VolnuxCheckPointManager.from_config(
+                self.checkpoint_config
+            )
+            self._owns_checkpointer = True
+        if self._checkpointer is not None:
+            await self._checkpointer.start()
+
+    async def _stop_checkpointing(self) -> None:
+        """Root engine only: persist what is queued and stop a manager we built.
+
+        Runs on every way out of ``execute()`` (completed, failed, suspended,
+        terminated early), so queued snapshots are never lost.
+        """
+        if not self.is_root_engine() or self._checkpointer is None:
+            return
+        manager = self._checkpointer
+        try:
+            await manager.flush()
+        except Exception:
+            logger.warning("Failed to flush the checkpoint manager", exc_info=True)
+        if self._owns_checkpointer:
+            try:
+                await manager.stop()
+            except Exception:
+                logger.warning("Failed to stop the checkpoint manager", exc_info=True)
+            self._checkpointer = None
+            self._owns_checkpointer = False
 
     async def _checkpoint_before_task(
         self, context: "ExecutionContext", task_node: "TaskNode"

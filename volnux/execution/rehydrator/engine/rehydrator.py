@@ -137,7 +137,7 @@ class LazyRehydrator:
         reference = context.pipeline
         if isinstance(reference, PipelineReference):
             context.pipeline = self._reconstruct_pipeline(
-                reference.id, reference.class_path
+                reference.id, reference.class_path, reference.fields
             )
 
     def _reconstruct_pipeline(
@@ -150,6 +150,8 @@ class LazyRehydrator:
             return self.pipeline_registry[pipeline_id]
         pipeline_class = import_class(class_path)
         pipeline = pipeline_class(**(pipeline_kwargs or {}))
+        # the same run keeps the same identity (events and governance correlate on it)
+        pipeline.change_object_id(pipeline_id)
         self.pipeline_registry[pipeline_id] = pipeline
         return pipeline
 
@@ -168,8 +170,7 @@ class LazyRehydrator:
     async def _rebuild_task(
         self, queue_task: QueueTaskTemplate
     ) -> typing.Optional["TaskType"]:
-        from volnux.task import PipelineTask
-
+        """Rebuild a queued task, with its whole graph, from its ``TaskSnapshot``."""
         task_id = queue_task.get("task_id")
         if not task_id:
             return None
@@ -183,11 +184,20 @@ class LazyRehydrator:
         if not isinstance(task_snapshot, TaskSnapshot):
             task_snapshot = self.deserializer.deserialize_task(task_snapshot)
 
-        event_class = import_class(task_snapshot.event_class_import_path)
-        task = PipelineTask(event=event_class)
-        task.namespace = task_snapshot.namespace
-        task.descriptors = dict(task_snapshot.descriptors)
-        return task
+        return self.deserializer.rebuild_task(task_snapshot.dump("dict"))
+
+    async def _rebuild_node(
+        self, queue_task: QueueTaskTemplate
+    ) -> typing.Optional["TaskNode"]:
+        """A queue entry back as a ``TaskNode``: the task and the context it follows."""
+        from volnux.engine.base import TaskNode
+
+        task = await self._rebuild_task(queue_task)
+        if task is None:
+            return None
+        previous_id = queue_task.get("previous_context_id")
+        previous = await self.rehydrate_node(previous_id) if previous_id else None
+        return TaskNode(task=task, previous_context=previous)
 
     async def _rehydrate_engine(
         self,
@@ -195,21 +205,32 @@ class LazyRehydrator:
         snapshot: EngineStateSnapshot,
         context: "ExecutionContext",
     ) -> "WorkflowEngine":
+        """An engine standing where the snapshotted one stopped.
+
+        Its work queue holds what is left to do, the interrupted task first, and
+        its sink queue the deferred sinks; ``engine.resume()`` runs from there.
+        """
         engine = engine_class(enable_checkpointing=True)
-        engine.tasks_processed = snapshot.tasks_processed
-        engine.current_task_node = await self._rebuild_current_task_node(
-            snapshot, context
+        # The interrupted task was already counted when it was first taken from the
+        # queue and will be counted again when it re-runs; count it once.
+        engine.tasks_processed = max(
+            snapshot.tasks_processed - (1 if snapshot.current_task else 0), 0
         )
+
+        current = (
+            await self._rebuild_node(snapshot.current_task)
+            if snapshot.current_task
+            else None
+        )
+        engine.current_task_node = current
+        if current is not None:
+            engine.task_queue.append(current)
+        for queued in snapshot.task_queue_snapshot:
+            node = await self._rebuild_node(queued)
+            if node is not None:
+                engine.task_queue.append(node)
+        for sink in snapshot.sink_queue_snapshot:
+            task = await self._rebuild_task(sink)
+            if task is not None:
+                engine.sink_queue.append(task)
         return engine
-
-    async def _rebuild_current_task_node(
-        self, snapshot: EngineStateSnapshot, context: "ExecutionContext"
-    ) -> typing.Optional["TaskNode"]:
-        from volnux.engine.base import TaskNode
-
-        if not snapshot.current_task:
-            return None
-        task = await self._rebuild_task(snapshot.current_task)
-        if task is None:
-            return None
-        return TaskNode(task=task, previous_context=context)

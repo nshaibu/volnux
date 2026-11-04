@@ -77,13 +77,6 @@ class DefaultWorkflowEngine(WorkflowEngine):
         self.enable_debug_logging = enable_debug_logging
         self.strict_mode = strict_mode
 
-        if enable_checkpointing and self._checkpointer is None:
-            logger.warning(
-                "[Engine] enable_checkpointing=True only stores checkpoint_config; "
-                "no persistence will happen until enable_checkpointing() is called "
-                "with a VolnuxCheckPointManager instance."
-            )
-
     async def spawn_sub_engine(
         self,
         root_task: TaskType,
@@ -355,21 +348,64 @@ class DefaultWorkflowEngine(WorkflowEngine):
                 status=EngineExecutionResult.COMPLETED, tasks_processed=0
             )
 
-        # Start the checkpoint manager's background worker/monitor tasks once,
-        # at root-engine startup only — sub-engines share the same manager and
-        # must never start (or stop) it themselves. start() is idempotent.
-        if self.is_root_engine() and self._checkpointer is not None:
-            await self._checkpointer.start()
+        self.tasks_processed = 0
+        return await self._with_checkpointing(
+            self._run_loop(pipeline, [TaskNode(root_task, None)])
+        )
 
-        # Reset state for fresh execution
+    async def resume(self, pipeline: Pipeline) -> EngineResult:
+        """Continue a workflow from where a rehydrated engine stopped.
+
+        The engine comes from ``LazyRehydrator.resume_from``: its work queue holds
+        the interrupted task first, then whatever was still to do, and its sink
+        queue the deferred sinks. The interrupted task runs in a new context that
+        follows the one before it; the suspended context stays as history. The
+        workflow then proceeds exactly as an uninterrupted run would.
+        """
+        seed = list(self.task_queue)
+        if not seed:
+            return EngineResult(
+                status=EngineExecutionResult.COMPLETED,
+                final_context=self.final_context,
+                tasks_processed=self.tasks_processed,
+            )
+        return await self._with_checkpointing(
+            self._run_loop(pipeline, seed, list(self.sink_queue))
+        )
+
+    async def _with_checkpointing(
+        self, run: typing.Awaitable[EngineResult]
+    ) -> EngineResult:
+        """Run ``run`` with the checkpoint manager started, and stopped after.
+
+        Only the root engine starts and stops the manager (sub-engines share
+        it). The ``finally`` covers every way out, including a suspension, so
+        queued snapshots are persisted before the call returns.
+        """
+        await self._start_checkpointing()
+        try:
+            return await run
+        finally:
+            await self._stop_checkpointing()
+
+    async def _run_loop(
+        self,
+        pipeline: Pipeline,
+        seed: typing.Sequence[TaskNode],
+        sinks: typing.Sequence[TaskType] = (),
+    ) -> EngineResult:
+        """The queue-driven traversal shared by ``execute`` and ``resume``.
+
+        ``seed`` is the initial work queue (the root task for a fresh run, the
+        restored queue for a resume) and ``sinks`` the deferred sink nodes.
+        """
+        # Reset state, then seed the work queue
         self.task_queue.clear()
         self.sink_queue.clear()
-        self.tasks_processed = 0
         self.final_context = None
         self.current_task_node = None
-
-        # Seed the work queue
-        self.task_queue.append(TaskNode(root_task, None))
+        self.task_queue.extend(seed)
+        self.sink_queue.extend(sinks)
 
         try:
             while self.task_queue:
@@ -435,6 +471,13 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
                     # Dispatch task profiles for execution
                     await execution_context.dispatch()
+
+                    # A suspended task is resumed later, maybe by another process:
+                    # persist where this engine stood before unwinding.
+                    if execution_context.status == ExecutionStatus.SUSPENDED:
+                        await self._save_suspension_state(
+                            execution_context, executable_node
+                        )
 
                     # Checkpoint after task completion
                     await self._checkpoint_after_task(
@@ -510,6 +553,41 @@ class DefaultWorkflowEngine(WorkflowEngine):
             tasks_processed=self.tasks_processed,
         )
 
+    async def _save_suspension_state(
+        self, context: "ExecutionContext", node: TaskNode
+    ) -> None:
+        """Persist the engine's position so a suspended run can be resumed.
+
+        Saves the ``EngineStateSnapshot`` (keyed by the suspended context) and a
+        ``TaskSnapshot`` for the suspended task, the queued tasks and the deferred
+        sinks; the whole graph hangs off those tasks. Sub-engines are not covered:
+        resuming inside a ``{}`` group is not supported, so a suspension there is
+        logged and left unresumable rather than half-saved.
+        """
+        if not self.is_root_engine():
+            logger.warning(
+                "[Engine] Task suspended inside a {} group; it cannot be resumed"
+            )
+            return
+
+        # imported here: the snapshot module imports this package's base
+        from volnux.execution.rehydrator.engine.builder import (
+            SnapshotBuilder as EngineSnapshotBuilder,
+        )
+
+        builder = EngineSnapshotBuilder()
+        # The contexts behind this one hold the results the resumed run builds on
+        # and the links it walks; they are only persisted on demand, so persist
+        # the chain now (each save also stores that context's results).
+        link: typing.Optional[ExecutionContext] = context
+        while isinstance(link, ExecutionContext):
+            await link.save()
+            link = link.previous_context
+        tasks = [node.task, *(n.task for n in self.task_queue), *self.sink_queue]
+        for task in tasks:
+            await builder.build_pipeline_task(task, context.state_id).save()
+        await builder.build_engine_state(context, current_task_node=node).save()
+
     async def _checkpoint_after_task(self, context: "ExecutionContext", success: bool):
         """
         Override base to persist after a task without double-counting.
@@ -521,6 +599,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
             return
 
         self.current_task_node = None
+        self._checkpointer.unmonitor(context)
 
         if self._checkpoint_frequency in [
             CheckPointFrequency.PER_TASK,
@@ -634,6 +713,16 @@ class DefaultWorkflowEngine(WorkflowEngine):
         # HORIZONTAL DOUBLY-LINKED CHAINING & REGISTRATION
         context.set_engine(self)
 
+        if self._resumed_events:
+            profiles = list(parallel_tasks) if parallel_tasks else [task]
+            staged = {
+                profile.get_id(): self._resumed_events.pop(profile.get_id())
+                for profile in profiles
+                if profile.get_id() in self._resumed_events
+            }
+            if staged:
+                context.set_resumed_events(staged)
+
         if previous_context is not None:
             # Wire horizontal peer links (Node 0 <-> Node 1 <-> Node 2)
             context.previous_context = previous_context
@@ -642,6 +731,12 @@ class DefaultWorkflowEngine(WorkflowEngine):
         # Collect sink nodes for deferred execution
         if task.sink_node:
             self.sink_queue.append(task.sink_node)
+
+        if (
+            self._checkpointer is not None
+            and self._checkpoint_frequency == CheckPointFrequency.PERIODIC
+        ):
+            self._checkpointer.monitor(context)
 
         return context
 
@@ -666,6 +761,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
             ExecutionStatus.CANCELLED,
             ExecutionStatus.ABORTED,
             ExecutionStatus.PAUSED,
+            ExecutionStatus.SUSPENDED,
             ExecutionStatus.FAILED,
         }
 
@@ -678,7 +774,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         self, execution_status: ExecutionStatus
     ) -> EngineExecutionResult:
         """Map execution status to engine result status."""
-        if execution_status == ExecutionStatus.PAUSED:
+        if execution_status in (ExecutionStatus.PAUSED, ExecutionStatus.SUSPENDED):
             return EngineExecutionResult.SUSPENDED
         if execution_status == ExecutionStatus.FAILED:
             return EngineExecutionResult.FAILED

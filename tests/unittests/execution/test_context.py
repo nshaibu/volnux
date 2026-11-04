@@ -614,6 +614,7 @@ class TestState:
         assert state["pipeline"] == {
             "id": context.pipeline.id,
             "class_path": f"{StatePipeline.__module__}.StatePipeline",
+            "fields": {},
         }
         assert state["task_profiles"][0]["event_name"] == "StateEvent"
 

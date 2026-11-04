@@ -425,6 +425,9 @@ class TestLoadEngineState:
 
 
 class TestRehydrateEngine:
+    CURRENT = {"task_id": "t-1", "previous_context_id": "c1", "position_in_queue": 0}
+    QUEUED = {"task_id": "t-2", "previous_context_id": "c2", "position_in_queue": 0}
+    SINK = {"task_id": "t-3", "previous_context_id": None, "position_in_queue": 0}
 
     @pytest.mark.asyncio
     async def test_engine_is_constructed_and_positioned(
@@ -434,55 +437,132 @@ class TestRehydrateEngine:
         node = MagicMock()
         context = make_context()
 
-        with patch.object(
-            rehydrator, "_rebuild_current_task_node", AsyncMock(return_value=node)
-        ):
+        with patch.object(rehydrator, "_rebuild_node", AsyncMock(return_value=node)):
             engine = await rehydrator._rehydrate_engine(
-                engine_class, engine_state(tasks_processed=5), context
+                engine_class,
+                engine_state(tasks_processed=5, current_task=self.CURRENT),
+                context,
             )
 
         engine_class.assert_called_once_with(enable_checkpointing=True)
         assert engine is engine_class.return_value
-        assert engine.tasks_processed == 5
+        # 5 taken so far, one of them the interrupted task, which re-runs
+        assert engine.tasks_processed == 4
         assert engine.current_task_node is node
 
-
-class TestRebuildCurrentTaskNode:
-    CURRENT = {"task_id": "t-1", "previous_context_id": "c1", "position_in_queue": 0}
-
     @pytest.mark.asyncio
-    async def test_no_current_task_returns_none(
+    async def test_the_count_is_kept_when_nothing_was_interrupted(
         self, rehydrator: LazyRehydrator
     ) -> None:
-        assert (
-            await rehydrator._rebuild_current_task_node(engine_state(), make_context())
-            is None
+        engine = await rehydrator._rehydrate_engine(
+            MagicMock(), engine_state(tasks_processed=5), make_context()
         )
+        assert engine.tasks_processed == 5
 
     @pytest.mark.asyncio
-    async def test_valid_task_creates_task_node(
+    async def test_work_queue_holds_the_interrupted_task_first_then_the_rest(
+        self, rehydrator: LazyRehydrator
+    ) -> None:
+        engine = MagicMock()
+        engine.task_queue = []
+        engine.sink_queue = []
+        engine_class = MagicMock(return_value=engine)
+        nodes = {"t-1": "current-node", "t-2": "queued-node"}
+        sink = object()
+
+        async def rebuild_node(queued):
+            return nodes[queued["task_id"]]
+
+        with (
+            patch.object(rehydrator, "_rebuild_node", rebuild_node),
+            patch.object(rehydrator, "_rebuild_task", AsyncMock(return_value=sink)),
+        ):
+            await rehydrator._rehydrate_engine(
+                engine_class,
+                engine_state(
+                    current_task=self.CURRENT,
+                    task_queue_snapshot=[self.QUEUED],
+                    sink_queue_snapshot=[self.SINK],
+                ),
+                make_context(),
+            )
+
+        assert engine.task_queue == ["current-node", "queued-node"]
+        assert engine.sink_queue == [sink]
+
+    @pytest.mark.asyncio
+    async def test_nothing_in_flight_leaves_the_queue_to_the_snapshot(
+        self, rehydrator: LazyRehydrator
+    ) -> None:
+        engine = MagicMock()
+        engine.task_queue = []
+        engine.sink_queue = []
+        await rehydrator._rehydrate_engine(
+            MagicMock(return_value=engine), engine_state(), make_context()
+        )
+        assert engine.task_queue == [] and engine.current_task_node is None
+
+    @pytest.mark.asyncio
+    async def test_entries_that_cannot_be_rebuilt_are_skipped(
+        self, rehydrator: LazyRehydrator
+    ) -> None:
+        engine = MagicMock()
+        engine.task_queue = []
+        engine.sink_queue = []
+        with (
+            patch.object(rehydrator, "_rebuild_node", AsyncMock(return_value=None)),
+            patch.object(rehydrator, "_rebuild_task", AsyncMock(return_value=None)),
+        ):
+            await rehydrator._rehydrate_engine(
+                MagicMock(return_value=engine),
+                engine_state(
+                    current_task=self.CURRENT,
+                    task_queue_snapshot=[self.QUEUED],
+                    sink_queue_snapshot=[self.SINK],
+                ),
+                make_context(),
+            )
+        assert engine.task_queue == [] and engine.sink_queue == []
+
+
+class TestRebuildNode:
+    QUEUED = {"task_id": "t-1", "previous_context_id": "c1", "position_in_queue": 0}
+
+    @pytest.mark.asyncio
+    async def test_the_node_follows_the_context_it_was_queued_behind(
         self, rehydrator: LazyRehydrator
     ) -> None:
         task = PipelineTask(event=RehydratedEvent)
-        context = make_context()
+        previous = make_context()
 
-        with patch.object(rehydrator, "_rebuild_task", AsyncMock(return_value=task)):
-            node = await rehydrator._rebuild_current_task_node(
-                engine_state(current_task=self.CURRENT), context
-            )
+        with (
+            patch.object(rehydrator, "_rebuild_task", AsyncMock(return_value=task)),
+            patch.object(
+                rehydrator, "rehydrate_node", AsyncMock(return_value=previous)
+            ) as rehydrate,
+        ):
+            node = await rehydrator._rebuild_node(self.QUEUED)
 
-        assert node.task is task
-        assert node.previous_context is context
+        rehydrate.assert_awaited_once_with("c1")
+        assert node.task is task and node.previous_context is previous
 
     @pytest.mark.asyncio
-    async def test_rebuild_failure_returns_none(
+    async def test_the_root_node_follows_no_context(
+        self, rehydrator: LazyRehydrator
+    ) -> None:
+        task = PipelineTask(event=RehydratedEvent)
+        with patch.object(rehydrator, "_rebuild_task", AsyncMock(return_value=task)):
+            node = await rehydrator._rebuild_node(
+                {"task_id": "t-1", "previous_context_id": None, "position_in_queue": 0}
+            )
+        assert node.task is task and node.previous_context is None
+
+    @pytest.mark.asyncio
+    async def test_a_task_that_cannot_be_rebuilt_gives_no_node(
         self, rehydrator: LazyRehydrator
     ) -> None:
         with patch.object(rehydrator, "_rebuild_task", AsyncMock(return_value=None)):
-            node = await rehydrator._rebuild_current_task_node(
-                engine_state(current_task=self.CURRENT), make_context()
-            )
-        assert node is None
+            assert await rehydrator._rebuild_node(self.QUEUED) is None
 
 
 class TestResumeFrom:

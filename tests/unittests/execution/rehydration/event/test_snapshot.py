@@ -128,12 +128,15 @@ class TestEventCheckpointSnapshot:
 
     # class-level utility methods
     def test_get_schema_name(self) -> None:
-        assert EventCheckpointSnapshot.get_schema_name() == "volnux:event:checkpoint"
+        assert (
+            ":".join(EventCheckpointSnapshot.get_storage_route().components)
+            == "volnux:event:checkpoint"
+        )
 
-    def test_get_backend_config(self) -> None:
-        config = EventCheckpointSnapshot.get_backend_config()
-        assert config["ENGINE"] == "volnux.backends.stores.redis.RedisStoreBackend"
-        assert "CONNECTOR_CONFIG" in config
-        assert config["CONNECTOR_CONFIG"]["host"] == "localhost"
-        assert config["CONNECTOR_CONFIG"]["port"] == 6379
-        assert config["CONNECTOR_CONFIG"]["db"] == 0
+    def test_uses_the_configured_store_not_a_hardcoded_redis(self) -> None:
+        from volnux.config import VolnuxConfig
+
+        assert (
+            EventCheckpointSnapshot.get_backend_config()
+            == VolnuxConfig.get_instance().KEY_VALUE_STORE_CONFIG
+        )

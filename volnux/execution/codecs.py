@@ -10,7 +10,7 @@ them into JSON-safe payloads (and back) only when the context is persisted.
 import traceback
 import typing
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from volnux.utils import get_obj_klass_import_str
 
@@ -36,14 +36,39 @@ class PipelineReference:
 
     id: str
     class_path: str
+    #: The values of the pipeline's input fields. They live in the process that ran
+    #: the pipeline, so a resume elsewhere needs them to rebuild it; only JSON-safe
+    #: values can be carried.
+    fields: typing.Dict[str, typing.Any] = field(default_factory=dict)
 
 
-def serialize_pipeline(pipeline: typing.Any) -> typing.Dict[str, str]:
-    return {"id": pipeline.id, "class_path": get_obj_klass_import_str(pipeline)}
+def _pipeline_field_values(pipeline: typing.Any) -> typing.Dict[str, typing.Any]:
+    from volnux.execution.utils import is_json_serializable
+
+    get_fields = getattr(pipeline, "get_fields", None)
+    if get_fields is None:
+        return {}
+    values = {}
+    for name, _ in get_fields():
+        if name in vars(pipeline) and is_json_serializable(vars(pipeline)[name]):
+            values[name] = vars(pipeline)[name]
+    return values
 
 
-def deserialize_pipeline(payload: typing.Dict[str, str]) -> PipelineReference:
-    return PipelineReference(id=payload["id"], class_path=payload["class_path"])
+def serialize_pipeline(pipeline: typing.Any) -> typing.Dict[str, typing.Any]:
+    return {
+        "id": pipeline.id,
+        "class_path": get_obj_klass_import_str(pipeline),
+        "fields": _pipeline_field_values(pipeline),
+    }
+
+
+def deserialize_pipeline(payload: typing.Dict[str, typing.Any]) -> PipelineReference:
+    return PipelineReference(
+        id=payload["id"],
+        class_path=payload["class_path"],
+        fields=dict(payload.get("fields") or {}),
+    )
 
 
 def serialize_error(

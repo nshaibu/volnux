@@ -18,14 +18,12 @@ class StateSerializer:
 
     @classmethod
     def serialize_init_args(cls, init_arg_dict: Dict[str, Any]) -> InitArgsTemplate:
-        from volnux.execution.rehydrator.engine.serializer import (
-            StateSerializer as EngineSerializer,
-        )
-
         execution_context = init_arg_dict.get("execution_context")
         options = init_arg_dict.get("options")
-        results = init_arg_dict.get("previous_result", [])
-        keyword_args = init_arg_dict.get("kwargs", {})
+        # An event with no upstream result carries ``None`` (the EMPTY default
+        # is mapped to None when the init args are collected).
+        results = init_arg_dict.get("previous_result") or []
+        keyword_args = init_arg_dict.get("kwargs") or {}
 
         return {
             "execution_context_id": (
@@ -41,10 +39,19 @@ class StateSerializer:
             "options": options.as_dict() if options else None,
             "sequence_number": init_arg_dict.get("sequence_number"),
             "kwargs": cls._build_keyword_args(keyword_args),
-            "previous_result": [
-                EngineSerializer.serialize_result(result) for result in results
-            ],
+            # EventResult is persisted; the snapshot only references it by id
+            "previous_result": [cls._result_id(result) for result in results],
         }
+
+    @staticmethod
+    def _result_id(result: Any) -> str:
+        result_id = getattr(result, "id", None)
+        if not result_id:
+            raise TypeError(
+                f"Cannot checkpoint previous result {result!r}: it has no id, so it "
+                f"cannot be referenced. Previous results must be persistable."
+            )
+        return result_id
 
     @classmethod
     def serialize_call_args(cls, call_arg_dict: Dict[str, Any]) -> CallArgsTemplate:
@@ -54,6 +61,10 @@ class StateSerializer:
         pipeline's serialization via ExecResultSerializer or equivalent.
         We just capture the already-serialized form.
         """
+
+        if not isinstance(call_arg_dict, dict):
+            # Nothing was called yet (the event still holds the EMPTY sentinel)
+            call_arg_dict = {}
 
         args = call_arg_dict.get("args", [])
         kwargs = call_arg_dict.get("kwargs", {})

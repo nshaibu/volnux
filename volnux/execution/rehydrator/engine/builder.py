@@ -5,6 +5,7 @@ from .serializer import StateSerializer
 from volnux.utils import get_obj_klass_import_str
 
 if typing.TYPE_CHECKING:
+    from volnux.engine.base import TaskNode
     from volnux.parser.protocols import TaskType
     from volnux.execution.context import ExecutionContext
 
@@ -13,12 +14,18 @@ class SnapshotBuilder:
     def __init__(self, serializer=StateSerializer):
         self.serializer = serializer
 
-    def build_engine_state(self, context: "ExecutionContext") -> EngineStateSnapshot:
+    def build_engine_state(
+        self,
+        context: "ExecutionContext",
+        current_task_node: typing.Optional["TaskNode"] = None,
+    ) -> EngineStateSnapshot:
         """
         Snapshot the engine working on ``context``.
 
         The context's own state is persisted by the context itself
         (``await context.save()``); this captures only what the engine adds.
+        ``current_task_node`` is the node being executed; it defaults to the
+        engine's ``current_task_node``.
         """
         engine = context.get_engine()
         if engine is None:
@@ -26,13 +33,12 @@ class SnapshotBuilder:
                 f"Context {context.id} has no engine attached; nothing to snapshot"
             )
 
+        current = current_task_node or engine.current_task_node
         instance = EngineStateSnapshot(
             context_id=context.id,
             engine_class_path=get_obj_klass_import_str(engine),
             current_task=(
-                self.serializer.serialise_queue_task(0, engine.current_task_node)
-                if engine.current_task_node
-                else None
+                self.serializer.serialise_queue_task(0, current) if current else None
             ),
             task_queue_snapshot=[
                 self.serializer.serialise_queue_task(i, task)

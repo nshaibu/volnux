@@ -258,6 +258,10 @@ class BaseFlow(ObjectIdentityMixin):
         if task_id in self._initialized_events:
             return self._initialized_events[task_id]
 
+        resumed = self.context.take_resumed_event(task_id)
+        if resumed is not None:
+            return self._adopt_resumed_event(resumed, task_id)
+
         event_klass = task_profile.get_event_class()
         logger.info("Initializing '%s' (task_id=%s)", task_profile.event, task_id)
 
@@ -290,12 +294,37 @@ class BaseFlow(ObjectIdentityMixin):
             group_name = f"{self.context.workflow_id}:{task_id}"
             event_init_args["stream_key"] = stream_key
             event_init_args["consumer_group"] = group_name
-            event_init_args["checkpoint_manager"] = self.context.checkpoint_manager
+
+        # Every event gets the run's checkpoint manager (None when checkpointing
+        # is not enabled), not only those fed by a stream.
+        checkpoint_manager = self.context.get_checkpoint_manager()
+        if checkpoint_manager is not None:
+            event_init_args["checkpoint_manager"] = checkpoint_manager
 
         event = event_klass(**event_init_args)
         self._configure_event(event, task_profile)
 
         result = (event, event_call_args)
+        self._initialized_events[task_id] = result
+        return result
+
+    def _adopt_resumed_event(
+        self, event: "Event", task_id: str
+    ) -> Tuple["Event", Dict[str, Any]]:
+        """Use an event rehydrated from a checkpoint in place of a fresh one.
+
+        The event carries its own state, phase, arguments and the results injected
+        for it. It still has to be bound to this run: the context created for the
+        resumed task and the run's checkpoint manager.
+        """
+        event._execution_context = self.context
+        event._init_args["execution_context"] = self.context
+        manager = self.context.get_checkpoint_manager()
+        if manager is not None:
+            event.checkpoint_manager = manager
+
+        call_kwargs = event.get_call_args()
+        result = (event, dict(call_kwargs) if isinstance(call_kwargs, dict) else {})
         self._initialized_events[task_id] = result
         return result
 

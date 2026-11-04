@@ -145,6 +145,14 @@ class EventCommandMixin:
             logger.debug(f"Command listener for task {self._task_id} cancelled")
             raise
 
+    def _cancel_main_worker(self) -> None:
+        """Cancel the task running ``steps_runner``, if it has started."""
+        task = getattr(self, "_main_worker_task", None)
+        if task is None:
+            logger.warning("Task %s has no running worker to cancel yet", self._task_id)
+            return
+        task.cancel()
+
     async def _handle_command(self: BaseEvent, command: TaskCommand) -> None:
         """
         Handle incoming commands from the coordinator.
@@ -179,7 +187,7 @@ class EventCommandMixin:
                 logger.warning(f"Task {self._task_id} received CANCEL command")
                 # The authoritative CANCELLED status update is sent by
                 # steps_runner once the worker task actually stops.
-                self._main_worker_task.cancel()
+                self._cancel_main_worker()
 
             elif command.command_type == CommandType.UPDATE_PRIORITY:
                 new_priority = (
@@ -195,7 +203,7 @@ class EventCommandMixin:
                     TaskState.RUNNING,
                     extra={"priority": new_priority, "preempted": True},
                 )
-                self._main_worker_task.cancel()
+                self._cancel_main_worker()
 
             elif command.command_type == CommandType.CHECKPOINT:
                 logger.info(f"Task {self._task_id} received CHECKPOINT command")

@@ -341,6 +341,13 @@ class SignalGovernanceReporter:
             (sig.pipeline_stop, EventType.EXECUTION_STOPPED, {"reason": "cancelled"}),
             (sig.pipeline_shutdown, EventType.EXECUTION_FAILED, {"reason": "aborted"}),
             (sig.event_execution_paused, EventType.EXECUTION_PAUSED, None),
+            # A suspension was reported as "paused" before it had its own signal;
+            # keep that wire fact (consumers know no other) and say why.
+            (
+                sig.event_execution_suspended,
+                EventType.EXECUTION_PAUSED,
+                {"reason": "suspended"},
+            ),
             (sig.event_execution_resumed, EventType.EXECUTION_RESUMED, None),
         )
         task_signals = (

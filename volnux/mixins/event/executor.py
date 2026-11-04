@@ -45,9 +45,14 @@ class ExecutorInitializerMixin:
 
     @classmethod
     def get_task_executor(cls) -> Union[Type[BaseExecutor], BaseExecutor]:
-        if isinstance(cls.executor, BaseExecutor):
-            return cls.executor
-        return _GLOBAL_EXECUTOR_REGISTRY.get(cls.executor)
+        executor = cls.executor
+        # An executor instance or class may be given directly; only a string
+        # label is looked up in the registry.
+        if isinstance(executor, BaseExecutor) or (
+            inspect.isclass(executor) and issubclass(executor, BaseExecutor)
+        ):
+            return executor
+        return _GLOBAL_EXECUTOR_REGISTRY.get(executor)
 
     def get_executor_initializer_config(self) -> ExecutorInitializerConfig:
         if self.executor_config:

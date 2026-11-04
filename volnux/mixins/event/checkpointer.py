@@ -247,8 +247,10 @@ class EventCheckpointingMixin:
         :param stop_condition: Condition under which event execution is terminated. Defaults
             to `StopCondition.NEVER`.
         :type stop_condition: StopCondition
-        :param run_bypass_event_checks: Flag indicating if event checks should be bypassed.
-            Defaults to False.
+        :param run_bypass_event_checks: Stored on the event and included in its
+            checkpoint. It does not gate the bypass check: ``_pre_process`` always
+            calls ``bypass()``, and an event that does not override it is simply
+            not bypassed. Defaults to False.
         :type run_bypass_event_checks: bool
         :param options: Optional configuration or settings for the event.
         :type options: Optional[Options]
@@ -288,8 +290,11 @@ class EventCheckpointingMixin:
         self.exec_result: Any = None
 
         self._init_args = get_function_call_args(self.__class__.__init__, locals())  # type: ignore
+        # Collaborators, not init arguments: neither is serialisable or restorable
         self._init_args.pop("checkpoint_manager", None)
+        self._init_args.pop("command_channel", None)
         self._call_args = EMPTY
+        self._call_positional: Tuple[Any, ...] = ()
 
         self._phase: EventPhase = EventPhase.INITIALIZED
         self._active_phase: Optional[EventPhase] = None
@@ -309,8 +314,14 @@ class EventCheckpointingMixin:
     @phase_step(EventPhase.COMMUNICATING)
     async def _communicate(self: _BaseEvent, *args, **kwargs) -> None:
         """
-        Execute the communicate() hook and merge its return value
-        into the kwargs passed to subsequent steps.
+        Execute the communicate() hook.
+
+        communicate() does not return a value to the event. When it asks the
+        outside world for something (request_human_input(), wait_for_event(),
+        wait_for_condition()) the task is suspended: its state is checkpointed and
+        its resources are released (``__call__`` always finishes with
+        ``_completed()``). The answer is injected into ``previous_result`` when
+        the task is rehydrated, and communicate() then runs again from the top.
 
         If communicate() suspends via request_human_input() or
         wait_for_event(), this phase is checkpointed. On resumption,
@@ -329,11 +340,11 @@ class EventCheckpointingMixin:
         is executed with the intention of determining whether the event execution should proceed
         or be bypassed, based on custom conditions.
 
-        The behavior of this method can be controlled by the `run_bypass_event_checks` attribute
-        of the event instance. If this attribute is set to `True`, it attempts to validate event
-        bypass prerequisites by calling the `can_bypass_current_event` method. If these checks
-        indicate that the event can be skipped, the event execution completes successfully without
-        proceeding further, and the bypass conditions are logged.
+        The event's ``bypass()`` hook is always consulted (``run_bypass_event_checks`` does not
+        gate it). If ``bypass()`` is not overridden (it raises ``NotImplementedError``) the event
+        runs normally. If it returns ``(success, data)`` the event is skipped: ``exec_status`` and
+        ``exec_result`` are set from that tuple and ``SkipExecutionError`` is raised, whatever the
+        value of ``success``. Returning ``None`` is an error (``EmptyResultError``).
 
         :param args: Positional arguments are passed to the pre-processing handler.
         :type args: tuple
@@ -646,7 +657,7 @@ class EventCheckpointingMixin:
             raw = await self._execute_sub_phase_func(init_func, timeout)
         except asyncio.TimeoutError:
             logger.warning(
-                "sub_phase %r: timed out after %.1fs (event=%s)",
+                "sub_phase %r: timed out after %ss (event=%s)",
                 name,
                 timeout,
                 self._task_id,
@@ -957,6 +968,19 @@ class EventCheckpointingMixin:
 
     def get_phase(self) -> EventPhase:
         return self._phase
+
+    async def checkpoint_for_suspension(self) -> EventCheckpointSnapshot:
+        """Snapshot the event at the point it suspends and hand the snapshot back.
+
+        The snapshot is also queued with the checkpoint manager when there is
+        one. It is returned (and carried on the suspension request) because the
+        coordinator persists it directly: a suspension is a durable boundary and
+        must not depend on the manager being enabled.
+        """
+        snapshot = await self.create_snapshot()
+        if self.checkpoint_manager is not None:
+            self.checkpoint_manager.enqueue(snapshot)
+        return snapshot
 
     async def enqueue_checkpoint(self) -> None:
         if self.checkpoint_manager is None:

@@ -242,6 +242,29 @@ class TriggerEngine:
 
         logger.info(f"Registered trigger: {trigger.trigger_id}")
 
+    def register_manager(self, manager: TriggerBase) -> None:
+        """Register a trigger that serves the whole node, not one workflow.
+
+        A manager (``TriggerType.MANAGER``, such as the rehydration manager)
+        listens on a queue shared by every workflow, so it has no workflow to be
+        attached to and is not subject to the workflow registry. It is started and
+        stopped with the engine like any other trigger.
+
+        Raises:
+            ValueError: ``manager`` is not a manager trigger, or is already registered.
+        """
+        if manager.trigger_type is not TriggerType.MANAGER:
+            raise ValueError(
+                f"register_manager() takes a MANAGER trigger, got "
+                f"{manager.trigger_type.value!r}."
+            )
+        if manager.trigger_id in self.triggers:
+            raise ValueError(
+                f"Trigger with id '{manager.trigger_id}' is already registered."
+            )
+        self.triggers[manager.trigger_id] = manager
+        logger.info(f"Registered manager: {manager.trigger_id}")
+
     async def fire_trigger(
         self,
         workflow_name: str,

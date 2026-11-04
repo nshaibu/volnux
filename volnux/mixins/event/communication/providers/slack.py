@@ -12,14 +12,16 @@ class SlackAdapter(HumanInterfaceAdapterBase):
     a HUMAN_RESPONSE command via the mesh.
     """
 
+    REQUEST_TIMEOUT_SECONDS = 10.0
+
     def __init__(self, webhook_url: str, channel: str):
         self._webhook_url = webhook_url
         self._channel = channel
 
     async def notify(self, request: HumanRequest) -> None:
         blocks = self._build_blocks(request)
-        async with httpx.AsyncClient() as client:
-            await client.post(
+        async with httpx.AsyncClient(timeout=self.REQUEST_TIMEOUT_SECONDS) as client:
+            response = await client.post(
                 self._webhook_url,
                 json={
                     "channel": self._channel,
@@ -27,6 +29,9 @@ class SlackAdapter(HumanInterfaceAdapterBase):
                     "text": f"[Volnux] Human input required: {request.title}",
                 },
             )
+            # A rejected webhook (revoked URL, rate limit) must not look like a
+            # delivered notification.
+            response.raise_for_status()
 
     def _build_blocks(self, request: HumanRequest) -> List[Dict]:
         blocks = [

@@ -1,522 +1,377 @@
-import logging
-import asyncio
-import orjson as json
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+"""The rehydration manager: brings suspended tasks back when they are ready.
 
-from ..event import Event
+A task that asked the outside world for something was checkpointed and released,
+and recorded as an ``ExternalCommunicationQueueEntry``. This trigger listens on the
+queue where answers arrive (``ExternalCommunicationResponse``) and, for each, resumes
+the workflow the answer belongs to.
+
+Everything it touches goes through the models and so through whichever backends the
+deployment configured: the answers travel over the messaging backend, the suspension
+records live in the key-value store. It opens no connection of its own.
+
+How a wake-up goes
+------------------
+1. An answer is taken off the queue. A pop hands each message to exactly one consumer.
+2. The entry for its ``request_id`` is looked up. An unknown or already-handled
+   request is dropped: delivery is at-least-once, so a duplicate answer is harmless.
+3. A ``ResumeClaim`` is taken. Two different answers for one request (a human
+   reply racing a timeout) cannot both resume it: exactly one claim succeeds.
+4. The entry is marked READY and keeps the answer, so a crash from here on can be
+   recovered: on start the manager re-delivers READY entries whose claim is gone.
+5. ``resume_handler`` resumes the workflow; the entry is then marked RESUMED (or
+   EXPIRED for a timeout), or FAILED, kept for a retry, if resuming raised.
+
+Timeouts are produced here too: a sweeper turns every entry past its ``timeout_at``
+into a ``source="timeout"`` answer on the same queue, so a timeout is resumed through
+the exact path a human answer takes.
+
+One manager serves a project/node: every workflow shares the queue, and the entry
+names the workflow to resume.
+"""
+
+import asyncio
+import logging
+import os
+import socket
+import uuid
+from typing import Any, Awaitable, Callable, Dict, Optional, Set, TYPE_CHECKING
+
+from volnux.mixins.event.communication.datastructures import (
+    ExternalCommunicationQueueEntry,
+    ExternalCommunicationResponse,
+    RequestStatus,
+    ResumeClaim,
+)
+from volnux.signal.signals import task_rehydrated
 from ..base import TriggerBase, TriggerType
 
 if TYPE_CHECKING:
-    from ...eventbus.base import EventBusAdapterBase
-
+    from volnux.engine.base import EngineResult
 
 logger = logging.getLogger(__name__)
 
+ResumeHandler = Callable[
+    [ExternalCommunicationQueueEntry, ExternalCommunicationResponse],
+    Awaitable["EngineResult"],
+]
+
+
+class WakeOutcome:
+    """What became of one answer taken off the queue."""
+
+    #: The workflow was resumed.
+    RESUMED = "resumed"
+    #: Nothing to do: unknown request, or already resumed / being resumed.
+    IGNORED = "ignored"
+    #: Another worker holds the claim and is resuming it.
+    CLAIMED_ELSEWHERE = "claimed_elsewhere"
+    #: Resuming raised; the entry is FAILED and can be retried.
+    FAILED = "failed"
+
 
 class RehydrationManager(TriggerBase):
-    """
-    Trigger responsible for rehydrating and resuming suspended workflows.
+    """Resume suspended workflows as their answers arrive.
 
-    Replaces the standalone bootloader with a first-class framework
-    trigger managed by the TriggerEngine alongside all other triggers.
-
-    Responsibilities
-    ----------------
-    1. Subscribe to the HITL response event bus channel —
-       receives human responses, external event completions,
-       and timeout signals.
-
-    2. Maintain the HITL queue — a Redis-backed registry of all
-       tasks suspended via communicate() awaiting external input.
-
-    3. On matching event arrival — locate the suspended task's
-       queue entry, rehydrate its checkpoint, inject the response
-       into the previous_result stream, and resume execution via
-       the coordinator.
-
-    4. Poll for timed-out queue entries — injects a timeout response
-       and resumes on the timeout descriptor path.
-
-    5. On startup — scan Redis for existing queue entries from
-       before the last shutdown. Re-subscribe to their channels
-       so no suspension is lost across restarts.
-
-    Integration
-    -----------
-    Registered in WorkflowConfig.ready() like any other trigger::
-
-        def ready(self):
-            self.register_trigger(
-                RehydrationManager(
-                    workflow_name=self.name,
-                    event_bus=self.event_bus,
-                    redis_client=self.redis,
-                    checkpoint_store=self.checkpoint_store,
-                    timeout_poll_interval=60.0,
-                )
-            )
-
-    Because it inherits TriggerBase, it is visible via the CLI:
-
-        volnux triggers list my_workflow
-        NAME                  TYPE                 STATUS
-        daily_schedule        schedule             ✅ enabled
-        training_requests     event                ✅ enabled
-        rehydration_manager   rehydration          ✅ enabled  ← here
-
-    And controllable::
-
-        volnux triggers pause my_workflow rehydration_manager
-        # Suspends wake-ups — useful during maintenance windows.
-        # Tasks remain in the HITL queue safely; Redis TTLs preserve them.
+    :param poll_timeout: Seconds one wait for the next answer lasts (also how soon a
+        stop is noticed).
+    :param timeout_sweep_interval: Seconds between sweeps for requests past their
+        ``timeout_at``.
+    :param claim_lease_seconds: How long a worker may hold the claim on a request. A
+        claim whose worker died is taken over after this.
+    :param max_concurrent_resumes: How many workflows may be resumed at once.
+    :param resume_handler: ``async (entry, response) -> EngineResult``. Defaults to
+        ``resume_suspended_workflow``; replaceable for tests or a custom runner.
     """
 
     trigger_type = TriggerType.MANAGER
 
-    QUEUE_PREFIX = "volnux:hitl:queue"
-    RESPONSE_PREFIX = "volnux:hitl:response"
-    CLAIM_PREFIX = "volnux:hitl:claim"
+    #: A manager serves the node, not one workflow
+    WORKFLOW_SCOPE = "*"
 
     def __init__(
         self,
-        workflow_name: str,
-        event_bus: "EventBusAdapterBase",
-        redis_client,
-        checkpoint_store: "VolnuxCheckPointManager",
-        coordinator_registry: "CoordinatorRegistry",
-        timeout_poll_interval: float = 60.0,
+        *,
+        poll_timeout: float = 1.0,
+        timeout_sweep_interval: float = 30.0,
+        claim_lease_seconds: float = 300.0,
+        max_concurrent_resumes: int = 4,
+        resume_handler: Optional[ResumeHandler] = None,
         workflow_params: Optional[Dict[str, Any]] = None,
         enabled: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(
-            workflow_name,
+            workflow_name=self.WORKFLOW_SCOPE,
             workflow_params=workflow_params,
             enabled=enabled,
             metadata=metadata,
         )
-        self._event_bus = event_bus
-        self._redis = redis_client
-        self._checkpoint_store = checkpoint_store
-        self._coordinator_registry = coordinator_registry
-        self._timeout_poll_interval = timeout_poll_interval
+        self._poll_timeout = poll_timeout
+        self._timeout_sweep_interval = timeout_sweep_interval
+        self._claim_lease_seconds = claim_lease_seconds
+        self._resume_handler = resume_handler
+        self._slots = asyncio.Semaphore(max_concurrent_resumes)
+        self._owner = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
 
-        # Background tasks managed within the trigger lifecycle
-        self._timeout_poll_task: Optional[asyncio.Task] = None
-        self._subscribed_channels: List[str] = []
+        self._consumer_task: Optional[asyncio.Task] = None
+        self._sweeper_task: Optional[asyncio.Task] = None
+        self._wake_tasks: Set[asyncio.Task] = set()
+        # requests whose timeout answer is already on the queue (this run only)
+        self._timeouts_enqueued: Set[str] = set()
+
+    @property
+    def running(self) -> bool:
+        return self._consumer_task is not None and not self._consumer_task.done()
 
     async def start(self) -> None:
-        """
-        Start the rehydration manager:
-        1. Recover existing suspensions from Redis (crash recovery)
-        2. Subscribe to the HITL response channel on the event bus
-        3. Start the timeout poller
-        """
-        logger.info(
-            "RehydrationManager '%s': starting",
-            self.workflow_name,
+        if self.running:
+            return
+        await self.recover()
+        self._consumer_task = asyncio.create_task(
+            self._consume_loop(), name="rehydration-consumer"
         )
-
-        await self._recover_existing_suspensions()
-
-        # Subscribe to HITL response events on the event bus
-        # Convention: event type "volnux.hitl.response.{workflow_name}"
-        response_event_type = f"volnux.hitl.response.{self.workflow_name}"
-        await self._event_bus.subscribe(
-            response_event_type,
-            self._handle_response_event,
+        self._sweeper_task = asyncio.create_task(
+            self._sweep_loop(), name="rehydration-timeout-sweeper"
         )
-        self._subscribed_channels.append(response_event_type)
-
-        # Subscribe to timeout signals
-        timeout_event_type = f"volnux.hitl.timeout.{self.workflow_name}"
-        await self._event_bus.subscribe(
-            timeout_event_type,
-            self._handle_timeout_event,
-        )
-        self._subscribed_channels.append(timeout_event_type)
-
-        # Start timeout poller as a background task
-        self._timeout_poll_task = asyncio.create_task(
-            self._timeout_poller(),
-            name=f"RehydrationManager.{self.workflow_name}.timeout_poller",
-        )
-
-        logger.info(
-            "RehydrationManager '%s': started — subscribed to %s, "
-            "polling timeouts every %.0fs",
-            self.workflow_name,
-            self._subscribed_channels,
-            self._timeout_poll_interval,
-        )
+        logger.info("RehydrationManager started (%s)", self._owner)
 
     async def stop(self) -> None:
-        """
-        Stop the rehydration manager cleanly.
-        Unsubscribe from event bus channels, cancel timeout poller.
-        Queued entries remain safely in Redis — they will be recovered
-        on next start.
-        """
-        logger.info(
-            "RehydrationManager '%s': stopping",
-            self.workflow_name,
+        tasks = [self._consumer_task, self._sweeper_task, *self._wake_tasks]
+        for task in tasks:
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(t for t in tasks if t is not None), return_exceptions=True
         )
+        self._consumer_task = None
+        self._sweeper_task = None
+        self._wake_tasks.clear()
+        logger.info("RehydrationManager stopped (%s)", self._owner)
 
-        for channel in list(self._subscribed_channels):
-            try:
-                await self._event_bus.unsubscribe(channel, self._handle_response_event)
-            except Exception:
-                pass
-        self._subscribed_channels.clear()
+    # --- consuming answers -------------------------------------------------
 
-        if self._timeout_poll_task and not self._timeout_poll_task.done():
-            self._timeout_poll_task.cancel()
+    async def _consume_loop(self) -> None:
+        while True:
+            if not self.enabled:
+                # Paused from the CLI: leave answers on the queue rather than pop
+                # and lose them.
+                await asyncio.sleep(self._poll_timeout)
+                continue
+
+            await self._slots.acquire()
             try:
-                await self._timeout_poll_task
+                response = await ExternalCommunicationResponse.dequeue(
+                    timeout=self._poll_timeout
+                )
             except asyncio.CancelledError:
-                pass
-        self._timeout_poll_task = None
+                self._slots.release()
+                raise
+            except Exception:
+                self._slots.release()
+                logger.exception("RehydrationManager: could not read the answer queue")
+                await asyncio.sleep(1.0)  # a failing backend must not become a hot loop
+                continue
 
-    async def enqueue(self, entry: "HITLQueueEntry") -> None:
-        """
-        Add a suspended task to the HITL queue.
+            if response is None:
+                self._slots.release()
+                continue
 
-        Called by the coordinator when it catches HITLSuspensionRequest.
-        Also subscribes to the entry's specific response channel so
-        responses arriving on that channel wake the correct task.
-        """
-        key = self._queue_key(entry.entry_id)
-        await self._redis.set(
-            key,
-            self._serialise(entry),
-            ex=self._compute_ttl(entry.timeout_at),
-        )
-
-        # Subscribe to this entry's specific response channel
-        # so the event bus delivers responses directly
-        await self._event_bus.subscribe(
-            entry.response_channel,
-            self._handle_response_event,
-        )
-        self._subscribed_channels.append(entry.response_channel)
-
-        logger.info(
-            "RehydrationManager '%s': enqueued HITL entry %s "
-            "for task %s (channel=%s)",
-            self.workflow_name,
-            entry.entry_id,
-            entry.task_id,
-            entry.response_channel,
-        )
-
-    async def dequeue(self, entry_id: str) -> None:
-        """Remove a completed entry and unsubscribe its channel."""
-        entry = await self._get_entry(entry_id)
-        if entry and entry.response_channel in self._subscribed_channels:
-            await self._event_bus.unsubscribe(
-                entry.response_channel,
-                self._handle_response_event,
+            task = asyncio.create_task(
+                self._run_wake(response), name=f"rehydrate-{response.request_id}"
             )
-            self._subscribed_channels.remove(entry.response_channel)
+            self._wake_tasks.add(task)
+            task.add_done_callback(self._wake_tasks.discard)
 
-        await self._redis.delete(self._queue_key(entry_id))
-
-    async def _handle_response_event(self, event: "Event") -> None:
-        """
-        Receive a HITL response from the event bus and wake the
-        corresponding suspended task.
-
-        The event bus delivers this when:
-        - A human submits a response via any configured adapter
-          (Slack button click, web UI form, API call, CLI command)
-        - An external async event matching a wait_for_event() call arrives
-        - A timeout signal fires
-
-        The event.data contains the HITLResponse payload.
-        """
-        if not self.enabled:
-            logger.debug(
-                "RehydrationManager '%s': disabled, ignoring response event",
-                self.workflow_name,
-            )
-            return
-
+    async def _run_wake(self, response: ExternalCommunicationResponse) -> None:
         try:
-            response = HITLResponse(
-                request_id=event.data.get("request_id", ""),
-                decision=event.data.get("decision", ""),
-                data=event.data.get("data", {}),
-                reviewer=event.data.get("reviewer", "system"),
-                responded_at=event.data.get(
-                    "responded_at",
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
-            await self._wake_workflow(response)
-
+            await self.wake(response)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception(
-                "RehydrationManager '%s': error handling response event",
-                self.workflow_name,
-            )
-
-    async def _handle_timeout_event(self, event: "Event") -> None:
-        """Receive a timeout signal and inject a timeout response."""
-        request_id = event.data.get("request_id", "")
-        if not request_id:
-            return
-
-        timeout_response = HITLResponse(
-            request_id=request_id,
-            decision="timeout",
-            data={},
-            reviewer="system",
-            responded_at=datetime.now(timezone.utc).isoformat(),
-        )
-        await self._wake_workflow(timeout_response)
-
-    async def _wake_workflow(self, response: "HITLResponse") -> None:
-        """
-        Rehydrate and resume a suspended workflow task.
-
-        This is the equivalent of the bootloader's core logic —
-        now running inside the trigger's event handler rather than
-        a standalone process.
-
-        Steps:
-        1. Find queue entry by request_id
-        2. Claim it via Redis SETNX (prevents duplicate processing
-           when multiple RehydrationManager instances share Redis)
-        3. Load checkpoint snapshot
-        4. Inject a response into the previous_result stream
-        5. Resume via coordinator
-        6. Dequeue entry
-        """
-        entry = await self._find_entry_by_request_id(response.request_id)
-        if entry is None:
-            logger.debug(
-                "RehydrationManager '%s': no entry for request_id=%s "
-                "(may have been processed by another instance)",
-                self.workflow_name,
+                "RehydrationManager: unexpected error handling request %s",
                 response.request_id,
             )
-            return
+        finally:
+            self._slots.release()
 
-        # Distributed claim — prevents double-wake
-        claim_key = f"{self.CLAIM_PREFIX}:{entry.entry_id}"
-        claimed = await self._redis.set(claim_key, "1", nx=True, ex=30)
-        if not claimed:
-            logger.debug(
-                "RehydrationManager '%s': entry %s already claimed",
-                self.workflow_name,
-                entry.entry_id,
+    # --- waking one task ---------------------------------------------------
+
+    async def wake(self, response: ExternalCommunicationResponse) -> str:
+        """Resume the workflow ``response`` answers; return a :class:`WakeOutcome`."""
+        request_id = response.request_id
+        entry = await ExternalCommunicationQueueEntry.get_or_none(request_id)
+        if entry is None:
+            logger.warning(
+                "RehydrationManager: answer for unknown request %s dropped", request_id
             )
-            return
+            return WakeOutcome.IGNORED
+        if entry.status not in (
+            RequestStatus.WAITING.value,
+            RequestStatus.FAILED.value,
+        ):
+            logger.info(
+                "RehydrationManager: request %s is %s; duplicate answer dropped",
+                request_id,
+                entry.status,
+            )
+            return WakeOutcome.IGNORED
 
-        logger.info(
-            "RehydrationManager '%s': waking task '%s' " "(decision=%s, reviewer=%s)",
-            self.workflow_name,
-            entry.task_id,
-            response.decision,
-            response.reviewer,
+        claim = await ResumeClaim.acquire(
+            request_id, owner=self._owner, lease_seconds=self._claim_lease_seconds
         )
+        if claim is None:
+            logger.info(
+                "RehydrationManager: request %s is being resumed elsewhere", request_id
+            )
+            return WakeOutcome.CLAIMED_ELSEWHERE
 
         try:
+            # the entry may have moved on between the first read and the claim
+            entry = await ExternalCommunicationQueueEntry.get(request_id)
+            if entry.status not in (
+                RequestStatus.WAITING.value,
+                RequestStatus.FAILED.value,
+            ):
+                return WakeOutcome.IGNORED
+            return await self._resume(entry, response)
+        finally:
+            await claim.release()
 
-            snapshot = await self._checkpoint_store.load(entry.checkpoint_key)
+    async def _resume(
+        self,
+        entry: ExternalCommunicationQueueEntry,
+        response: ExternalCommunicationResponse,
+    ) -> str:
+        entry.status = RequestStatus.READY.value
+        entry.response = response.dump("dict")  # kept so a crash can re-deliver it
+        entry.attempts += 1
+        await entry.save()
 
-            await self._inject_response(snapshot, response, entry.task_id)
-
-            # The coordinator rehydrates the full workflow state and resumes
-            # execution. The COMMUNICATING phase re-runs communicate() which
-            # now finds the response in previous_result and returns normally.
-            # Then _process runs for the first time with the injected kwargs.
-            coordinator = await self._coordinator_registry.get(
-                entry.workflow_name, entry.workflow_id
-            )
-            await coordinator.resume_suspended_task(
-                snapshot=snapshot,
-                entry=entry,
-                response=response,
-            )
-
-            await self.dequeue(entry.entry_id)
-
-            # Fire soft signal — observable via OTel and Grafana
-            self._emit_rehydration_signal(entry, response)
-
-        except Exception:
+        try:
+            await self._handler()(entry, response)
+        except asyncio.CancelledError:
+            raise  # stays READY with its answer: recovered on the next start
+        except Exception as exc:
             logger.exception(
-                "RehydrationManager '%s': failed to wake task '%s'",
-                self.workflow_name,
-                entry.task_id,
+                "RehydrationManager: resuming request %s failed", entry.request_id
             )
-            await self._redis.delete(claim_key)
+            entry.status = RequestStatus.FAILED.value
+            entry.last_error = f"{type(exc).__name__}: {exc}"
+            await entry.save()
+            return WakeOutcome.FAILED
 
-    async def _timeout_poller(self) -> None:
-        """
-        Poll for timed-out queue entries every timeout_poll_interval seconds.
-        Injects a timeout response — the task resumes on descriptor 2
-        (or whichever descriptor the event author maps to timeout handling).
-        """
+        entry.status = (
+            RequestStatus.EXPIRED.value
+            if response.source == "timeout"
+            else RequestStatus.RESUMED.value
+        )
+        entry.last_error = None
+        await entry.save()
+
+        await self._announce(entry, response)
+        return WakeOutcome.RESUMED
+
+    def _handler(self) -> ResumeHandler:
+        if self._resume_handler is not None:
+            return self._resume_handler
+        # imported here: the resume machinery pulls in the whole engine
+        from volnux.engine.resume import resume_suspended_workflow
+
+        return resume_suspended_workflow
+
+    async def _announce(
+        self,
+        entry: ExternalCommunicationQueueEntry,
+        response: ExternalCommunicationResponse,
+    ) -> None:
+        try:
+            await task_rehydrated.emit_async(
+                sender=self.__class__,
+                workflow_name=entry.workflow_name,
+                task_id=entry.task_id,
+                request_id=entry.request_id,
+                decision=response.decision,
+                reviewer=response.reviewer,
+            )
+        except Exception:  # a listener must not undo a resume
+            logger.warning("task_rehydrated listener failed", exc_info=True)
+
+    # --- timeouts ----------------------------------------------------------
+
+    async def _sweep_loop(self) -> None:
         while True:
             try:
-                await asyncio.sleep(self._timeout_poll_interval)
-                await self._process_timeouts()
+                await self.sweep_timeouts()
             except asyncio.CancelledError:
-                break
+                raise
             except Exception:
-                logger.exception(
-                    "RehydrationManager '%s': error in timeout poller",
-                    self.workflow_name,
-                )
+                logger.exception("RehydrationManager: timeout sweep failed")
+            await asyncio.sleep(self._timeout_sweep_interval)
 
-    async def _process_timeouts(self) -> None:
-        now = datetime.now(timezone.utc)
-        pattern = f"{self.QUEUE_PREFIX}:{self.workflow_name}:*"
+    async def sweep_timeouts(self) -> int:
+        """Queue a timeout answer for every waiting request past its deadline.
 
-        async for key in self._redis.scan_iter(pattern):
-            raw = await self._redis.get(key)
-            if not raw:
-                continue
-            entry = self._deserialise(raw, HITLQueueEntry)
-            if not entry.timeout_at:
-                continue
-            deadline = datetime.fromisoformat(entry.timeout_at)
-            if now >= deadline:
-                logger.info(
-                    "RehydrationManager '%s': entry %s timed out " "(task=%s)",
-                    self.workflow_name,
-                    entry.entry_id,
-                    entry.task_id,
-                )
-                await self._wake_workflow(
-                    HITLResponse(
-                        request_id=entry.request_id,
-                        decision="timeout",
-                        data={},
-                        reviewer="system",
-                        responded_at=now.isoformat(),
-                    )
-                )
-
-    async def _recover_existing_suspensions(self) -> None:
+        Returns how many were queued. A timeout is resumed through the same path as
+        any answer, so the task decides what a missing answer means.
         """
-        On start, scan Redis for queue entries from before the last shutdown.
-        Re-subscribe to their response channels so no suspension is lost.
-
-        This is the equivalent of the bootloader's startup scan —
-        now happening inside the trigger's start() method.
-        """
-        pattern = f"{self.QUEUE_PREFIX}:{self.workflow_name}:*"
-        recovered = 0
-
-        async for key in self._redis.scan_iter(pattern):
-            raw = await self._redis.get(key)
-            if not raw:
-                continue
-            try:
-                entry = self._deserialise(raw, HITLQueueEntry)
-                # Re-subscribe to this entry's response channel
-                if entry.response_channel not in self._subscribed_channels:
-                    await self._event_bus.subscribe(
-                        entry.response_channel,
-                        self._handle_response_event,
-                    )
-                    self._subscribed_channels.append(entry.response_channel)
-                recovered += 1
-            except Exception:
-                logger.warning(
-                    "RehydrationManager '%s': could not recover entry " "from key %s",
-                    self.workflow_name,
-                    key,
-                )
-
-        if recovered:
-            logger.info(
-                "RehydrationManager '%s': recovered %d suspended "
-                "task(s) from Redis on startup",
-                self.workflow_name,
-                recovered,
-            )
-
-    def _queue_key(self, entry_id: str) -> str:
-        return f"{self.QUEUE_PREFIX}:{self.workflow_name}:{entry_id}"
-
-    async def _find_entry_by_request_id(
-        self, request_id: str
-    ) -> Optional["HITLQueueEntry"]:
-        pattern = f"{self.QUEUE_PREFIX}:{self.workflow_name}:*"
-        async for key in self._redis.scan_iter(pattern):
-            raw = await self._redis.get(key)
-            if raw:
-                data = json.loads(raw)
-                if data.get("request_id") == request_id:
-                    return HITLQueueEntry(**data)
-        return None
-
-    async def _get_entry(self, entry_id: str) -> Optional["HITLQueueEntry"]:
-        raw = await self._redis.get(self._queue_key(entry_id))
-        return self._deserialise(raw, HITLQueueEntry) if raw else None
-
-    async def _inject_response(
-        self,
-        snapshot: Any,
-        response: "HITLResponse",
-        task_id: str,
-    ) -> None:
-        """Write the HITLResponse as an EventResult into previous_result."""
-        result = EventResult(
-            error=False,
-            event_name="human_response",
-            content={
-                "decision": response.decision,
-                "data": response.data,
-                "reviewer": response.reviewer,
-                "responded_at": response.responded_at,
-                "type": "human_response",
-            },
-            task_id=task_id,
+        waiting = await ExternalCommunicationQueueEntry.filter(
+            status=RequestStatus.WAITING.value
         )
-        await self._checkpoint_store.inject_result(task_id, result)
+        queued = 0
+        for entry in await waiting.to_list():
+            if entry.request_id in self._timeouts_enqueued or not entry.is_expired():
+                continue
+            await ExternalCommunicationResponse.enqueue(
+                ExternalCommunicationResponse.timeout(entry.request_id)
+            )
+            self._timeouts_enqueued.add(entry.request_id)
+            queued += 1
+        return queued
 
-    def _emit_rehydration_signal(
-        self,
-        entry: "HITLQueueEntry",
-        response: "HITLResponse",
-    ) -> None:
-        try:
-            from volnux.signal.signals import get_signal
+    # --- recovery ----------------------------------------------------------
 
-            sig = get_signal("task_rehydrated")
-            if sig:
-                sig.emit(
-                    sender=self.__class__,
-                    workflow_name=entry.workflow_name,
-                    task_id=entry.task_id,
-                    decision=response.decision,
-                    reviewer=response.reviewer,
+    async def recover(self) -> int:
+        """Re-deliver answers that were claimed but never finished.
+
+        An entry still READY whose claim is gone or expired belongs to a worker that
+        died mid-resume. Its answer was kept on the entry, so it is put back on the
+        queue. Returns how many were re-delivered.
+        """
+        import time
+
+        ready = await ExternalCommunicationQueueEntry.filter(
+            status=RequestStatus.READY.value
+        )
+        redelivered = 0
+        for entry in await ready.to_list():
+            claim = await ResumeClaim.get_or_none(entry.request_id)
+            if claim is not None and claim.expires_at > time.time():
+                continue  # a live worker is on it
+            if not entry.response:
+                continue
+            entry.status = RequestStatus.WAITING.value
+            await entry.save()
+            await ExternalCommunicationResponse.enqueue(
+                ExternalCommunicationResponse(**entry.response)
+            )
+            redelivered += 1
+        if redelivered:
+            logger.warning(
+                "RehydrationManager: re-delivered %d interrupted resume(s)", redelivered
+            )
+        return redelivered
+
+    async def retry_failed(self) -> int:
+        """Put the answer of every FAILED entry back on the queue; returns how many."""
+        failed = await ExternalCommunicationQueueEntry.filter(
+            status=RequestStatus.FAILED.value
+        )
+        retried = 0
+        for entry in await failed.to_list():
+            if entry.response:
+                await ExternalCommunicationResponse.enqueue(
+                    ExternalCommunicationResponse(**entry.response)
                 )
-        except Exception:
-            pass
-
-    @staticmethod
-    def _serialise(obj: Any) -> bytes:
-        from dataclasses import asdict
-
-        return json.dumps(asdict(obj))
-
-    @staticmethod
-    def _deserialise(raw: str, cls: type) -> Any:
-        return cls(**json.loads(raw))
-
-    @staticmethod
-    def _compute_ttl(timeout_at: Optional[str]) -> Optional[int]:
-        if not timeout_at:
-            return None
-        deadline = datetime.fromisoformat(timeout_at)
-        remaining = (deadline - datetime.now(timezone.utc)).total_seconds()
-        # Add a 10-minute grace period so the entry is readable
-        # during timeout processing even after the deadline passes
-        return max(int(remaining) + 600, 600)
+                retried += 1
+        return retried

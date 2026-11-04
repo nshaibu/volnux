@@ -6,15 +6,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
 from volnux.exceptions import (
+    ExternalCommunicationSuspensionRequest,
     TaskCancelledError,
     SwitchTask,
-    # ExternalCommunicationSuspensionRequest,
     StopProcessingError,
     SuspendTask,
 )
 from volnux.execution.context import ExecutionContext, ExecutionStatus
 from volnux.execution.result import ResultProcessor
 from volnux.flows import setup_execution_flow
+from volnux.signal.signals import hitl_requested
 from volnux.mixins.event.communication.datastructures import (
     ExternalCommunicationQueueEntry,
 )
@@ -95,10 +96,84 @@ class ExecutionCoordinator:
             SuspendTask.SuspensionType.EXTERNAL_EVENT,
             SuspendTask.SuspensionType.CONDITION,
         ]:
-            # Goes to external event waiting queue. When the event is received, the tasks is place in the waiting queue baased on piroity
-            pass
+            # The task waits on the outside world: persist everything needed to
+            # bring it back and register the wait. The rehydration manager
+            # resumes it when the answer (or a timeout) arrives. A bare SuspendTask
+            # of one of these types carries no request to register.
+            if isinstance(request, ExternalCommunicationSuspensionRequest):
+                await self._register_external_wait(request)
+            else:
+                logger.warning(
+                    "Suspension of type %s carries no external request; nothing "
+                    "to register, so it cannot be resumed automatically",
+                    request.suspension_type,
+                )
         else:
             raise ValueError(f"Invalid suspension type: {request.suspension_type}")
+
+    async def _register_external_wait(
+        self, request: ExternalCommunicationSuspensionRequest
+    ) -> ExternalCommunicationQueueEntry:
+        """Persist a suspended task and record the wait.
+
+        Saved here, synchronously and not through the checkpoint manager, because a
+        suspension is a durable boundary: when this returns the task can be resumed
+        by any process. Three things are stored:
+
+        * the event's snapshot (its state, phase and resources),
+        * the execution context (``_get_latest_checkpoint_key``),
+        * an ``ExternalCommunicationQueueEntry`` tying them to the request.
+
+        The engine saves its own position (queues, current task) once the run unwinds.
+        """
+        manager = self.execution_context.get_checkpoint_manager()
+        if manager is not None:
+            # earlier queued snapshots must land before the suspension snapshot
+            await manager.flush()
+
+        snapshot = request.snapshot
+        if snapshot is None:
+            # raised by hand rather than through the event's wait_for_* methods
+            logger.warning(
+                "Suspension %s carries no snapshot; taking one now (the event may "
+                "already be past its suspension point)",
+                request.request_id,
+            )
+            snapshot = await request.task_instance.create_snapshot()
+        await snapshot.save()
+
+        context_id = await self._get_latest_checkpoint_key(request.task_id)
+
+        entry = ExternalCommunicationQueueEntry.create(
+            request_id=request.request_id,
+            workflow_name=self.execution_context.workflow_name,
+            workflow_id=self.execution_context.workflow_id,
+            task_id=request.task_id,
+            request_type=request.request_type.value,
+            checkpoint_key=snapshot.id,
+            context_id=context_id,
+            request_title=request.title,
+            request_payload=request.payload or {},
+            options=request.options,
+            timeout_at=self._compute_timeout(request.timeout_hours),
+        )
+        await entry.save()
+
+        if entry.request_type == "hitl":
+            # Lets an out-of-process governance layer learn a human is awaited,
+            # and under which request id the answer must be delivered.
+            await hitl_requested.emit_async(
+                sender=self.__class__,
+                execution_context=self.execution_context,
+                request=request,
+            )
+        logger.info(
+            "Coordinator: task '%s' suspended awaiting %s (request %s)",
+            request.task_id,
+            entry.request_type,
+            entry.request_id,
+        )
+        return entry
 
     async def _run_flow(self, flow: "BaseFlow") -> Tuple[Any, Any]:
         """Submit the flow and wait for its tasks to finish.
@@ -154,8 +229,19 @@ class ExecutionCoordinator:
             results.extend(error_results)
 
             cancelled = any(isinstance(e, TaskCancelledError) for e in errors)
+            suspension = next((e for e in errors if isinstance(e, SuspendTask)), None)
+            # Decide the final status once: a suspended task must never be
+            # marked COMPLETED on its way to being suspended.
+            if cancelled:
+                final_status = ExecutionStatus.CANCELLED
+            elif isinstance(suspension, ExternalCommunicationSuspensionRequest):
+                final_status = ExecutionStatus.SUSPENDED
+            elif suspension is not None:
+                final_status = ExecutionStatus.PAUSED
+            else:
+                final_status = ExecutionStatus.COMPLETED
             await self.execution_context.bulk_update_async(
-                ExecutionStatus.CANCELLED if cancelled else ExecutionStatus.COMPLETED,
+                final_status,
                 errors,
                 results,
             )
@@ -214,7 +300,10 @@ class ExecutionCoordinator:
 
             await self._process_suspension_request(sps)
 
-            await self.execution_context.paused_async()
+            if isinstance(sps, ExternalCommunicationSuspensionRequest):
+                await self.execution_context.suspended_async()
+            else:
+                await self.execution_context.paused_async()
             return results, errors
 
         except asyncio.TimeoutError as e:

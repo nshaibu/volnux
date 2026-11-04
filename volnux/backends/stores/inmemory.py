@@ -2,6 +2,7 @@ import copy
 import typing
 
 from volnux.backends.store import KeyValueStoreBackendBase
+from volnux.backends.q_compiler import create_filter_predicate
 from volnux.backends.connection import BackendConnectorBase, ConnectionConfig
 from volnux.backends.messaging.stores.inmemory import (
     InMemoryPubSubMixin,
@@ -115,7 +116,7 @@ class InMemoryKeyValueStoreBackend(
     def create_filter_predicate(
         self, **filter_kwargs: typing.Any
     ) -> typing.Callable[[typing.Any], bool]:
-        return self._create_filter_predicate(**filter_kwargs)
+        return create_filter_predicate(**filter_kwargs)
 
     def _get_schema_bucket(self, schema_name: str) -> typing.Dict[str, typing.Any]:
         return self._storage.setdefault(schema_name, {})
@@ -134,6 +135,11 @@ class InMemoryKeyValueStoreBackend(
         del ttl
         with self._acquire_lock():
             bucket = self._get_schema_bucket(schema_name)
+            if record_key in bucket:
+                # Same contract as the other stores: insert never overwrites
+                raise ObjectExistError(
+                    f"Record '{record_key}' already exists in schema '{schema_name}'"
+                )
             bucket[record_key] = record
 
     def update(

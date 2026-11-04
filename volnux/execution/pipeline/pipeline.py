@@ -476,6 +476,13 @@ class Pipeline(ObjectIdentityMixin, InternalMetadataMixin, metaclass=PipelineMet
         pipeline_state = self.get_pipeline_state()
         await run_workflow(pipeline_state.start, pipeline=self)
 
+        return await self.report_outcome()
+
+    async def report_outcome(self) -> typing.Optional["ExecutionContext"]:
+        """Emit the signal that matches how the run ended and return its context.
+
+        Shared by ``start()`` and by a resumed run, which ends the same ways.
+        """
         if self.execution_context:
             latest_context = self.execution_context.get_latest_context()
 
@@ -485,6 +492,11 @@ class Pipeline(ObjectIdentityMixin, InternalMetadataMixin, metaclass=PipelineMet
                     pipeline=self,
                     execution_context=latest_context,
                 )
+                return self.execution_context
+
+            if latest_context.status == ExecutionStatus.SUSPENDED:
+                # Not finished: the run is waiting on the outside world and the
+                # rehydration manager will resume it. No "end" is reported yet.
                 return self.execution_context
 
             if latest_context.status == ExecutionStatus.ABORTED:

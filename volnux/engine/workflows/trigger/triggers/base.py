@@ -98,7 +98,7 @@ class TriggerBase(ABC):
             error_count=0,
             last_fired=None,
             dirty=False,
-            updated_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(timezone.utc),
         )
         self.workflow_params = workflow_params or {}
         self.metadata = metadata or {}

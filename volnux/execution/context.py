@@ -30,6 +30,7 @@ from volnux.signal.signals import (
     event_execution_cancelled,
     event_execution_failed,
     event_execution_paused,
+    event_execution_suspended,
 )
 from volnux.task import PipelineTask, PipelineTaskGrouping
 from volnux.context import get_current_node_id, get_current_project_id
@@ -53,6 +54,7 @@ from volnux.execution.codecs import (
 
 if typing.TYPE_CHECKING:
     from volnux.engine.base import WorkflowEngine
+    from volnux.execution.rehydrator.checkpoint_manager import VolnuxCheckPointManager
 
 logger = logging.getLogger(__name__)
 
@@ -311,8 +313,15 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         return self._find_error(SwitchTask)
 
     def get_suspension_request(self) -> typing.Optional[Exception]:
-        """Check for SuspendTask in errors"""
-        return self._find_error(SuspendTask)
+        """Check for a SuspendTask in errors.
+
+        Subclasses count (``ExternalCommunicationSuspensionRequest`` is the usual
+        one); the other sentinels are matched exactly.
+        """
+        for err in self.errors:
+            if isinstance(err, SuspendTask):
+                return err
+        return None
 
     # Construction and tree
 
@@ -618,8 +627,8 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
     async def pause_tasks(self) -> int:
         """Ask the running tasks to hold before their next step.
 
-        Unlike ``paused_async`` this does not change the context status (PAUSED
-        means "suspended, waiting on something external" and ends the run).
+        Unlike ``suspended_async`` this does not change the context status
+        (SUSPENDED means "waiting on something external" and ends the run).
         Returns how many tasks received the command.
         """
         flow = getattr(self, "_active_flow", None)
@@ -647,8 +656,15 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         await self._transition_async(ExecutionStatus.FAILED, event_execution_failed)
 
     async def paused_async(self) -> None:
-        """Mark the execution context as paused."""
+        """Mark the execution context as paused (preempted, to be re-queued)."""
         await self._transition_async(ExecutionStatus.PAUSED, event_execution_paused)
+
+    async def suspended_async(self) -> None:
+        """Mark the context suspended: waiting on something external, checkpointed
+        and released. Distinct from PAUSED."""
+        await self._transition_async(
+            ExecutionStatus.SUSPENDED, event_execution_suspended
+        )
 
     # Execution
 
@@ -753,3 +769,30 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         if self._engine_ref:
             return self._engine_ref()
         return None
+
+    def set_resumed_events(self, events: typing.Dict[str, typing.Any]) -> None:
+        """Hand this context events rehydrated from a checkpoint, by task id.
+
+        When the flow later needs the event for such a task it uses the rehydrated
+        one (with its state, phase and injected results) instead of building a
+        fresh event. Runtime-only: set on the instance, never persisted.
+        """
+        self._resumed_events = dict(events)
+
+    def take_resumed_event(self, task_id: str) -> typing.Optional[typing.Any]:
+        """The rehydrated event for ``task_id``, handed over once."""
+        events = getattr(self, "_resumed_events", None)
+        if not events:
+            return None
+        return events.pop(task_id, None)
+
+    def get_checkpoint_manager(self) -> typing.Optional["VolnuxCheckPointManager"]:
+        """The checkpoint manager of this run, owned by the root engine.
+
+        ``None`` when the run has no engine or checkpointing is not enabled. Events
+        created for this context receive it so their snapshots are persisted.
+        """
+        engine = self.get_engine()
+        if engine is None:
+            return None
+        return engine.get_root_engine().checkpoint_manager

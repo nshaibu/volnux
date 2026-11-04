@@ -6,6 +6,7 @@ from typing import Dict, Any
 from formax import BaseModel, MiniAnnotated, Attrib, ValidationFlags
 
 from volnux.constants import MAX_RETRIES
+from volnux.backends.storage_route import StorageRoute
 from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 
@@ -101,16 +102,8 @@ class EventCheckpointSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
         validation = ValidationFlags.NONE
 
     @classmethod
-    def get_schema_name(cls) -> str:
-        return "volnux:event:checkpoint"
-
-    @classmethod
-    def get_backend_config(cls) -> Dict[str, Any]:
-        return {
-            "ENGINE": "volnux.backends.stores.redis.RedisStoreBackend",
-            "CONNECTOR_CONFIG": {
-                "host": "localhost",
-                "port": 6379,
-                "db": 0,
-            },
-        }
+    def get_storage_route(cls) -> StorageRoute:
+        # The store is the one the deployment configured; only the namespace is
+        # fixed here. (get_schema_name is async on the mixin and is resolved from
+        # this route.)
+        return StorageRoute(components=["volnux", "event", "checkpoint"])

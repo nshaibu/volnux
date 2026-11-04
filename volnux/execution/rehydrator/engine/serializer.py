@@ -28,7 +28,7 @@ class StateSerializer:
             **cls._serialize_descriptor(task),
             **cls._serialize_group(task),
             "options": cls._serialize_options(task),
-            "condition_node": task.condition_node.as_dict(),
+            "condition_node": cls._jsonable(task.condition_node.as_dict()),
             "sequence_number": task.sequence_number,
         }
 
@@ -82,7 +82,7 @@ class StateSerializer:
             "descriptor": task.descriptor,
             "descriptor_pipe_type": cls._enum_value(task.descriptor_pipe),
             # label -> value map copied from the program, for 2-way translation
-            "descriptors": dict(task.descriptors),
+            "descriptors": cls._jsonable(dict(task.descriptors)),
         }
 
     @classmethod
@@ -93,23 +93,36 @@ class StateSerializer:
 
     @classmethod
     def _jsonable(cls, value: Any) -> Any:
-        """Reduce enums and dataclasses to plain values so options survive JSON."""
+        """Reduce enums and dataclasses to plain values, and dict keys to strings, so
+        the payload survives JSON (the stores reject non-string keys)."""
         if isinstance(value, enum.Enum):
             return value.value
         if dataclasses.is_dataclass(value) and not isinstance(value, type):
             return cls._jsonable(dataclasses.asdict(value))
         if isinstance(value, dict):
-            return {key: cls._jsonable(item) for key, item in value.items()}
+            return {
+                (
+                    key if isinstance(key, str) else str(cls._jsonable(key))
+                ): cls._jsonable(item)
+                for key, item in value.items()
+            }
         if isinstance(value, (list, tuple, set, frozenset)):
             return [cls._jsonable(item) for item in value]
         return value
 
     @staticmethod
     def serialise_queue_task(
-        task_position: int, task_node: "TaskNode"
+        task_position: int, task_node: "typing.Union[TaskNode, TaskType]"
     ) -> QueueTaskTemplate:
+        """A queue entry as a reference to its saved ``TaskSnapshot``.
+
+        The work queue holds ``TaskNode`` (a task plus the context it follows) while
+        the sink queue holds bare tasks; the root node has no previous context.
+        """
+        task = getattr(task_node, "task", task_node)
+        previous = getattr(task_node, "previous_context", None)
         return {
             "position_in_queue": task_position,
-            "task_id": task_node.task.get_id(),
-            "previous_context_id": task_node.previous_context.state_id,
+            "task_id": task.get_id(),
+            "previous_context_id": previous.state_id if previous is not None else None,
         }

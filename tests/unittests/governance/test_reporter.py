@@ -63,6 +63,7 @@ def test_every_wired_signal_is_registered_once(wired):
         "pipeline_shutdown",
         "event_execution_failed",
         "event_execution_paused",
+        "event_execution_suspended",
         "event_execution_resumed",
         "event_execution_start",
         "event_execution_end",
@@ -80,6 +81,12 @@ def test_every_wired_signal_is_registered_once(wired):
         # failed execution but keeps the reason so the two remain tellable apart.
         ("pipeline_shutdown", EventType.EXECUTION_FAILED, {"reason": "aborted"}),
         ("event_execution_paused", EventType.EXECUTION_PAUSED, {}),
+        # a suspension is reported as the existing "paused" fact, with its reason
+        (
+            "event_execution_suspended",
+            EventType.EXECUTION_PAUSED,
+            {"reason": "suspended"},
+        ),
         ("event_execution_resumed", EventType.EXECUTION_RESUMED, {}),
     ],
 )

@@ -292,6 +292,10 @@ class ExternalCommunicationSuspensionRequest(SuspendTask):
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+    #: The event's checkpoint snapshot, taken at the suspension point. By the time
+    #: the coordinator handles this exception the event has already run its
+    #: completion step, so the snapshot cannot be taken then.
+    snapshot: Optional[Any] = None
 
     def __post_init__(self, task: "BaseEvent") -> None:
         # request_type is an ExternalCommunicationType, imported only under

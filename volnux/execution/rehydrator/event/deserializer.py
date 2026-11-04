@@ -23,9 +23,6 @@ class StateDeserializer:
 
         This is the inverse of StateSerializer.serialize_init_args.
         """
-        from volnux.execution.rehydrator.engine.serializer import (
-            StateSerializer as EngineSerializer,
-        )
         from volnux.execution.context import ExecutionContext
 
         kwargs = {}
@@ -65,13 +62,12 @@ class StateDeserializer:
         # Restore keyword arguments
         kwargs["kwargs"] = cls._restore_keyword_args(init_args.get("kwargs", {}))
 
-        # Restore previous results
+        # Previous results are stored by id (EventResult is persisted). Loading
+        # them needs the store, so the ids are handed back for EventRehydrator
+        # to resolve.
         previous_results = init_args.get("previous_result", [])
         if previous_results:
-            kwargs["previous_result"] = [
-                EngineSerializer.deserialize_result(result)
-                for result in previous_results
-            ]
+            kwargs["previous_result"] = list(previous_results)
 
         return kwargs
 
@@ -81,17 +77,14 @@ class StateDeserializer:
 
         This is the inverse of StateSerializer.serialize_call_args.
         """
-        from volnux.execution.rehydrator.engine.serializer import (
-            StateSerializer as EngineSerializer,
-        )
-
+        # Mirrors serialize_call_args, which writes each value with
+        # ``serialize_exec_result``.
         return {
             "args": [
-                EngineSerializer.deserialize_result(arg)
-                for arg in call_args.get("args", [])
+                cls.deserialize_exec_result(arg) for arg in call_args.get("args", [])
             ],
             "kwargs": {
-                key: EngineSerializer.deserialize_result(value)
+                key: cls.deserialize_exec_result(value)
                 for key, value in call_args.get("kwargs", {}).items()
             },
         }
@@ -111,7 +104,7 @@ class StateDeserializer:
         """Reconstruct registered external resources from checkpoint state.
 
         Each resource is restored by importing its provider class
-        and calling provider.restore(data).
+        and calling provider.restore_state(data).
         """
         restored = {}
         for resource_name, resource_state in external_resources.items():
@@ -127,7 +120,7 @@ class StateDeserializer:
 
             try:
                 provider_class = import_class(provider_path)
-                restored[resource_name] = provider_class.restore(resource_data)
+                restored[resource_name] = provider_class.restore_state(resource_data)
             except Exception as e:
                 logger.error(
                     "Failed to restore resource '%s' via provider '%s': %s",

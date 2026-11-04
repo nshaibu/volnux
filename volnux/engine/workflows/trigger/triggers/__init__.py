@@ -36,6 +36,7 @@ from .chain import (
     WindowedTrigger,
     WindowSink,
 )
+from .manager import RehydrationManager
 from .base import TriggerBase, TriggerLifecycle, TriggerActivation, TriggerType
 
 __all__ = [
@@ -53,4 +54,5 @@ __all__ = [
     "WorkflowStatus",
     "WindowedTrigger",
     "WindowSink",
+    "RehydrationManager",
 ]

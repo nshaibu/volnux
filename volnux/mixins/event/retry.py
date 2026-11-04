@@ -206,6 +206,11 @@ class RetryMixin:
                 if self.is_retryable(exc):
                     # Keep the LAST error: it is the one that finally gave up.
                     exception_causing_retry = exc
+                    if self.is_exhausted():
+                        # That was the last allowed attempt: do not sleep or
+                        # announce a retry that will never happen; the top of
+                        # the loop reports exhaustion with this exception.
+                        continue
                     back_off = await self._sleep_for_backoff()
 
                     await event_execution_retry.emit_async(

@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from typing import Any, Dict, List, Union
 
 from volnux.result import EventResult
@@ -9,6 +10,20 @@ logger = logging.getLogger(__name__)
 
 # Maps serialized key type names back to Python constructors
 _KEY_TYPE_MAP = {"int": int, "float": float, "bool": bool}
+
+
+@dataclass(frozen=True)
+class EventResultRef:
+    """A reference to a persisted ``EventResult``.
+
+    ``EventResult`` is a persistable model, so a checkpoint stores its id rather
+    than a copy of its content. Deserialising is synchronous and cannot reach
+    the store, so it yields this reference; ``EventRehydrator`` resolves it back
+    to the stored result.
+    """
+
+    id: str
+    class_path: str
 
 
 class ExecResultSerializer:
@@ -56,7 +71,12 @@ class ExecResultSerializer:
         return self._serialize_object(result)
 
     def _serialize_event_result(self, result: EventResult) -> Dict[str, Any]:
-        return self.state_serializer.serialize_result(result)
+        """Reference a persisted result by id (the snapshot builder persists it first)."""
+        return {
+            "__type__": "EventResult",
+            "id": result.id,
+            "__class_path__": get_obj_klass_import_str(result),
+        }
 
     def _serialize_sequence(
         self, sequence: Union[List, tuple], original_type: type
@@ -217,7 +237,10 @@ class ExecResultSerializer:
             )
             return str_key
 
-    def _deserialize_event_result(self, data: Dict[str, Any]) -> EventResult:
+    def _deserialize_event_result(self, data: Dict[str, Any]) -> Any:
+        if "id" in data and "state" not in data and "data" not in data:
+            return EventResultRef(id=data["id"], class_path=data["__class_path__"])
+
         if self.state_serializer and hasattr(
             self.state_serializer, "deserialize_result"
         ):

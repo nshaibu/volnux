@@ -9,6 +9,7 @@ from .protocol import Monitorable, Persistable
 
 if typing.TYPE_CHECKING:
     from ..resilience.protocols import TaskInfo
+    from volnux.engine.checkpoint_config import CheckPointConfig
 
 logger = logging.getLogger(__name__)
 
@@ -71,13 +72,51 @@ class VolnuxCheckPointManager:
         self._monitor_task: typing.Optional[asyncio.Task] = None
         self._running = False
 
-    def enqueue(self, snapshot: Persistable):
+    @classmethod
+    def from_config(cls, config: "CheckPointConfig") -> "VolnuxCheckPointManager":
+        """Build a manager from an engine's ``CheckPointConfig``.
+
+        The config uses descriptive names (``*_seconds``, ``max_concurrent_checkpoints``);
+        this maps them onto the constructor.
+        """
+        return cls(
+            checkpoint_interval=config.policy.checkpoint_interval_seconds,
+            max_concurrent=config.runtime.max_concurrent_checkpoints,
+            retry_attempts=config.runtime.retry_attempts,
+            retry_delay=config.runtime.retry_delay_seconds,
+            snapshot_ttl=int(config.runtime.checkpoint_ttl_seconds),
+        )
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    @property
+    def queue_depth(self) -> int:
+        """Snapshots waiting to be persisted."""
+        return self._queue.qsize()
+
+    def enqueue(self, snapshot: Persistable) -> bool:
         """
         Enqueue a snapshot (or any persistable model) for persistence.
+
+        A full queue means persistence is not keeping up. The snapshot is dropped
+        and logged rather than raised: a checkpoint must never fail the task it
+        describes.
+
         :param snapshot: The object to be saved.
-        :return: None
+        :return: True if queued, False if the queue was full.
         """
-        self._queue.put_nowait(snapshot)
+        try:
+            self._queue.put_nowait(snapshot)
+        except asyncio.QueueFull:
+            logger.error(
+                "Checkpoint queue is full (%d): dropping snapshot %s",
+                self._queue.maxsize,
+                getattr(snapshot, "id", snapshot),
+            )
+            return False
+        return True
 
     def monitor(self, context: Monitorable):
         """
@@ -238,8 +277,8 @@ class VolnuxCheckPointManager:
                     f"Retrying in {delay:.2f}s"
                 )
 
-                # if attempt < self.retry_attempts:
-                await asyncio.sleep(delay)
+                if attempt < self.retry_attempts:
+                    await asyncio.sleep(delay)
 
         logger.error(
             f"Persistence failed after {self.retry_attempts} tries: {last_error}"
@@ -248,6 +287,10 @@ class VolnuxCheckPointManager:
     async def flush(self):
         """The Preemption Barrier: Ensures the queue is empty before a swap."""
         await self._queue.join()
+
+    async def drain(self):
+        """Wait until every queued snapshot is persisted (alias of ``flush``)."""
+        await self.flush()
 
     def get_managed_tasks(self) -> typing.Dict[str, "TaskInfo"]:
         """

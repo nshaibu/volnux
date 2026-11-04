@@ -195,6 +195,9 @@ class EventMeta(abc.ABCMeta):
                         f"Got: {raw_categories!r}"
                     )
 
+                # Keep the class attribute in the documented frozenset form too
+                cls.categories = raw_categories
+
                 _event_registry.register(
                     event_class,
                     name=event_name,
@@ -353,7 +356,8 @@ class EventBase(
         :type previous_result: Union[List[EventResult], EMPTY]
         :param stop_condition: Determines the condition under which execution should stop.
         :type stop_condition: StopCondition
-        :param run_bypass_event_checks: A flag indicating whether to bypass event checks.
+        :param run_bypass_event_checks: Recorded on the event and in its checkpoint. It does not
+            gate the ``bypass()`` hook, which is always consulted before processing.
         :type run_bypass_event_checks: bool
         :param options: Additional options to configure the event. Passed additional runtime
             configuration if provided.
@@ -674,6 +678,11 @@ class EventBase(
         :rtype: EventResult
         """
         self._main_worker_task = asyncio.current_task()
+        # What the event was called with, so a checkpoint can reproduce the call.
+        # (The flows set ``_call_args`` before calling; a direct call sets it here.)
+        self._call_positional = args
+        if self._call_args is EMPTY:
+            self._call_args = dict(kwargs)
         self._command_listener_task: typing.Optional[asyncio.Task] = None
 
         if self._command_channel:

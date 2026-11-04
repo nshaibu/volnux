@@ -442,6 +442,16 @@ event_execution_resumed = SoftSignal(
     "event_execution_resumed",
     provide_args=["task_profiles", "execution_context", "state"],
 )
+# A suspended task was brought back by the rehydration manager
+task_rehydrated = SoftSignal(
+    "task_rehydrated",
+    provide_args=["workflow_name", "task_id", "request_id", "decision", "reviewer"],
+)
+# A task asked the outside world for something and was checkpointed and released
+event_execution_suspended = SoftSignal(
+    "event_execution_suspended",
+    provide_args=["task_profiles", "execution_context", "state"],
+)
 
 # Fired when a task suspends for human input (HITL). Lets an out-of-process
 # governance layer learn a request is pending without the engine knowing about it.

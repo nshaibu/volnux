@@ -105,7 +105,10 @@ class TestEngineStateSnapshot:
         assert self._make_engine_state(tasks_processed=7).tasks_processed == 7
 
     def test_get_schema_name(self) -> None:
-        assert EngineStateSnapshot.get_schema_name() == "volnux:snapshot:engine"
+        assert (
+            ":".join(EngineStateSnapshot.get_storage_route().components)
+            == "volnux:snapshot:engine"
+        )
 
     def test_is_keyed_by_context_id(self) -> None:
         e = self._make_engine_state()
@@ -161,7 +164,10 @@ class TestTaskSnapshot:
         assert ts.task_checkpoint == {"offset": 99, "buffer": [1, 2]}
 
     def test_get_schema_name(self) -> None:
-        assert TaskSnapshot.get_schema_name() == "volnux:snapshot:task"
+        assert (
+            ":".join(TaskSnapshot.get_storage_route().components)
+            == "volnux:snapshot:task"
+        )
 
     def test_graph_fields_default_to_none(self) -> None:
         ts = self._make_task_snapshot()
