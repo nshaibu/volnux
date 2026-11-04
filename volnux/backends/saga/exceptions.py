@@ -1,5 +1,4 @@
-import logging
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 
 class SagaError(Exception):
@@ -45,11 +44,10 @@ class SagaCompensationFailureError(SagaError):
 class SagaTimeoutError(SagaError):
     """A saga step exceeded its configured timeout."""
 
-    def __init__(self, step_index: int, step_name: str, timeout: float):
+    def __init__(self, step_index: int, step_name: str, timeout: Optional[float]):
         self.step_index = step_index
         self.step_name = step_name
         self.timeout = timeout
         super().__init__(
-            "Saga step %d ('%s') timed out after %.1fs"
-            % (step_index, step_name, timeout)
+            "Saga step %d ('%s') timed out after %ss" % (step_index, step_name, timeout)
         )

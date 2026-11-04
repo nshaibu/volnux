@@ -3,7 +3,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple, Type
 
 from .exceptions import (
     SagaStepFailureError,
@@ -30,6 +30,7 @@ class StepStatus(str, Enum):
     COMPENSATED = "compensated"
     COMPENSATION_FAILED = "compensation_failed"
     TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
 
 
 class SagaStatus(str, Enum):
@@ -60,7 +61,8 @@ class RetryPolicy:
         backoff_base: Base delay in seconds; doubles on each retry.
         backoff_max: Upper bound on backoff delay in seconds.
         retryable_exceptions: Tuple of exception types that should trigger
-            a retry. ``None`` means all exceptions are retryable; an empty
+            a retry. Step timeouts surface as ``asyncio.TimeoutError``.
+            ``None`` means all exceptions are retryable; an empty
             tuple means no exceptions are retryable (effectively disables
             retries even if max_attempts > 1).
     """
@@ -68,9 +70,20 @@ class RetryPolicy:
     max_attempts: int = 3
     backoff_base: float = 1.0
     backoff_max: float = 60.0
-    retryable_exceptions: Optional[Tuple[type, ...]] = None
+    retryable_exceptions: Optional[Tuple[Type[BaseException], ...]] = None
 
-    def is_retryable(self, exc: Exception) -> bool:
+    def __post_init__(self) -> None:
+        if self.max_attempts < 1:
+            raise ValueError("max_attempts must be >= 1, got %r." % self.max_attempts)
+        if self.backoff_base < 0 or self.backoff_max < 0:
+            raise ValueError("backoff_base and backoff_max must be >= 0.")
+
+    def is_retryable(self, exc: BaseException) -> bool:
+        """Return True if ``exc`` should trigger another attempt.
+
+        A step timeout is matched as ``asyncio.TimeoutError`` (the raw
+        exception), so include it in ``retryable_exceptions`` to retry timeouts.
+        """
         if self.retryable_exceptions is None:
             return True
         if not self.retryable_exceptions:
@@ -96,7 +109,8 @@ class SagaStep:
         retry_policy: Optional retry configuration applied to both
             the action and its compensation.
         timeout: Optional per-invocation timeout in seconds applied to
-            both the action and its compensation.
+            both the action and its compensation. For sync callables the
+            timeout only stops waiting; the worker thread keeps running.
     """
 
     name: str
@@ -125,7 +139,9 @@ class SagaResult:
         status: Final status of the saga.
         steps: Snapshot of all steps with their final statuses.
         total_time: Wall-clock duration in seconds.
-        error: The error that caused failure, if any.
+        error: The error that caused failure, if any. When compensation also
+            failed this is a ``SagaCompensationFailureError`` whose
+            ``original_error`` is the triggering failure.
         failed_step_index: Index of the step that triggered compensation,
             if any.
     """
@@ -179,6 +195,10 @@ class Saga(ObjectIdentityMixin):
 
     If compensation fails, the failure is automatically persisted to the
     underlying storage spine via ``DeadLetterEntry.enqueue()``.
+
+    Delivery semantics: checkpoints are written *before* each step, so after a
+    crash ``resume`` re-runs the in-flight step. Actions and compensations
+    should therefore be idempotent.
     """
 
     def __init__(
@@ -186,7 +206,7 @@ class Saga(ObjectIdentityMixin):
         name: Optional[str] = None,
         enable_recovery: bool = True,
         compensate_failed_step: bool = False,
-    ):
+    ) -> None:
         """
         Initialize a new Saga.
 
@@ -207,7 +227,7 @@ class Saga(ObjectIdentityMixin):
 
         self._steps: List[SagaStep] = []
         self._status = SagaStatus.PENDING
-        self.name = name or self._id
+        self.name: str = name or self.id
         self.enable_recovery = enable_recovery
         self.compensate_failed_step = compensate_failed_step
         self._created_at = time.time()  # Wall clock for timestamps
@@ -215,7 +235,11 @@ class Saga(ObjectIdentityMixin):
 
     @property
     def saga_id(self) -> str:
-        return self._id
+        return self.id
+
+    @property
+    def status(self) -> SagaStatus:
+        return self._status
 
     def add_step(
         self,
@@ -230,6 +254,10 @@ class Saga(ObjectIdentityMixin):
                 "Saga '%s' (%s) has already been executed (status: %s)."
                 % (self.name, self.saga_id, self._status)
             )
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Step 'name' must be a non-empty string.")
+        if any(s.name == name for s in self._steps):
+            raise ValueError("Duplicate step name '%s'." % name)
         if not callable(action):
             raise ValueError(
                 "'action' must be callable, got %r." % type(action).__name__
@@ -238,6 +266,8 @@ class Saga(ObjectIdentityMixin):
             raise ValueError(
                 "'compensation' must be callable, got %r." % type(compensation).__name__
             )
+        if timeout is not None and timeout <= 0:
+            raise ValueError("'timeout' must be positive, got %r." % timeout)
 
         self._steps.append(
             SagaStep(
@@ -250,9 +280,29 @@ class Saga(ObjectIdentityMixin):
         )
         return self
 
+    async def _checkpoint(
+        self,
+        current_step_index: int,
+        failed_step_index: Optional[int] = None,
+    ) -> None:
+        await SagaRecoveryManager.save_state(
+            saga_id=self.saga_id,
+            saga_name=self.name,
+            current_step_index=current_step_index,
+            status=self._status.value,
+            steps=self._steps,
+            created_at=self._created_at,
+            compensate_failed_step=self.compensate_failed_step,
+            failed_step_index=failed_step_index,
+        )
+
     async def execute(self, start_at_index: int = 0) -> SagaResult:
-        """Run all steps in order; compensate on failure with durable recovery."""
-        if self._status not in (SagaStatus.PENDING, SagaStatus.RUNNING):
+        """Run all steps in order; compensate on failure with durable recovery.
+
+        If the running task is cancelled, compensation still runs (shielded)
+        and the ``CancelledError`` is then re-raised.
+        """
+        if self._status != SagaStatus.PENDING:
             raise RuntimeError(
                 "Saga '%s' (%s) is in invalid status '%s' for execution."
                 % (self.name, self.saga_id, self._status)
@@ -261,11 +311,18 @@ class Saga(ObjectIdentityMixin):
             raise RuntimeError(
                 "Saga '%s' (%s) has no steps." % (self.name, self.saga_id)
             )
+        if not 0 <= start_at_index <= len(self._steps):
+            raise ValueError(
+                "start_at_index %d out of range for %d steps."
+                % (start_at_index, len(self._steps))
+            )
 
         self._status = SagaStatus.RUNNING
         self._started_at = time.monotonic()
         failed_step_index: Optional[int] = None
         error: Optional[Exception] = None
+        include_failed = self.compensate_failed_step
+        cancelled: Optional[asyncio.CancelledError] = None
 
         logger.info(
             "Starting saga '%s' (%s) with %d steps",
@@ -279,14 +336,24 @@ class Saga(ObjectIdentityMixin):
                 step = self._steps[i]
 
                 if self.enable_recovery:
-                    await SagaRecoveryManager.save_state(
-                        saga_id=self.saga_id,
-                        saga_name=self.name,
-                        current_step_index=i,
-                        status=self._status.value,
-                        steps=self._steps,
-                        created_at=self._created_at,
-                    )
+                    try:
+                        await self._checkpoint(i)
+                    except Exception as exc:
+                        # Without a durable checkpoint we cannot safely run
+                        # the step. Roll back what already ran. The step
+                        # itself never started, so it is not compensated.
+                        logger.error(
+                            "Saga '%s' (%s) could not checkpoint before step %d: %s",
+                            self.name,
+                            self.saga_id,
+                            i,
+                            exc,
+                        )
+                        failed_step_index = i
+                        error = SagaStepFailureError(i, step.name, exc)
+                        step.error = exc
+                        include_failed = False
+                        break
 
                 try:
                     await self._execute_step(i, step)
@@ -294,9 +361,33 @@ class Saga(ObjectIdentityMixin):
                     failed_step_index = i
                     error = exc
                     break
+                except asyncio.CancelledError as exc:
+                    failed_step_index = i
+                    error = SagaStepFailureError(
+                        i, step.name, Exception("Step '%s' was cancelled" % step.name)
+                    )
+                    cancelled = exc
+                    break
 
             if failed_step_index is not None:
-                await self._run_compensation(failed_step_index, error)
+                comp = asyncio.ensure_future(
+                    self._run_compensation(
+                        failed_step_index, error, include_failed=include_failed
+                    )
+                )
+                try:
+                    comp_result = await asyncio.shield(comp)
+                except asyncio.CancelledError as exc:
+                    # Cancelled while compensating: let compensation finish in
+                    # the background, then propagate the cancellation.
+                    cancelled = cancelled or exc
+                    comp_result = None
+                if (
+                    comp_result is not None
+                    and not comp_result.success
+                    and error is not None
+                ):
+                    error = SagaCompensationFailureError(error, comp_result.failures)
             else:
                 self._status = SagaStatus.COMPLETED
                 logger.info(
@@ -308,7 +399,7 @@ class Saga(ObjectIdentityMixin):
 
                 # Clean up recovery state on successful execution
                 if self.enable_recovery:
-                    await SagaRecoveryManager.delete_state(self.saga_id)
+                    await self._cleanup_checkpoint()
 
         except Exception as exc:
             self._status = SagaStatus.ORCHESTRATION_ERROR
@@ -319,6 +410,9 @@ class Saga(ObjectIdentityMixin):
                 self.saga_id,
                 exc,
             )
+
+        if cancelled is not None:
+            raise cancelled
 
         total_time = time.monotonic() - self._started_at
         return SagaResult(
@@ -331,6 +425,18 @@ class Saga(ObjectIdentityMixin):
             failed_step_index=failed_step_index,
         )
 
+    async def _cleanup_checkpoint(self) -> None:
+        """Delete the checkpoint; a cleanup failure must not change the outcome."""
+        try:
+            await SagaRecoveryManager.delete_state(self.saga_id)
+        except Exception as exc:
+            logger.warning(
+                "Saga '%s' (%s) could not delete recovery state: %s",
+                self.name,
+                self.saga_id,
+                exc,
+            )
+
     async def _execute_step(self, index: int, step: SagaStep) -> None:
         """
         Executes a single step's action in the saga with support for retries
@@ -338,20 +444,16 @@ class Saga(ObjectIdentityMixin):
         timeouts during the step execution.
 
         Steps are marked with appropriate statuses (`RUNNING`, `SUCCEEDED`,
-        `TIMED_OUT`, or `FAILED`) based on the execution outcome. Retry policies
-        are honored where applicable, including retry delays and determining whether
-        an exception is retryable. Upon failure after retries are exhausted, the
-        appropriate exception is raised.
+        `TIMED_OUT`, `CANCELLED` or `FAILED`) based on the execution outcome.
+        Retry policies are honored where applicable, including retry delays and
+        determining whether an exception is retryable.
 
         :param index: The index of the step within the saga.
-        :type index: int
-        :param step: The step to execute, including its action, retry policy,
-            and timeout configuration.
-        :type step: SagaStep
-        :return: None
+        :param step: The step to execute.
         :raises SagaTimeoutError: If the step execution exceeds the defined timeout.
         :raises SagaStepFailureError: If the step execution fails due to an
             unhandled exception after exhausting all retries.
+        :raises asyncio.CancelledError: If the task is cancelled (never retried).
         """
         step.status = StepStatus.RUNNING
         step.started_at = time.monotonic()
@@ -362,12 +464,14 @@ class Saga(ObjectIdentityMixin):
 
         for attempt in range(1, max_attempts + 1):
             step.attempts = attempt
+            raw_exc: Optional[Exception] = None
             try:
                 await _invoke(step.action, step.timeout)
                 step.status = StepStatus.SUCCEEDED
                 step.completed_at = time.monotonic()
                 logger.debug(
-                    "Saga '%s' step %d ('%s') succeeded (attempt %d)",
+                    "Saga '%s' (%s) step %d ('%s') succeeded (attempt %d)",
+                    self.name,
                     self.saga_id,
                     index,
                     step.name,
@@ -375,23 +479,11 @@ class Saga(ObjectIdentityMixin):
                 )
                 return
 
-            except asyncio.TimeoutError:
-                last_exc = SagaTimeoutError(index, step.name, step.timeout)
-                step.status = StepStatus.TIMED_OUT
-                logger.warning(
-                    "Saga '%s' (%s) step %d ('%s') timed out after %.1fs (attempt %d/%d)",
-                    self.name,
-                    self.saga_id,
-                    index,
-                    step.name,
-                    step.timeout,
-                    attempt,
-                    max_attempts,
-                )
-
             except asyncio.CancelledError:
-                # Preserve cancellation - don't retry
-                last_exc = Exception(f"Step '{step.name}' was cancelled")
+                # Never swallow cancellation: record and propagate.
+                step.status = StepStatus.CANCELLED
+                step.completed_at = time.monotonic()
+                step.error = Exception("Step '%s' was cancelled" % step.name)
                 logger.warning(
                     "Saga '%s' (%s) step %d ('%s') was cancelled",
                     self.name,
@@ -399,23 +491,37 @@ class Saga(ObjectIdentityMixin):
                     index,
                     step.name,
                 )
-                break
+                raise
 
             except Exception as exc:
-                last_exc = exc
-                logger.warning(
-                    "Saga '%s' (%s) step %d ('%s') failed on attempt %d/%d: %s",
-                    self.name,
-                    self.saga_id,
-                    index,
-                    step.name,
-                    attempt,
-                    max_attempts,
-                    exc,
-                )
+                raw_exc = exc
+                if isinstance(exc, asyncio.TimeoutError) and step.timeout is not None:
+                    last_exc = SagaTimeoutError(index, step.name, step.timeout)
+                    logger.warning(
+                        "Saga '%s' (%s) step %d ('%s') timed out after %.1fs (attempt %d/%d)",
+                        self.name,
+                        self.saga_id,
+                        index,
+                        step.name,
+                        step.timeout,
+                        attempt,
+                        max_attempts,
+                    )
+                else:
+                    last_exc = exc
+                    logger.warning(
+                        "Saga '%s' (%s) step %d ('%s') failed on attempt %d/%d: %s",
+                        self.name,
+                        self.saga_id,
+                        index,
+                        step.name,
+                        attempt,
+                        max_attempts,
+                        exc,
+                    )
 
             if attempt < max_attempts and step.retry_policy is not None:
-                if step.retry_policy.is_retryable(last_exc):
+                if step.retry_policy.is_retryable(raw_exc):
                     delay = step.retry_policy.delay_for_attempt(attempt)
                     logger.info(
                         "Saga '%s' (%s) step %d ('%s') retrying in %.1fs",
@@ -428,14 +534,9 @@ class Saga(ObjectIdentityMixin):
                     try:
                         await asyncio.sleep(delay)
                     except asyncio.CancelledError:
-                        logger.warning(
-                            "Saga '%s' (%s) retry sleep cancelled for step %d ('%s')",
-                            self.name,
-                            self.saga_id,
-                            index,
-                            step.name,
-                        )
-                        break
+                        step.status = StepStatus.CANCELLED
+                        step.error = Exception("Step '%s' was cancelled" % step.name)
+                        raise
                 else:
                     logger.info(
                         "Saga '%s' (%s) step %d ('%s') — %s is not retryable, stopping",
@@ -443,17 +544,18 @@ class Saga(ObjectIdentityMixin):
                         self.saga_id,
                         index,
                         step.name,
-                        type(last_exc).__name__,
+                        type(raw_exc).__name__,
                     )
                     break
 
-        step.status = StepStatus.FAILED
         step.completed_at = time.monotonic()
         step.error = last_exc
 
         # SagaTimeoutError is already the right type; wrap everything else.
-        if isinstance(last_exc, SagaError):
+        if isinstance(last_exc, SagaTimeoutError):
+            step.status = StepStatus.TIMED_OUT
             raise last_exc
+        step.status = StepStatus.FAILED
         raise SagaStepFailureError(
             step_index=index,
             step_name=step.name,
@@ -464,17 +566,14 @@ class Saga(ObjectIdentityMixin):
         self,
         failed_step_index: int,
         original_error: Optional[Exception],
-    ) -> None:
+        include_failed: Optional[bool] = None,
+    ) -> CompensationResult:
         self._status = SagaStatus.COMPENSATING
+        if include_failed is None:
+            include_failed = self.compensate_failed_step
 
         # Determine compensation range based on configuration
-        if self.compensate_failed_step:
-            # Include the failed step itself
-            start_index = failed_step_index
-        else:
-            # Only compensate successfully completed steps
-            start_index = failed_step_index - 1
-
+        start_index = failed_step_index if include_failed else failed_step_index - 1
         indices = list(range(start_index, -1, -1))
 
         logger.info(
@@ -486,18 +585,15 @@ class Saga(ObjectIdentityMixin):
             original_error,
         )
 
-        # Checkpoint compensating status
-        if self.enable_recovery:
-            await SagaRecoveryManager.save_state(
-                saga_id=self.saga_id,
-                saga_name=self.name,
-                current_step_index=failed_step_index,
-                status=self._status.value,
-                steps=self._steps,
-                created_at=self._created_at,
-            )
+        # Checkpoint compensating status. Compensation matters more than the
+        # checkpoint, so a persistence failure is logged but not fatal.
+        await self._safe_checkpoint(failed_step_index)
 
-        result = await self._compensate_steps(indices)
+        try:
+            result = await self._compensate_steps(indices)
+        except asyncio.CancelledError:
+            self._status = SagaStatus.PARTIALLY_COMPENSATED
+            raise
 
         if result.success:
             self._status = SagaStatus.COMPENSATED
@@ -508,7 +604,7 @@ class Saga(ObjectIdentityMixin):
                 result.compensated_count,
             )
             if self.enable_recovery:
-                await SagaRecoveryManager.delete_state(self.saga_id)
+                await self._cleanup_checkpoint()
         else:
             self._status = SagaStatus.PARTIALLY_COMPENSATED
             logger.error(
@@ -517,15 +613,41 @@ class Saga(ObjectIdentityMixin):
                 self.saga_id,
                 len(result.failures),
             )
-            await self._enqueue_dead_letter(failed_step_index, original_error, result)
+            # Persist per-step outcomes so a resume skips what already ran.
+            await self._safe_checkpoint(failed_step_index)
+            try:
+                await self._enqueue_dead_letter(
+                    failed_step_index, original_error, result
+                )
+            except Exception as exc:
+                logger.error(
+                    "Saga '%s' (%s) could not enqueue dead letter entry: %s",
+                    self.name,
+                    self.saga_id,
+                    exc,
+                )
             # Retain recovery state for manual operator CLI investigation
+        return result
+
+    async def _safe_checkpoint(self, failed_step_index: int) -> None:
+        if not self.enable_recovery:
+            return
+        try:
+            await self._checkpoint(failed_step_index, failed_step_index)
+        except Exception as exc:
+            logger.error(
+                "Saga '%s' (%s) could not persist compensation checkpoint: %s",
+                self.name,
+                self.saga_id,
+                exc,
+            )
 
     async def _compensate_steps(self, indices: List[int]) -> CompensationResult:
         """Execute compensation for each index in ``indices``.
 
         All compensations are attempted even if some fail — we never stop
-        early. Each compensation respects the step's retry policy, including
-        ``is_retryable`` checks (same policy as action retries).
+        early. Steps already COMPENSATED (e.g. restored by ``resume``) are
+        skipped. Each compensation respects the step's retry policy.
 
         Returns:
             ``CompensationResult`` summarising the outcome.
@@ -535,12 +657,19 @@ class Saga(ObjectIdentityMixin):
 
         for i in indices:
             step = self._steps[i]
+            if step.status == StepStatus.COMPENSATED:
+                compensated_count += 1
+                continue
+
             step.status = StepStatus.COMPENSATING
             max_attempts = step.retry_policy.max_attempts if step.retry_policy else 1
-            last_exc: Optional[Exception] = None
+            last_exc: Exception = Exception(
+                "Compensation failed with no exception captured"
+            )
             succeeded = False
 
             for attempt in range(1, max_attempts + 1):
+                raw_exc: Optional[Exception] = None
                 try:
                     await _invoke(step.compensation, step.timeout)
                     step.status = StepStatus.COMPENSATED
@@ -556,20 +685,19 @@ class Saga(ObjectIdentityMixin):
                     )
                     break
 
-                except asyncio.TimeoutError:
-                    last_exc = SagaTimeoutError(i, step.name, step.timeout)
-                    logger.warning(
-                        "Saga '%s' (%s) step %d ('%s') compensation timed out (attempt %d/%d)",
-                        self.name,
-                        self.saga_id,
-                        i,
-                        step.name,
-                        attempt,
-                        max_attempts,
-                    )
+                except asyncio.CancelledError:
+                    step.status = StepStatus.COMPENSATION_FAILED
+                    raise
 
                 except Exception as exc:
-                    last_exc = exc
+                    raw_exc = exc
+                    if (
+                        isinstance(exc, asyncio.TimeoutError)
+                        and step.timeout is not None
+                    ):
+                        last_exc = SagaTimeoutError(i, step.name, step.timeout)
+                    else:
+                        last_exc = exc
                     logger.warning(
                         "Saga '%s' (%s) step %d ('%s') compensation failed (attempt %d/%d): %s",
                         self.name,
@@ -578,13 +706,18 @@ class Saga(ObjectIdentityMixin):
                         step.name,
                         attempt,
                         max_attempts,
-                        exc,
+                        last_exc,
                     )
 
                 if attempt < max_attempts and step.retry_policy is not None:
-                    if step.retry_policy.is_retryable(last_exc):
-                        delay = step.retry_policy.delay_for_attempt(attempt)
-                        await asyncio.sleep(delay)
+                    if step.retry_policy.is_retryable(raw_exc):
+                        try:
+                            await asyncio.sleep(
+                                step.retry_policy.delay_for_attempt(attempt)
+                            )
+                        except asyncio.CancelledError:
+                            step.status = StepStatus.COMPENSATION_FAILED
+                            raise
                     else:
                         break
 
@@ -601,51 +734,62 @@ class Saga(ObjectIdentityMixin):
 
     @classmethod
     async def resume(cls, saga_id: str, step_definitions: List[SagaStep]) -> SagaResult:
-        """Rehydrates an interrupted saga from the disk and completes execution or compensation."""
+        """Rehydrates an interrupted saga from its checkpoint and finishes it.
+
+        ``step_definitions`` must be the same steps (same names, same order)
+        the saga was originally built with.
+        """
         state = await SagaRecoveryManager.load_state(saga_id)
         if not state:
             raise ValueError(
                 "No active recovery checkpoint found for saga '%s'" % saga_id
             )
 
-        saga = cls(enable_recovery=True)
-        saga.change_object_id(saga_id)
-        saga.name = state.saga_name
-        saga._steps = step_definitions
-        saga._created_at = state.created_at
-
-        # Validate step count matches
-        if len(saga._steps) != len(state.steps_state):
+        steps = list(step_definitions)
+        if len(steps) != len(state.steps_state):
             raise ValueError(
                 "Saga '%s' (%s): Step count mismatch - recovery state has %d steps but %d definitions provided"
-                % (saga.name, saga_id, len(state.steps_state), len(saga._steps))
+                % (state.saga_name, saga_id, len(state.steps_state), len(steps))
             )
 
-        # Rehydrate individual step runtime states
+        # Validate everything before mutating any step.
+        parsed: List[Tuple[StepStatus, int, Optional[str]]] = []
         for i, step_state in enumerate(state.steps_state):
-            step = saga._steps[i]
-
-            # Validate step names match for safety
-            if step.name != step_state.get("name"):
-                logger.warning(
-                    "Saga '%s' (%s): Step name mismatch at index %d: expected '%s', got '%s'",
-                    saga.name,
-                    saga_id,
-                    i,
-                    step_state.get("name"),
-                    step.name,
+            if steps[i].name != step_state.get("name"):
+                raise ValueError(
+                    "Saga '%s' (%s): Step name mismatch at index %d: expected '%s', got '%s'"
+                    % (
+                        state.saga_name,
+                        saga_id,
+                        i,
+                        step_state.get("name"),
+                        steps[i].name,
+                    )
                 )
+            try:
+                step_status = StepStatus(step_state["status"])
+            except (KeyError, ValueError) as exc:
+                raise ValueError(
+                    "Saga '%s' (%s): corrupt status for step %d: %r"
+                    % (state.saga_name, saga_id, i, step_state.get("status"))
+                ) from exc
+            parsed.append(
+                (step_status, step_state.get("attempts", 0), step_state.get("error"))
+            )
 
-            # Restore all runtime state fields
-            step.status = StepStatus(step_state["status"])
-            step.attempts = step_state.get("attempts", 0)
+        saga = cls(
+            name=state.saga_name,
+            enable_recovery=True,
+            compensate_failed_step=bool(state.compensate_failed_step),
+        )
+        saga.change_object_id(saga_id)
+        saga._steps = steps
+        saga._created_at = state.created_at
 
-            if step_state.get("error"):
-                # Reconstruct exception with original message
-                step.error = Exception(step_state["error"])
-
-            step.started_at = step_state.get("started_at")
-            step.completed_at = step_state.get("completed_at")
+        for step, (step_status, attempts, err) in zip(steps, parsed):
+            step.status = step_status
+            step.attempts = attempts
+            step.error = Exception(err) if err else None
 
         logger.info(
             "Resuming saga '%s' (%s) from step index %d (status: %s)",
@@ -655,22 +799,36 @@ class Saga(ObjectIdentityMixin):
             state.status,
         )
 
-        if state.status == SagaStatus.COMPENSATING.value:
+        if state.status in (
+            SagaStatus.COMPENSATING.value,
+            SagaStatus.PARTIALLY_COMPENSATED.value,
+        ):
             # Re-trigger compensation if a node died during rollback
-            await saga._run_compensation(
-                state.current_step_index,
-                Exception("Resumed from crash mid-compensation"),
+            failed_index = (
+                state.failed_step_index
+                if state.failed_step_index is not None
+                else state.current_step_index
             )
+            started = time.monotonic()
+            failed_error = steps[failed_index].error or Exception(
+                "Resumed from crash mid-compensation"
+            )
+            comp_result = await saga._run_compensation(failed_index, failed_error)
+            error: Optional[Exception] = failed_error
+            if not comp_result.success:
+                error = SagaCompensationFailureError(failed_error, comp_result.failures)
             return SagaResult(
                 saga_id=saga.saga_id,
                 saga_name=saga.name,
                 status=saga._status,
                 steps=list(saga._steps),
-                total_time=0.0,
+                total_time=time.monotonic() - started,
+                error=error,
+                failed_step_index=failed_index,
             )
-        else:
-            # Resume forward execution from the last uncompleted step
-            return await saga.execute(start_at_index=state.current_step_index)
+
+        # Resume forward execution from the last uncompleted step
+        return await saga.execute(start_at_index=state.current_step_index)
 
     async def _enqueue_dead_letter(
         self,
@@ -698,11 +856,9 @@ class Saga(ObjectIdentityMixin):
                     "status": s.status.value,
                     "attempts": s.attempts,
                     "error": str(s.error) if s.error else None,
-                    "started_at": s.started_at,
-                    "completed_at": s.completed_at,
                     "duration": (
                         s.completed_at - s.started_at
-                        if s.started_at and s.completed_at
+                        if s.started_at is not None and s.completed_at is not None
                         else None
                     ),
                 }
@@ -722,40 +878,34 @@ async def execute_saga(
     """
     Build and execute a Saga from a sequence of ``SagaStep`` instances.
 
+    The step definitions are *copied* into the saga: runtime state (status,
+    attempts, ...) is reported on ``SagaResult.steps``, not on the objects
+    passed in.
+
     Example:
         result = await execute_saga(
             name="order_fulfillment",
             steps=[
-            SagaStep(
-                name="write_checkpoint",
-                action=lambda: redis_backend.insert(...),
-                compensation=lambda: redis_backend.delete(...),
-                retry_policy=RetryPolicy(max_attempts=3),
-                timeout=30.0,
-            ),
-            SagaStep(
-                name="record_trace",
-                action=lambda: pg_backend.insert(...),
-                compensation=lambda: pg_backend.update(...),
-            ),
-        ])
+                SagaStep(
+                    name="write_checkpoint",
+                    action=lambda: redis_backend.insert(...),
+                    compensation=lambda: redis_backend.delete(...),
+                    retry_policy=RetryPolicy(max_attempts=3),
+                    timeout=30.0,
+                ),
+                SagaStep(
+                    name="record_trace",
+                    action=lambda: pg_backend.insert(...),
+                    compensation=lambda: pg_backend.update(...),
+                ),
+            ],
+        )
 
-    :param steps: Ordered collection of ``SagaStep`` objects containing definitions and
-                  retry policies for each step of the saga's execution process.
-    :type steps: List[SagaStep]
-
-    :param enable_recovery: Flag indicating whether recovery actions should be performed in
-                            case of partial execution or failure during the saga. Defaults
-                            to ``True``.
-    :type enable_recovery: bool, optional
-
-    :param compensate_failed_step: Flag indicating whether compensation should be performed
-                                   in case of a failed step. Defaults to ``False``.
-    :type compensate_failed_step: bool, optional
-
-    :return: Outcome of the saga's execution, encapsulated in a ``SagaResult`` object which
-             details the success or failure, as well as any compensatory actions taken.
-    :rtype: SagaResult
+    :param steps: Ordered step definitions.
+    :param name: Optional saga name (defaults to the saga id).
+    :param enable_recovery: Persist checkpoints for crash recovery. Defaults to ``True``.
+    :param compensate_failed_step: Also compensate the failed step itself. Defaults to ``False``.
+    :return: A ``SagaResult`` describing the outcome.
     """
     saga = Saga(
         name=name,

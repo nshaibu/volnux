@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Sequence
 from formax import BaseModel, MiniAnnotated, Attrib
 
 from volnux.config import VolnuxConfig
@@ -9,7 +9,13 @@ from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMi
 
 logger = logging.getLogger(__name__)
 
-project_config = VolnuxConfig.get_instance()
+
+def _config_value(key: str) -> Optional[str]:
+    """Look up a config key without raising when the project is unconfigured."""
+    try:
+        return VolnuxConfig.get_instance().get(key, None)
+    except Exception:  # pragma: no cover - defensive
+        return None
 
 
 class SagaRecoveryState(KeyValueStoreIntegrationMixin, BaseModel):
@@ -24,12 +30,14 @@ class SagaRecoveryState(KeyValueStoreIntegrationMixin, BaseModel):
     steps_state: List[Dict[str, Any]]
     created_at: float
     updated_at: float
+    compensate_failed_step: bool = False
+    failed_step_index: Optional[int] = None
 
     node_id: MiniAnnotated[
-        str, Attrib(default_factory=lambda: project_config.get("NODE_ID"))
+        Optional[str], Attrib(default_factory=lambda: _config_value("NODE_ID"))
     ]
     project_id: MiniAnnotated[
-        str, Attrib(default_factory=lambda: project_config.get("PROJECT_ID"))
+        Optional[str], Attrib(default_factory=lambda: _config_value("PROJECT_ID"))
     ]
 
     @classmethod
@@ -49,8 +57,10 @@ class SagaRecoveryManager:
         saga_name: str,
         current_step_index: int,
         status: str,
-        steps: List[Any],
+        steps: Sequence[Any],
         created_at: float,
+        compensate_failed_step: bool = False,
+        failed_step_index: Optional[int] = None,
     ) -> SagaRecoveryState:
         """Persists or updates the current point-in-time snapshot."""
         now = time.time()
@@ -73,7 +83,12 @@ class SagaRecoveryManager:
             steps_state=steps_state,
             created_at=created_at,
             updated_at=now,
+            compensate_failed_step=compensate_failed_step,
+            failed_step_index=failed_step_index,
         )
+        # Key the record by the saga id so load/delete can find it again;
+        # otherwise every checkpoint is stored under a fresh random id.
+        state.change_object_id(saga_id)
 
         await state.save()
         logger.debug(
@@ -97,6 +112,8 @@ class SagaRecoveryManager:
         """Removes the checkpoint upon successful completion or DLQ escalation."""
         try:
             state = await SagaRecoveryState.get(saga_id)
+            if state is None:
+                return
             await state.delete()
             logger.debug("Saga recovery state cleaned up: %s", saga_id)
         except Exception as exc:

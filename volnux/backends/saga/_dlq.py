@@ -17,10 +17,12 @@ class DeadLetterEntry(MessagingBackendIntegrationMixin, BaseModel):
     steps_state: List[Dict[str, Any]]
 
     # project identifier
-    workflow_id: Optional[str]
-    node_id: MiniAnnotated[str, Attrib(default_factory=lambda: get_current_node_id())]
+    workflow_id: Optional[str] = None
+    node_id: MiniAnnotated[
+        Optional[str], Attrib(default_factory=lambda: get_current_node_id())
+    ]
     project_id: MiniAnnotated[
-        str, Attrib(default_factory=lambda: get_current_project_id())
+        Optional[str], Attrib(default_factory=lambda: get_current_project_id())
     ]
 
     @classmethod
