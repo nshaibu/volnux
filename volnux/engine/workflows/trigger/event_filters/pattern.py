@@ -1,7 +1,7 @@
 from typing import Dict, Any
 
 from .base import EventFilterBase
-from ..event import Event
+from ..event import TriggerEvent as Event
 
 
 class PatternFilter(EventFilterBase):

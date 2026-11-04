@@ -495,7 +495,7 @@ async def test_count_calls_backend_count(example_backend):
     example_backend.count.return_value = 5
 
     assert await ExampleModel.count(status="active") == 5
-    example_backend.count.assert_called_once_with(SCHEMA, status="active")
+    example_backend.count.assert_called_once_with(SCHEMA, ExampleModel, status="active")
 
 
 @pytest.mark.asyncio

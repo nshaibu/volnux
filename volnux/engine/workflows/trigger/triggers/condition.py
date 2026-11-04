@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Optional, Union
@@ -52,6 +53,11 @@ class ConditionalTrigger(TriggerBase):
         enabled: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
     ):
+        if not callable(condition_fn):
+            raise TypeError("condition_fn must be callable")
+        if poll_interval <= 0:
+            raise ValueError("poll_interval must be a positive number of seconds")
+
         super().__init__(
             workflow_name,
             workflow_params=workflow_params,
@@ -80,6 +86,7 @@ class ConditionalTrigger(TriggerBase):
             self.poll_interval,
             self.edge_trigger,
         )
+        self._last_condition_state = False  # a fresh run starts from 'not met'
         self._task = asyncio.create_task(
             self._poll_loop(),
             name=f"ConditionTrigger.{self.trigger_id}",
@@ -109,6 +116,10 @@ class ConditionalTrigger(TriggerBase):
                     continue
 
                 condition_met = await self._evaluate_condition()
+                if condition_met is None:
+                    # condition_fn failed: nothing was learned, so keep the last
+                    # known state (a blip must not look like a False -> True edge).
+                    continue
 
                 should_activate = condition_met and (
                     not self.edge_trigger or not self._last_condition_state
@@ -119,10 +130,18 @@ class ConditionalTrigger(TriggerBase):
                 self._last_condition_state = condition_met
 
                 if should_activate:
-                    await self.activate(
-                        condition_met=True,
-                        checked_at=datetime.now(timezone.utc).isoformat(),
-                    )
+                    try:
+                        await self.activate(
+                            condition_met=True,
+                            checked_at=datetime.now(timezone.utc).isoformat(),
+                        )
+                    except Exception:
+                        # activate() already counted the error. Forget the edge so
+                        # the next tick tries again instead of losing the firing.
+                        self._last_condition_state = False
+                        logger.exception(
+                            "ConditionTrigger %s: activation failed", self.trigger_id
+                        )
 
             except asyncio.CancelledError:
                 break
@@ -135,20 +154,25 @@ class ConditionalTrigger(TriggerBase):
                     self.state.error_count,
                 )
 
-    async def _evaluate_condition(self) -> bool:
+    async def _evaluate_condition(self) -> Optional[bool]:
         """
-        Invoke ``condition_fn``, supporting sync and async callables.
+        Invoke ``condition_fn``, supporting sync and async callables (anything
+        awaitable: coroutines, futures, tasks).
 
-        Returns ``False`` and logs on any exception so the poll loop
-        continues rather than crashing.
+        Returns ``None`` and counts an error if ``condition_fn`` raises, so the poll
+        loop continues rather than crashing and the last known state is kept.
         """
         try:
             result = self.condition_fn()
-            if asyncio.iscoroutine(result):
-                return bool(await result)
+            if inspect.isawaitable(result):
+                result = await result
             return bool(result)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception(
                 "ConditionTrigger %s: condition_fn raised", self.trigger_id
             )
-            return False
+            self.state.error_count += 1
+            await self.state.save()
+            return None

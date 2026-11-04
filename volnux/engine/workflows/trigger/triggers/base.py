@@ -259,7 +259,7 @@ class TriggerBase(ABC):
         Start the trigger's activation mechanism.
 
         Examples:
-        - Event trigger: Subscribe to event-bus
+        - Event trigger: Listen for TriggerEvent records on the messaging backend
         - Schedule trigger: Start timer/cron
         - Manual trigger: Register API endpoint
         - Condition trigger: Start polling loop

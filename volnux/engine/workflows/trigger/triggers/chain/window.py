@@ -7,7 +7,7 @@ Architecture
                   ┌─────────────────────────────┐
                   │        WindowedTrigger        │
                   │                               │
-  Event bus ──►  │  aggregator["trades"]  ──►   │
+  TriggerEvent ─►│  aggregator["trades"]  ──►   │
                   │  aggregator["quotes"]  ──►   │  window_state
                   │  aggregator["news"]    ──►   │       │
                   │                               │       ▼
@@ -236,14 +236,12 @@ class WindowedTrigger(TriggerBase):
                 EventTrigger(
                     name="trades",
                     workflow_name=_INTERNAL_WORKFLOW,
-                    event_bus=bus,
                     event_types=["market.trade"],
                     event_filter=TimestampFilter(start=0, end=60),
                 ),
                 EventTrigger(
                     name="quotes",
                     workflow_name=_INTERNAL_WORKFLOW,
-                    event_bus=bus,
                     event_types=["market.quote"],
                     event_filter=TimestampFilter(start=60, end=80),
                 ),
@@ -429,7 +427,7 @@ class WindowedTrigger(TriggerBase):
     async def _arm_aggregator(self, aggregator: EventTrigger) -> None:
         """Install the write-only accumulation callback and start the aggregator."""
         aggregator.set_activation_callback(
-            self._make_aggregator_callback(aggregator.workflow_name)
+            self._make_aggregator_callback(aggregator.name)
         )
         try:
             await aggregator.run()
@@ -437,7 +435,7 @@ class WindowedTrigger(TriggerBase):
             logger.exception(
                 "WindowedTrigger '%s': failed to arm aggregator '%s'.",
                 self.trigger_id,
-                aggregator.workflow_name,
+                aggregator.name,
             )
 
     def _make_aggregator_callback(

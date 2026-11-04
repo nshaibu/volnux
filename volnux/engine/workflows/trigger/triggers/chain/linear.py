@@ -31,7 +31,6 @@ class LinearChainTrigger(TriggerBase):
 
         event_trigger = EventTrigger(
             workflow_name="_chained_internal",
-            event_bus=bus,
             event_types=["sensor.reading"],
         )
 
@@ -210,7 +209,7 @@ class LinearChainTrigger(TriggerBase):
         arm the next step or fire the final workflow activation.
 
         The lock serialises concurrent activations (e.g. a high-frequency
-        event bus delivering two events before the chain has advanced past
+        stream delivering two events before the chain has advanced past
         step 0). The step guard discards any activation that arrives after the
         chain has already moved on.
         """

@@ -1,12 +1,10 @@
 import logging
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, Iterable, Optional, Set
+from typing import Any, Dict, Iterable, Optional, Set
 
-from ..event import Event
+from ...event import TriggerEvent
 from ..base import TriggerBase, TriggerType
-
-if TYPE_CHECKING:
-    from ...eventbus.base import EventBusAdapterBase
+from ..event import EventSubscriptionMixin
 
 
 logger = logging.getLogger(__name__)
@@ -25,15 +23,15 @@ class WorkflowStatus(str, Enum):
     TIMED_OUT = "timed_out"
 
 
-class WorkflowChainTrigger(TriggerBase):
+class WorkflowChainTrigger(EventSubscriptionMixin, TriggerBase):
     """
     Trigger that activates when another workflow reaches a terminal status.
 
     Activation mechanism
     --------------------
-    Subscribes to the ``workflow.completed`` topic on the supplied event bus.
-    The emitter is expected to publish: class:`Event` payloads whose ``data``
-    contains at minimum::
+    Listens for ``TriggerEvent`` records of type ``workflow.completed`` on the
+    messaging backend. The emitter publishes them with
+    ``await TriggerEvent.publish(...)``; ``data`` contains at minimum::
 
         {
             "workflow_name": str,
@@ -47,7 +45,6 @@ class WorkflowChainTrigger(TriggerBase):
     trigger = WorkflowChainTrigger(
         workflow_name="generate_report",
         parent_workflow="generate_data",
-        event_bus=bus,
         on_status=[WorkflowStatus.SUCCESS],
         workflow_params={"report_type": "monthly"}
     )
@@ -60,7 +57,6 @@ class WorkflowChainTrigger(TriggerBase):
         self,
         workflow_name: str,
         parent_workflow: str,
-        event_bus: "EventBusAdapterBase",
         on_status: Optional[Iterable[str]] = None,
         workflow_params: Optional[Dict[str, Any]] = None,
         enabled: bool = True,
@@ -72,30 +68,19 @@ class WorkflowChainTrigger(TriggerBase):
             enabled=enabled,
             metadata=metadata,
         )
-        if event_bus is None:
-            # Explicit: chain triggers are useless without a bus.
-            raise ValueError(
-                "WorkflowChainTrigger requires an event_bus to subscribe to."
-            )
-
         self.parent_workflow = parent_workflow
         self.on_status: Set[str] = set(on_status or {WorkflowStatus.SUCCESS.value})
-        self.event_bus = event_bus
-        self._subscribed: bool = False
 
     async def start(self) -> None:
-        """Subscribe to workflow completion events (idempotent)."""
-        if self._subscribed:
+        """Start listening for workflow completion events (idempotent)."""
+        if self.subscribed:
             logger.debug(
                 "WorkflowChainTrigger %s already subscribed; skipping",
                 self.trigger_id,
             )
             return
 
-        await self.event_bus.subscribe(
-            WORKFLOW_COMPLETED_TOPIC, self._handle_completion
-        )
-        self._subscribed = True
+        await self._open_subscription()
 
         logger.info(
             "WorkflowChainTrigger %s watching %r for statuses %s",
@@ -105,17 +90,14 @@ class WorkflowChainTrigger(TriggerBase):
         )
 
     async def stop(self) -> None:
-        """Unsubscribe from workflow completion events (idempotent)."""
-        if not self._subscribed:
-            return
-        try:
-            await self.event_bus.unsubscribe(
-                WORKFLOW_COMPLETED_TOPIC, self._handle_completion
-            )
-        finally:
-            self._subscribed = False
+        """Stop listening (idempotent)."""
+        await self._close_subscription()
 
-    async def _handle_completion(self, event: Event) -> None:
+    async def _handle_event(self, event: TriggerEvent) -> None:
+        if event.event_type == WORKFLOW_COMPLETED_TOPIC:
+            await self._handle_completion(event)
+
+    async def _handle_completion(self, event: TriggerEvent) -> None:
         """Filter completion events and activate when they match."""
         data = event.data or {}
 

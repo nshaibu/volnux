@@ -15,3 +15,16 @@ def store(monkeypatch):
     monkeypatch.setattr(TriggerStateRecord, "_backend_initialized", True, raising=False)
     yield backend
     backend.close()
+
+
+@pytest.fixture
+def message_bus(monkeypatch):
+    """TriggerEvent travels over an in-memory messaging backend."""
+    from volnux.engine.workflows.trigger.event import TriggerEvent
+    from volnux.engine.workflows.trigger.triggers.base import TriggerBase
+
+    backend = SerializingMemoryBackend()
+    monkeypatch.setattr(TriggerEvent, "_backend_store", backend, raising=False)
+    monkeypatch.setattr(TriggerEvent, "_backend_initialized", True, raising=False)
+    yield backend
+    backend.close()

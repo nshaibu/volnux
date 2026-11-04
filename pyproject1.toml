@@ -270,7 +270,6 @@ packages = [
     "volnux.engine.workflows.loaders",
     "volnux.engine.workflows.trigger",
     "volnux.engine.workflows.trigger.event_filters",
-    "volnux.engine.workflows.trigger.eventbus",
     "volnux.engine.workflows.trigger.executors",
     "volnux.engine.workflows.trigger.triggers",
     "volnux.engine.workflows.trigger.triggers.chain",

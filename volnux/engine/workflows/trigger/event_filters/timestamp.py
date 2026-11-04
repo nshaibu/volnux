@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Callable, Optional, Union
 
 from .base import EventFilterBase
-from ..event import Event
+from ..event import TriggerEvent as Event
 
 logger = logging.getLogger(__name__)
 
