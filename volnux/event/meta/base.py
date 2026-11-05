@@ -1,28 +1,49 @@
-import typing
-import asyncio
-import logging
-from abc import abstractmethod
-from dataclasses import dataclass
-from collections import deque
+"""Meta events: stream transformers that apply a template to every item of the input.
 
-from volnux.typing import TypeAlias
-from volnux.task import PipelineTask
-from volnux.parser.options import Options
-from ..base import EventBase, EventType
+``MAP<Double>``, ``FILTER<IsBig>``, ``REDUCE<Add>`` ... are mini-orchestrators. Each is
+a *streaming* event (its ``process`` is an async generator, see ``StreamingMixin``): it
+reads its input as a stream, applies the template to the items with bounded
+concurrency, and writes the results to a stream of its own. Nothing is held in memory
+beyond the items in flight, so they suit large data, and everything the streaming layer
+gives (ordering, backpressure, resume, ``fail_fast``) applies.
+
+Input
+-----
+* After ``|->``: the upstream stream, as it is produced.
+* After ``->`` (or first in a chain): the ``collection`` option, else the contents of
+  ``previous_result``, an iterable content being taken item by item.
+
+Output
+------
+A stream. A ``|->`` successor reads the items live; a ``->`` successor receives the
+usual stream reference (with a summary).
+
+Template
+--------
+An event class, written ``MAP<Double>`` in pointy (it is given the input as
+``previous_result``), or, from Python, a plain or async function. A subclass may name
+one with ``template_class = ...``; ``options.extras["template_class"]`` (what pointy
+produces) wins.
+"""
+
+import asyncio
+import inspect
+import logging
+import typing
+
 from volnux.constants import EMPTY
-from volnux.result import EventResult, ResultStream
-from volnux.signal.handlers.event_initialiser import EventInitKwargs
+from volnux.event.utils import resolve_event_ref_to_class
 from volnux.exceptions import (
     MetaEventConfigurationError,
-    MetaEventExecutionError,
     NestedMetaEventError,
     StopProcessingError,
 )
-from volnux.flows.meta import MetaFlow
-from volnux.execution.result import ResultProcessor
-from volnux.result_evaluators import ResultEvaluationStrategies
-from volnux.event.utils import resolve_event_ref_to_class
-
+from volnux.mixins.stream.mixin import StreamPolicy
+from volnux.signal.handlers.event_initialiser import EventInitKwargs
+from volnux.typing import TypeAlias
+from volnux.result import EventResult
+from ..base import EventBase, EventType
+from .runner import Outcome, TemplateCaller, run_concurrently
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +66,11 @@ class MetaAttributes(typing.TypedDict, total=False):
     initial_value: object
     continue_on_error: bool
     concurrent: bool
-    concurrency_mode: typing.Literal["thread", "process"]
+    concurrency_mode: typing.Literal["thread", "process", "async"]
     timeout: typing.Optional[float]
     partial_success: bool
+    ordered: bool
+    buffer: typing.Optional[int]
 
     # filter
     invert: bool
@@ -71,12 +94,7 @@ def validate_meta_event(
     meta_event: "ControlFlowEvent",
 ) -> None:
     """
-    Validate meta-event at the semantic analysis phase
-
-    Args:
-        nested_event_class: MetaEventNode from AST
-        field_name: Dict mapping event names to their classes
-        meta_event: MetaEventNode from AST
+    Reject a meta event used as a template.
 
     Raises:
         NestedMetaEventError: If template is a meta event
@@ -93,37 +111,31 @@ def validate_meta_event(
         )
 
 
-@dataclass
-class TaskDefinition:
-    template_class: typing.Type[EventBase]
-    input_data: typing.Union[ResultStream[EventResult], EventResult]
-    order: int
-    task_id: str
-    options: typing.Optional[Options] = None
-
-    def to_dict(self) -> typing.Dict[str, typing.Any]:
-        return {
-            "template_class": self.template_class.__name__,
-            "input_data": self.input_data,
-            "order": self.order,
-            "task_id": self.task_id,
-            "options": self.options,
-        }
+def _is_collection(content: typing.Any) -> bool:
+    """An iterable that is a collection of items (a string or mapping is one item)."""
+    if isinstance(content, (str, bytes, bytearray, dict)):
+        return False
+    return hasattr(content, "__iter__") or hasattr(content, "__aiter__")
 
 
 class ControlFlowEvent(EventBase):
     """
-    Base class for Meta-Events-reserved system components that manage
-    dynamic execution of Template Events based on control flow patterns.
+    Base class for Meta-Events: reserved system components that apply a template to
+    the items of a stream (see the module docstring).
 
-    A Meta Event is a reserved system component in Pointy Language that wraps and manages
-    the execution of one or more Template Events.
-    Its primary function is to interpret specialized flow instructions (execution modes)
-    and generate dynamic execution plans for the Orchestrator.
+    A subclass declares ``name`` and ``attributes`` and implements
+    :meth:`transform`, an async generator of ``(success, data)`` pairs.
     """
 
     # Name of the Meta Event
     name: str = "CONTROL_FLOW"
+
+    #: The template: an event class, an event name, or a callable (see module docs).
+    template_class: typing.Any = None
+
+    #: A meta event writes many small chunks; keep the default policy, but let the
+    #: producer run ahead of a slow consumer by a bounded amount.
+    stream_policy = StreamPolicy(max_in_flight=1000)
 
     # Attributes for the Meta Events. This will be used to fetch data
     # from the Options specific to Meta Events
@@ -131,13 +143,16 @@ class ControlFlowEvent(EventBase):
         "concurrent": {
             "type": bool,
             "default": True,
-            "description": "Allow parallel executions",
+            "description": "Apply the template to several items at once",
         },
         "concurrency_mode": {
             "type": str,
             "default": "thread",
-            "description": "The parallel execution mode",
-            "choices": ["thread", "process"],
+            "description": (
+                "Where the template runs: 'thread' / 'process' (shared pools) or "
+                "'async' (on the event loop, for non-blocking templates)"
+            ),
+            "choices": ["thread", "process", "async"],
         },
         "max_workers": {
             "type": int,
@@ -145,342 +160,234 @@ class ControlFlowEvent(EventBase):
             "description": "Max parallel executions",
             "validators": [lambda x: isinstance(x, int) and x > 0],
         },
+        "ordered": {
+            "type": bool,
+            "default": True,
+            "description": "Emit results in input order (False: as they finish)",
+        },
+        "buffer": {
+            "type": int,
+            "default": None,
+            "description": (
+                "Items in flight beyond max_workers (default: max_workers). "
+                "Bounds memory and how far the input is read ahead."
+            ),
+            "validators": [lambda x: isinstance(x, int) and x >= 0],
+        },
+        "timeout": {
+            "type": (int, float),
+            "default": None,
+            "description": "Seconds one template call may take",
+            "validators": [lambda x: x > 0],
+        },
         "collection": {
-            "type": list,
-            "default": [],
-            "description": "Filter items based on template event predicate. Not required if items passed through message passing",
+            "type": (list, tuple, range),
+            "default": None,
+            "description": "Input items, when they do not arrive from a predecessor",
         },
     }
 
     event_type = EventType.META
 
-    INIT_PARAMS_SCHEMA: typing.Dict[str, EventInitKwargs] = {
-        "template_class": {
-            "type": EventBase,
-            "required": True,
-            "description": "The Template Event class to instantiate",
-            "validators": [validate_meta_event],
-        }
-    }
+    # --- configuration ----------------------------------------------------
+
+    def _extras(self) -> typing.Dict[str, typing.Any]:
+        options = getattr(self, "options", None)
+        return getattr(options, "extras", None) or {}
 
     def _validate_attributes(self) -> MetaAttributes:
-        """
-        Validate meta-event attributes from Options
-        Returns:
-            typing.Dict[str, typing.Any]: Dictionary of validated attributes
+        """The meta attributes from the options, defaults filled in and checked.
+
         Raises:
-            TypeError: If attributes are not valid
+            TypeError: if a value has the wrong type, is not an allowed choice, fails
+                its validator, or a required one is missing.
         """
-        validated_params: MetaAttributes = {}
+        extras = self._extras()
+        name = self.__class__.__name__
+        validated: MetaAttributes = {}
         for param_name, config in self.attributes.items():
-            is_required = config.get("required", False)
-            data_type = config.get("type", object)
-            default_value = config.get("default", EMPTY)
-            choice_values = config.get("choices", EMPTY)
-            validators: typing.List[typing.Callable[[typing.Any], bool]] = config.get(
-                "validators", []
-            )
+            default = config.get("default", EMPTY)
+            value = extras.get(param_name, default)
 
-            value_to_set = self.options.extras.get(param_name, default_value)
-
-            if value_to_set == EMPTY and default_value == EMPTY and is_required:
-                raise TypeError(
-                    f"Event '{self.__class__.__name__}' requires the keyword argument "
-                    f"'{param_name}' for initialization."
-                )
-
-            if value_to_set == EMPTY:
+            if value is EMPTY:
+                if config.get("required", False):
+                    raise TypeError(
+                        f"Event '{name}' requires the option '{param_name}'."
+                    )
+                continue
+            if value is None:
+                validated[param_name] = None  # type: ignore[literal-required]
                 continue
 
-            if value_to_set is not None and not isinstance(value_to_set, data_type):
+            data_type = config.get("type", object)
+            if not isinstance(value, data_type):
                 raise TypeError(
-                    f"Event '{self.__class__.__name__}' requires type '{data_type}' for '{param_name}', "
-                    f"but received type '{type(value_to_set)}' (value: {value_to_set})."
+                    f"Event '{name}' requires type '{data_type}' for '{param_name}', "
+                    f"but received type '{type(value)}' (value: {value})."
                 )
-
-            if choice_values != EMPTY and value_to_set not in choice_values:
+            choices = config.get("choices")
+            if choices is not None and value not in choices:
                 raise TypeError(
-                    f"Invalid value '{value_to_set}' for '{param_name}' in event '{self.__class__.__name__}'. "
-                    f"Allowed values: {choice_values}"
+                    f"Invalid value '{value}' for '{param_name}' in event '{name}'. "
+                    f"Allowed values: {choices}"
                 )
-
-            for validator in validators:
-                if not validator(value_to_set):
+            for validator in config.get("validators", []):
+                if not validator(value):
                     raise TypeError(
                         f"Validation failed for parameter '{param_name}' "
-                        f"in event '{self.__class__.__name__}' with value: {value_to_set}"
+                        f"in event '{name}' with value: {value}"
                     )
+            validated[param_name] = value  # type: ignore[literal-required]
+        return validated
 
-            validated_params[param_name] = value_to_set
+    def get_template_class(self) -> typing.Any:
+        """The template as configured (not yet resolved)."""
+        extras = self._extras()
+        template = extras.get("template_class")
+        if template is None:
+            # not ``self.template_class``: a plain function there would be bound as a method
+            declared = inspect.getattr_static(type(self), "template_class", None)
+            return declared.__func__ if isinstance(declared, staticmethod) else declared
+        namespace = extras.get("template_namespace")
+        if isinstance(template, str) and namespace and "::" not in template:
+            return f"{namespace}::{template}"
+        return template
 
-        return validated_params
-
-    def get_template_class(self) -> typing.Type[EventBase]:
-        return getattr(self, "template_class", None)
-
-    async def process(self, *args, **kwargs) -> typing.Tuple[bool, typing.Any]:
-        """
-        Mini-orchestrator that executes template events and aggregates results.
-
-        This method is the same for all meta-events. Business logic is in action().
-
-        Returns:
-            Tuple of (success, aggregated_data)
-        """
-        template_class = self.get_template_class()
-        if template_class is None:
-            raise StopProcessingError("No template class specified")
-
-        try:
-            if isinstance(template_class, str):
-                setattr(
-                    self, "template_class", resolve_event_ref_to_class(template_class)
-                )
-        except ValueError as e:
-            logger.error(f"Failed to resolve template class '{template_class}': {e}")
+    def resolve_template(self) -> typing.Any:
+        """The template as something callable: an event class or a function."""
+        template = self.get_template_class()
+        if template is None:
             raise StopProcessingError(
-                f"Event '{template_class}' resolution failed"
-            ) from e
-
-        try:
-            attributes = self._validate_attributes()
-
-            timeout: typing.Optional[float] = attributes.get("timeout")
-
-            input_data = self._extract_input_data(
-                collection_data=attributes.get("collection")
+                f"{self.name}: no template. Write {self.name}<Event> in pointy, or "
+                "set template_class."
             )
-
-            if not input_data.has_results():
-                # Empty input handled by subclass
-                return True, self._handle_empty_input(input_data)
-
-            pipeline_tasks = deque(
-                [
-                    self._create_pipeline_task(task_def)
-                    async for task_def in self.action(input_data)
-                ]
-            )
-
-            flow = MetaFlow(
-                task_profiles=pipeline_tasks,
-                context=self._execution_context,
-                attributes=attributes,
-            )
-            run_coro = flow.run()
-            future = (
-                await asyncio.wait_for(run_coro, timeout=timeout)
-                if timeout
-                else await run_coro
-            )
-
-            if self._should_allow_partial_success():
-                # Update on result evaluation strategy
-                self.result_evaluation_strategy = (
-                    ResultEvaluationStrategies.ANY_MUST_SUCCEED
+        if isinstance(template, str) or (
+            inspect.isclass(template) and issubclass(template, EventBase)
+        ):
+            try:
+                template = resolve_event_ref_to_class(template)
+            except (ValueError, TypeError) as exc:
+                raise StopProcessingError(
+                    f"{self.name}: template '{template}' could not be resolved: {exc}"
+                ) from exc
+            if is_control_flow_event(template):
+                raise NestedMetaEventError(
+                    f"Meta Events cannot be used as Template Events: {self.name}"
+                    f"<{template.__name__}>. Use explicit sequential composition."
                 )
-
-            temp_results, errors = await ResultProcessor().process_futures([future])
-
-            aggregated = self.aggregate_results(temp_results, input_data)
-
-            return True, aggregated
-
-        except Exception as e:
-            logger.error(f"{self.name} execution failed: {e}", exc_info=True)
-            raise MetaEventExecutionError(f"{self.name} failed: {e}") from e
-
-    async def action(
-        self, input_data: ResultStream[EventResult]
-    ) -> typing.AsyncGenerator[TaskDefinition, None]:
-        """
-        Generate task definitions for Meta operation.
-
-        Creates one task per input item (or batch if batching enabled).
-        Each task independently processes its input through the template event.
-
-        Args:
-            input_data: Collection of items to map over
-
-        Returns:
-            Async generator of TaskDefinition objects, one per item/batch
-
-        Note:
-            Task order is preserved to maintain result ordering
-        """
-        attributes: MetaAttributes = self.options.extras
-        batch_size: int = attributes.get("batch_size", 0)
-
-        shard_index = 0
-
-        # Generate tasks from batched or individual items
-        async for shard in self.batch_input_data(input_data, batch_size):
-            shard_index += 1
-
-            yield TaskDefinition(
-                template_class=self.get_template_class(),
-                input_data=shard,
-                order=shard_index,
-                task_id=self._generate_task_id(shard_index),
-                options=self.options,
-            )
-
-    @abstractmethod
-    def aggregate_results(
-        self, results: ResultStream[EventResult], original_input: typing.Any
-    ) -> typing.Any:
-        """
-        Aggregate individual task results into a final output.
-
-        Each subclass implements its own aggregation strategy.
-
-        Args:
-            results: Stream of EventResult from task execution
-            original_input: The original input data
-
-        Returns:
-            Aggregated result
-        """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} must implement _aggregate_results()"
+            return template
+        if callable(template):
+            return template
+        raise MetaEventConfigurationError(
+            f"{self.name}: the template must be an event class, an event name or a "
+            f"callable, got {type(template).__name__}"
         )
 
-    def _extract_input_data(
-        self, collection_data: typing.Optional[typing.List[typing.Any]] = None
-    ) -> ResultStream[EventResult]:
-        """
-        Extract input data from previous_result and collection from a pointy script
-        Args:
-            collection_data: Optional collection data from options
-        Returns:
-            ResultStream: Stream of results to process
-        Raises:
-            MetaEventExecutionError: if both previous_result and collection are empty
-            TypeError: if collection data contains unhashable type
-        """
-        if self.previous_result == EMPTY and not collection_data:
-            raise MetaEventExecutionError(
-                f"{self.name} requires input data (from a previous event or 'collection' attribute)."
-            )
+    # --- input ---------------------------------------------------------------
 
-        if self.previous_result == EMPTY:
-            self.previous_result = ResultStream._make(
-                model_klass=EventResult,
-                keys=[],
-                predicates=[],
-                q_predicates=[],
-                chunk_size=1000,
-                transaction_id=f"meta-{self.id}",
-                persisted_backend=EventResult.get_backend(),
-                memory_backend=None,
-            )
+    def _reads_a_stream(self) -> bool:
+        return bool(
+            self._upstream_stream_ids
+            or self._upstream_stream_id
+            or self._upstream_refs()
+        )
 
-        if collection_data:
-            for content in collection_data:
-                if not isinstance(content, EventResult):
-                    content = EventResult(
-                        content=content,
-                        error=False,  # type: ignore
-                        task_id=f"meta-{self.__class__.__name__}-{self._task_id}",  # type: ignore
-                    )
-                self.previous_result.add(content)
-
-        if self.previous_result.has_results():
-            raise MetaEventExecutionError(f"{self.name} received empty result set")
-
-        return self.previous_result
+    async def items(
+        self, collection: typing.Optional[typing.Iterable[typing.Any]] = None
+    ) -> typing.AsyncIterator[typing.Any]:
+        """The input, one item at a time, without materialising it."""
+        if self._reads_a_stream():
+            async for item in self.input_data():
+                yield item
+            return
+        if collection:
+            for item in collection:
+                yield item
+            return
+        previous = getattr(self, "previous_result", None)
+        if previous is None or previous is EMPTY:
+            return
+        # one result, or a collection of results (a list, a ResultSet ...)
+        results = [previous] if isinstance(previous, EventResult) else previous
+        if not hasattr(results, "__iter__"):
+            results = [results]
+        for result in results:
+            content = getattr(result, "content", result)
+            if hasattr(content, "__aiter__"):
+                async for item in content:
+                    yield item
+            elif _is_collection(content):
+                for item in content:
+                    yield item
+            else:
+                yield content
 
     @staticmethod
-    async def batch_input_data(
-        input_data: ResultStream[EventResult], batch_size: int
-    ) -> typing.AsyncGenerator[ResultStream[EventResult], None]:
-        """
-        Batch input data if batch_size is set in Options.
-
-        Args:
-            input_data: The full ResultStream from _extract_input_data
-            batch_size: The number of items per batch
-
-        Yields:
-            A ResultStream containing a subset of the original EventResults
-        """
-        if batch_size <= 0:
-            yield input_data
+    async def batched(
+        items: typing.AsyncIterator[typing.Any], size: int
+    ) -> typing.AsyncIterator[typing.Any]:
+        """Items as lists of ``size`` (the last may be shorter); unchanged for 0/1."""
+        if size <= 1:
+            async for item in items:
+                yield item
             return
+        batch: typing.List[typing.Any] = []
+        async for item in items:
+            batch.append(item)
+            if len(batch) >= size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
 
-        total_items = input_data.count()
-        if total_items == 0:
-            return
+    # --- the work ------------------------------------------------------------
 
-        num_shards = max(1, (total_items + batch_size - 1) // batch_size)
-
-        for shard in input_data.shard(num_shards):
-            yield shard
-
-    def _validate_collection_input(self, input_data: typing.Any) -> typing.List:
-        """Validate that input is a collection"""
-        if input_data is None:
-            raise TypeError(f"Expected collection type for {self.name} mode, got None")
-
-        if not isinstance(input_data, (list, tuple, set)):
-            raise TypeError(
-                f"Expected collection type for {self.name} mode, "
-                f"got {type(input_data).__name__}"
+    def outcomes(
+        self,
+        items: typing.AsyncIterator[typing.Any],
+        caller: TemplateCaller,
+        attributes: MetaAttributes,
+        *,
+        workers: typing.Optional[int] = None,
+    ) -> typing.AsyncIterator[Outcome]:
+        """Apply the template to ``items`` with the configured concurrency."""
+        if workers is None:
+            workers = (
+                attributes.get("max_workers", 4)
+                if attributes.get("concurrent", True)
+                else 1
             )
+        return run_concurrently(
+            items,
+            caller.call,
+            workers=workers,
+            ordered=attributes.get("ordered", True),
+            buffer=attributes.get("buffer"),
+        )
 
-        return list(input_data)
+    async def process(
+        self, *args: typing.Any, **kwargs: typing.Any
+    ) -> typing.AsyncGenerator[typing.Tuple[bool, typing.Any], None]:
+        """Stream the transformed items. Subclasses implement :meth:`transform`."""
+        attributes = self._validate_attributes()
+        template = self.resolve_template()
+        caller = TemplateCaller(
+            template,
+            owner=self,
+            mode=attributes.get("concurrency_mode", "thread"),
+            timeout=attributes.get("timeout"),
+        )
+        items = self.items(attributes.get("collection"))
+        async for out in self.transform(items, caller, attributes):
+            yield out
 
-    def _generate_task_id(self, index: int) -> str:
-        """Generate unique task ID"""
-        return f"meta-{self._task_id}-{self.get_template_class().__name__}-{index}"
-
-    def _generate_meta_event_name(self) -> str:
-        """Generate unique meta-event name"""
-        return f"{self.name.lower()}-{self.get_template_class().__name__}"
-
-    def _should_allow_partial_success(self) -> bool:
-        """Check if partial success is allowed"""
-        if self.options:
-            return self.options.extras.get("partial_success", False)
-        return False
-
-    def _handle_empty_input(self, input_data: typing.Any) -> typing.Any:
-        """Handle empty input - can be overridden by subclasses"""
-        return []
-
-    def _get_error_summary(self, results: typing.List[EventResult]) -> typing.Dict:
-        """Create an error summary for failed execution"""
-        errors = [r for r in results if r.error]
-        return {
-            "total_tasks": len(results),
-            "successful_tasks": len(results) - len(errors),
-            "failed_tasks": len(errors),
-            "errors": [
-                {"task_id": r.task_id, "error": str(r.content) if r.error else None}
-                for r in errors
-            ],
-        }
-
-    def _create_pipeline_task(self, task_def: TaskDefinition) -> PipelineTask:
-        """
-        Create PipelineTask objects from task definition
-
-        Args:
-            task_def: Task definition
-
-        Returns:
-            PipelineTask object
-        """
-
-        task = PipelineTask(event=task_def.template_class)
-        setattr(task, "_id", task_def.task_id)
-        setattr(task, "sequence_number", task_def.order)
-
-        if task_def.options:
-            options = self.options or Options()
-            options.merge_with(task_def.options)
-            task.options = options
-        else:
-            task.options = self.options
-
-        return task
+    def transform(
+        self,
+        items: typing.AsyncIterator[typing.Any],
+        caller: TemplateCaller,
+        attributes: MetaAttributes,
+    ) -> typing.AsyncIterator[typing.Tuple[bool, typing.Any]]:
+        """Async generator of ``(success, data)``: the operator's logic."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement transform()"
+        )

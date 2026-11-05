@@ -276,6 +276,22 @@ FOREACH<audit::Record> -> REDUCE<Summarize>
 
 Meta events are chain elements like tasks: they can be piped, grouped, retried and given attribute lists. The mode names are reserved words.
 
+**Meta events are stream stages.** Each reads its input as a stream and writes a stream of its own (see [Streaming](#streaming)), so they suit large data and nothing is held beyond the items in flight:
+
+* after `|->` they read the upstream stream as it is produced; after `->` (or first in a chain) they take the `collection` attribute, else the items of the previous result (a list is taken item by item, a string is one item);
+* a `|->` successor reads their output live; a `->` successor receives the usual stream reference with its summary;
+* at most `max_workers` (default 4) items are being worked on and at most `max_workers + buffer` have been read, however long the input is; a slow consumer holds the input back;
+* results come out in input order; `ordered = false` emits them as they finish;
+* `concurrency_mode` is `thread` (default) or `process` (the shared pools) or `async` (on the event loop, for templates that do not block); `timeout` bounds one template call;
+* a failed item stops the stream and takes the failure branch, unless the mode tolerates it (`MAP` `partial_success` / `skip_errors`, `FILTER` `keep_on_error`, `FLATMAP` `skip_errors`, `FOREACH` `continue_on_error`);
+* a template is given its input as `previous_result` (`REDUCE`: `[accumulator, item]`); a meta event cannot be a template.
+
+```pointy
+Source |-> MAP<Parse> |-> FILTER<IsValid> |-> Sink
+```
+
+`REDUCE` is a sequential fold (`initial_value` is required); it checkpoints its accumulator with the stream position. `FANOUT[count = 3, aggregation_strategy = "majority"]` runs the template `count` times on each item and combines the answers (`all`, `first`, `fastest`, `majority`, `consensus`).
+
 ## 8. Directives
 
 Directives configure or document the program. They are written `@name: value`, where the value is an [expression](#10-types-and-expressions); string values are quoted.

@@ -29,6 +29,10 @@ KEY_VALUE_STORE_CONFIG = {
 # SHARED_EXECUTOR_POOLS = True     # False: a pool per flow, as before
 # COOPERATIVE_MAX_CONCURRENCY = 64
 
+# Most task executions one engine run may make before it is stopped as a runaway
+# (a cyclic workflow). 0 disables the guard.
+MAX_ENGINE_ITERATIONS = 10000
+
 # Streams (``A |-> B`` between generator events) default to KEY_VALUE_STORE_CONFIG.
 # Point them at another backend with a Redis or Kafka stream capability:
 # STREAM_BACKEND_CONFIG = {

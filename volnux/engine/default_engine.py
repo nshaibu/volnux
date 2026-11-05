@@ -3,13 +3,16 @@ import logging
 import typing
 from collections import deque
 
-from volnux.exceptions import TaskSwitchingError
+from volnux.exceptions import (
+    EngineIterationLimitExceeded,
+    TaskCancelledError,
+    TaskSwitchingError,
+)
 from volnux.execution.context import ExecutionContext
 from volnux.execution.status import ExecutionStatus
 from volnux.parser.operator import PipeType
-from volnux.parser.protocols import GroupingStrategy, TaskType
+from volnux.parser.protocols import TaskType
 from volnux.execution.pipeline import Pipeline
-from volnux.execution.rehydrator.checkpoint_manager import VolnuxCheckPointManager
 from volnux.execution.utils import evaluate_context_execution_results
 from volnux.task.group import PipelineTaskGrouping
 from .base import (
@@ -24,6 +27,9 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
+#: Statuses of a context that stopped to wait for something outside the run.
+_WAITING = frozenset({ExecutionStatus.SUSPENDED, ExecutionStatus.PAUSED})
+
 
 class DefaultWorkflowEngine(WorkflowEngine):
     """
@@ -33,7 +39,8 @@ class DefaultWorkflowEngine(WorkflowEngine):
     workflows without recursion, preventing stack overflow issues.
 
     Orchestration Strategy:
-    - Queue-based task scheduling (LIFO for depth-first behavior)
+    - Queue-based task scheduling (a successor is pushed in front of the queue, so a
+      branch is followed before the tasks queued beside it)
     - Parallel task detection and grouping
     - Conditional branching evaluation
     - Dynamic task switching support
@@ -55,6 +62,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         enable_debug_logging: bool = False,
         strict_mode: bool = True,
         parent_engine: typing.Optional["DefaultWorkflowEngine"] = None,
+        max_iterations: typing.Optional[int] = None,
     ):
         """
         Initialize the default workflow engine.
@@ -66,6 +74,9 @@ class DefaultWorkflowEngine(WorkflowEngine):
             enable_debug_logging: If True, enables detailed flow logging
             strict_mode: If True, stops execution on first error; if False,
                 attempts to continue
+            max_iterations: Most task executions this engine may make in one run
+                before it fails as a runaway (a cycle); default the
+                ``MAX_ENGINE_ITERATIONS`` setting, 0 for no limit
         """
         super().__init__(
             enable_checkpointing=enable_checkpointing,
@@ -76,6 +87,34 @@ class DefaultWorkflowEngine(WorkflowEngine):
         self._sink_queue: typing.Deque[TaskType] = deque()
         self.enable_debug_logging = enable_debug_logging
         self.strict_mode = strict_mode
+        self._max_iterations = max_iterations
+        # sink nodes already queued (a sink runs once, however often its task does)
+        self._sink_ids: typing.Set[str] = set()
+
+    def _iteration_limit(self) -> int:
+        if self._max_iterations is not None:
+            return max(0, self._max_iterations)
+        try:
+            from volnux.config import VolnuxConfig
+
+            return max(
+                0, int(VolnuxConfig.get_instance().get("MAX_ENGINE_ITERATIONS", 10000))
+            )
+        except Exception:
+            return 10000
+
+    def _queue_sink(self, sink: typing.Optional[TaskType]) -> None:
+        """Defer ``sink`` to the end of the run, once."""
+        if not sink:
+            return
+        try:
+            key = sink.get_id()
+        except Exception:
+            key = str(id(sink))
+        if key in self._sink_ids:
+            return
+        self._sink_ids.add(key)
+        self.sink_queue.append(sink)
 
     async def spawn_sub_engine(
         self,
@@ -180,6 +219,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
             # Merge task counts back to parent
             self.tasks_processed += sub_engine.tasks_processed
+            self._forget_child(sub_engine)
 
             if self.enable_debug_logging:
                 logger.debug(
@@ -192,7 +232,16 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
         except Exception as e:
             self.tasks_processed += sub_engine.tasks_processed
+            self._forget_child(sub_engine)
             return self._resolve_sub_engine_error(sub_engine, e, error_strategy)
+
+    def _forget_child(self, child: "DefaultWorkflowEngine") -> None:
+        """A finished child is dropped: it holds its context graph, and its counts
+        are merged. (Left in ``child_engines`` it would pile up over a long run.)"""
+        try:
+            self.child_engines.remove(child)
+        except ValueError:
+            pass
 
     @staticmethod
     def _cooperative_limit() -> int:
@@ -233,7 +282,11 @@ class DefaultWorkflowEngine(WorkflowEngine):
             for task in root_tasks
         ]
 
-        limit = max_concurrency or self._cooperative_limit()
+        limit = (
+            max_concurrency
+            if max_concurrency is not None
+            else self._cooperative_limit()
+        )
         slots = asyncio.Semaphore(limit) if limit else None
 
         async def run(child: "DefaultWorkflowEngine", task: TaskType) -> EngineResult:
@@ -255,7 +308,22 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
         for child, raw in zip(children, raw_results):
             self.tasks_processed += child.tasks_processed
+            self._forget_child(child)
 
+            if isinstance(raw, asyncio.CancelledError):
+                # a chain cancelled from outside (a consumer that failed stops its
+                # producers): that chain failed; the parent was not cancelled
+                raw = TaskCancelledError("sub-engine cancelled")
+                result = EngineResult(
+                    status=EngineExecutionResult.FAILED,
+                    final_context=child.final_context,
+                    error=raw,
+                    tasks_processed=child.tasks_processed,
+                )
+                results.append(result)
+                continue
+            if isinstance(raw, BaseException) and not isinstance(raw, Exception):
+                raise raw  # KeyboardInterrupt, SystemExit ...
             if isinstance(raw, Exception):
                 if error_strategy == SubgraphErrorStrategy.BUBBLE_UP:
                     if first_bubble_error is None:
@@ -286,9 +354,13 @@ class DefaultWorkflowEngine(WorkflowEngine):
         (``{...}[retry_attempts = N]``) while any chain fails."""
         attempts = max(1, int(getattr(task.options, "retry_attempts", 0) or 0))
         limit = getattr(task.options, "max_concurrency", None)
-        extra = {"max_concurrency": limit} if limit else {}
+        extra = {"max_concurrency": limit} if limit is not None else {}
         results = await self.execute_subgraphs(task.chains, pipeline, **extra)
         for attempt in range(2, attempts + 1):
+            # a suspended chain waits for something outside; running it again would
+            # repeat what it already asked for
+            if any(r.status == EngineExecutionResult.SUSPENDED for r in results):
+                break
             if not any(self._chain_failed(r) for r in results):
                 break
             logger.info(
@@ -304,6 +376,8 @@ class DefaultWorkflowEngine(WorkflowEngine):
         (a failure that a branch handled leaves a later task as the last one)."""
         if result.status == EngineExecutionResult.FAILED:
             return True
+        if result.status == EngineExecutionResult.SUSPENDED:
+            return False  # not failed: waiting
         if result.final_context is None:
             return False
         try:
@@ -373,6 +447,12 @@ class DefaultWorkflowEngine(WorkflowEngine):
                 chains_job.cancel()
                 await asyncio.gather(chains_job, return_exceptions=True)
         self.final_context = context
+
+        if context.status in _WAITING:
+            # the consumers are what waits: save the position like any suspended task
+            await self._persist_suspension(
+                context, TaskNode(consumers[0], previous_context)
+            )
 
         for result in results:
             if result.status == EngineExecutionResult.SUSPENDED:
@@ -540,19 +620,66 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
         ``seed`` is the initial work queue (the root task for a fresh run, the
         restored queue for a resume) and ``sinks`` the deferred sink nodes.
+
+        Sink nodes are cleanup, so they run however the traversal ended, except
+        when it suspended: a suspended run is resumed later and its sinks are
+        persisted with it. A failing sink fails a run that otherwise completed
+        (in strict mode); after a failure it is only logged.
         """
         # Reset state, then seed the work queue
         self.task_queue.clear()
         self.sink_queue.clear()
+        self._sink_ids.clear()
         self.final_context = None
         self.current_task_node = None
         self.task_queue.extend(seed)
-        self.sink_queue.extend(sinks)
+        for sink in sinks:
+            self._queue_sink(sink)
 
+        result = await self._traverse(pipeline)
+        if result.status == EngineExecutionResult.SUSPENDED:
+            return result
+
+        completed = result.status == EngineExecutionResult.COMPLETED
+        try:
+            if completed:
+                await self._drain_sink_nodes(pipeline)
+            else:
+                await self._drain_sink_nodes(pipeline, raise_errors=False)
+        except Exception as e:
+            logger.exception("[Engine] Error in a sink node")
+            return EngineResult(
+                status=EngineExecutionResult.FAILED,
+                final_context=self.final_context,
+                error=e,
+                tasks_processed=self.tasks_processed,
+            )
+
+        if self.enable_debug_logging:
+            logger.debug(f"[Engine] Completed processing {self.tasks_processed} tasks")
+        return result
+
+    async def _traverse(self, pipeline: Pipeline) -> EngineResult:
+        """Run the work queue to its end (or to the first reason to stop)."""
+        limit = self._iteration_limit()
         try:
             while self.task_queue:
                 executable_node = self.task_queue.popleft()
                 self.tasks_processed += 1
+
+                if limit and self.tasks_processed > limit:
+                    error = EngineIterationLimitExceeded(
+                        f"The workflow made more than {limit} task executions "
+                        f"(MAX_ENGINE_ITERATIONS): it is probably cyclic. Last task: "
+                        f"{executable_node.task}"
+                    )
+                    logger.error(f"[Engine] {error}")
+                    return EngineResult(
+                        status=EngineExecutionResult.FAILED,
+                        final_context=self.final_context,
+                        error=error,
+                        tasks_processed=self.tasks_processed,
+                    )
 
                 # Pipeline.pause() holds the run between tasks; stop() wakes it
                 await self._wait_while_paused(pipeline)
@@ -575,8 +702,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
                     # path bypasses _build_context(), so replicate its
                     # sink-node collection.
                     if isinstance(task, PipelineTaskGrouping):
-                        if task.sink_node:
-                            self.sink_queue.append(task.sink_node)
+                        self._queue_sink(task.sink_node)
 
                         if self.final_context is None:
                             # Nothing has run in this engine yet, but the chains'
@@ -643,12 +769,16 @@ class DefaultWorkflowEngine(WorkflowEngine):
                     )
 
                     # Dispatch task profiles for execution
-                    await execution_context.dispatch()
+                    try:
+                        await execution_context.dispatch()
+                    except BaseException:
+                        self._unmonitor(execution_context)
+                        raise
 
                     # A suspended task is resumed later, maybe by another process:
                     # persist where this engine stood before unwinding.
-                    if execution_context.status == ExecutionStatus.SUSPENDED:
-                        await self._save_suspension_state(
+                    if execution_context.status in _WAITING:
+                        await self._persist_suspension(
                             execution_context, executable_node
                         )
 
@@ -703,14 +833,6 @@ class DefaultWorkflowEngine(WorkflowEngine):
                         )
                     # In non-strict mode, continue to next task
 
-            # Process deferred sink nodes
-            await self._drain_sink_nodes(pipeline)
-
-            if self.enable_debug_logging:
-                logger.debug(
-                    f"[Engine] Completed processing {self.tasks_processed} tasks"
-                )
-
         except Exception as e:
             logger.exception("[Engine] Fatal error during workflow execution")
             return EngineResult(
@@ -725,6 +847,20 @@ class DefaultWorkflowEngine(WorkflowEngine):
             final_context=self.final_context,
             tasks_processed=self.tasks_processed,
         )
+
+    async def _persist_suspension(
+        self, context: "ExecutionContext", node: TaskNode
+    ) -> None:
+        """Save where a suspended run stands. A storage failure is logged, not raised:
+        the run is suspended either way, and turning that into a failure would hide
+        the reason it stopped."""
+        try:
+            await self._save_suspension_state(context, node)
+        except Exception:
+            logger.exception(
+                "[Engine] Could not save the state of the suspended run; "
+                "it cannot be resumed"
+            )
 
     async def _save_suspension_state(
         self, context: "ExecutionContext", node: TaskNode
@@ -760,6 +896,14 @@ class DefaultWorkflowEngine(WorkflowEngine):
         for task in tasks:
             await builder.build_pipeline_task(task, context.state_id).save()
         await builder.build_engine_state(context, current_task_node=node).save()
+
+    def _unmonitor(self, context: "ExecutionContext") -> None:
+        """Stop the periodic checkpointer watching ``context`` (it will not change)."""
+        if self._checkpointer is not None:
+            try:
+                self._checkpointer.unmonitor(context)
+            except Exception:
+                logger.debug("[Engine] unmonitor failed", exc_info=True)
 
     async def _checkpoint_after_task(self, context: "ExecutionContext", success: bool):
         """
@@ -806,7 +950,9 @@ class DefaultWorkflowEngine(WorkflowEngine):
         current = task
 
         while (
-            current and current.condition_node.on_success_pipe == PipeType.PARALLELISM
+            current
+            and current.condition_node.on_success_pipe == PipeType.PARALLELISM
+            and current not in parallel_tasks  # a cycle on the pointers
         ):
             parallel_tasks.add(current)
             current = current.condition_node.on_success_event
@@ -836,7 +982,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         current = task
         while current.condition_node.on_success_pipe == PipeType.PARALLELISM:
             current = current.condition_node.on_success_event
-            if current is None:
+            if current is None or current in group:  # the end, or a cycle
                 break
             group.append(current)
         return group
@@ -872,6 +1018,8 @@ class DefaultWorkflowEngine(WorkflowEngine):
             if first is None:
                 break
             group = self._parallel_group(first)
+            if any(member in members for member in group):  # a cycle: stop here
+                break
             members.extend(group)
 
         if len(members) == len(self._parallel_group(task)):
@@ -962,8 +1110,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
             previous_context.next_context = context
 
         # Collect sink nodes for deferred execution
-        if task.sink_node:
-            self.sink_queue.append(task.sink_node)
+        self._queue_sink(task.sink_node)
 
         if (
             self._checkpointer is not None
@@ -1146,18 +1293,28 @@ class DefaultWorkflowEngine(WorkflowEngine):
         else:
             return task.condition_node.on_success_event  # type: ignore
 
-    async def _drain_sink_nodes(self, pipeline: Pipeline) -> None:
+    async def _drain_sink_nodes(
+        self, pipeline: Pipeline, raise_errors: typing.Optional[bool] = None
+    ) -> None:
         """
         Execute deferred sink nodes.
 
-        Sink nodes are executed after the main workflow completes,
-        typically for cleanup or finalization tasks.
+        Sink nodes are executed after the main workflow ends, typically for cleanup
+        or finalization. Each runs in a context of its own (not part of the chain
+        the pipeline reports its outcome from). A sink that fails stops the others
+        and re-raises in strict mode; with ``raise_errors=False`` (the run already
+        failed) it is only logged and the remaining sinks still run.
 
         Args:
             pipeline: Workflow pipeline
+            raise_errors: Whether a failing sink raises; default: ``strict_mode``
         """
         if not self.sink_queue:
             return
+
+        should_raise = self.strict_mode and (
+            True if raise_errors is None else raise_errors
+        )
 
         if self.enable_debug_logging:
             logger.debug(
@@ -1170,14 +1327,17 @@ class DefaultWorkflowEngine(WorkflowEngine):
             try:
                 # Create standalone context for sink node
                 context = await ExecutionContext.create_context(
-                    workflow_id=self._engine_id,
-                    workflow_name=pipeline.name,
+                    workflow_id=getattr(pipeline, "id", self._engine_id),
+                    workflow_name=pipeline.__class__.__name__,
                     pipeline=pipeline,
                     task_profiles=sink_task,
                 )
+                context.set_engine(self)
                 await context.dispatch()
 
             except Exception as e:
-                logger.error(f"[Engine] Error in sink node {sink_task}: {e}")
-                if self.strict_mode:
+                logger.error(
+                    f"[Engine] Error in sink node {sink_task}: {e}", exc_info=True
+                )
+                if should_raise:
                     raise

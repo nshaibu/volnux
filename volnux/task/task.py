@@ -34,9 +34,17 @@ class PipelineTask(TaskBase):
         if not isinstance(event_name, str):
             return event_name
 
+        from volnux.event.base import EventType
+        import volnux.event.meta  # noqa: F401  (registers MAP, FILTER ...)
+
         for event in cls.get_event_klasses():
             klass_name = event.__name__.lower()
             if klass_name == event_name.lower():
+                return event
+            # a meta event is written by its mode name: MAP<F> is MapEvent
+            if getattr(event, "event_type", None) == EventType.META and (
+                str(getattr(event, "name", "")).lower() == event_name.lower()
+            ):
                 return event
         raise EventDoesNotExist(f"'{event_name}' was not found.")
 

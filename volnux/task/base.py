@@ -84,7 +84,13 @@ class TaskBase(ObjectIdentityMixin):
 
     @property
     def is_conditional(self) -> bool:
-        return len(self.condition_node.get_descriptors()) > 1
+        """True when what runs next depends on the result: more than one branch, or
+        a failure branch on its own (``A (failure -> X)``). A lone success branch is
+        what ``A -> B`` is, and is not conditional."""
+        return (
+            len(self.condition_node.get_descriptors()) > 1
+            or self.condition_node.on_failure_event is not None
+        )
 
     @property
     def is_descriptor_task(self) -> bool:

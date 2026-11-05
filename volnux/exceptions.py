@@ -462,3 +462,8 @@ class SubprocessTimeoutError(Exception):
         self.cmd = cmd
         self.timeout_seconds = timeout_seconds
         super().__init__(f"Command timed out after {timeout_seconds:.1f}s: {cmd[0]!r}")
+
+
+class EngineIterationLimitExceeded(RuntimeError):
+    """A workflow run made more task executions than ``MAX_ENGINE_ITERATIONS``:
+    almost certainly a cycle (a descriptor or switch pointing back) that never ends."""
