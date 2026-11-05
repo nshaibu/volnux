@@ -6,13 +6,13 @@ import logging
 import os
 import signal
 import sys
-import time
 from pathlib import Path
 from typing import Optional
 
 from volnux.config import setting
 
 from ..base import BaseCommand, CommandCategory, CommandError
+from ..mixins import ProjectMixin
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ async def _check_broker(url: str):
         return False, str(exc)
 
 
-class ServeCommand(BaseCommand):
+class ServeCommand(ProjectMixin, BaseCommand):
     """
     Start the Volnux production server.
 
@@ -144,10 +144,10 @@ class ServeCommand(BaseCommand):
         # ── Resolve project ────────────────────────────────────────────────
         if project_dir is None:
             try:
-                project_dir = _resolve_project_dir()
+                project_dir = self.resolve_project_dir()
             except CommandError as exc:
                 self.error(str(exc))
-                return None
+                sys.exit(1)
 
         # ── Configure logging ──────────────────────────────────────────────
         log_format = setting("LOG_FORMAT", "json")
@@ -160,14 +160,17 @@ class ServeCommand(BaseCommand):
             )
 
         # ── Load project ───────────────────────────────────────────────────
+        # The role reaches initialise_workflows (and its telemetry) as the ROLE
+        # setting, whether it came from --role or from VOLNUX_ROLE.
+        os.environ["VOLNUX_ROLE"] = role
         logger.info(
             "Loading project", extra={"project_dir": str(project_dir), "role": role}
         )
         try:
-            engine = _load_project(project_dir)
+            engine = self.initialise_workflows(project_dir)
         except CommandError as exc:
             self.error(str(exc))
-            return None
+            sys.exit(1)
 
         project_name = getattr(engine, "project_name", project_dir.name)
         logger.info("Project loaded", extra={"project": project_name, "role": role})
@@ -188,11 +191,11 @@ class ServeCommand(BaseCommand):
             asyncio.run(self._preflight(engine, role))
         except CommandError as exc:
             self.error(f"Pre-flight check failed: {exc}")
-            return None
+            sys.exit(1)
         except Exception as exc:
             self.error(f"Pre-flight check error: {exc}")
             logger.exception("Pre-flight check error")
-            return None
+            sys.exit(1)
 
         # ── Start the server ───────────────────────────────────────────────
         try:
@@ -262,8 +265,8 @@ class ServeCommand(BaseCommand):
         Every database of ``DATABASES`` must answer (the same check as
         ``volnux check``, through the configured backends, so the connection
         settings live in one place). The Celery broker is Celery's own
-        configuration and is checked with Celery's connection: required by the
-        API role (it registers ScheduleTrigger), advisory for workers.
+        configuration and is checked with Celery's connection: required when the
+        API role has a schedule trigger (Celery beat fires it), advisory otherwise.
         """
         from volnux.cli.command.mixins.check import _check_backends
 
@@ -282,16 +285,23 @@ class ServeCommand(BaseCommand):
         broker_url = setting("REDIS_BROKER_URL", "redis://localhost:6380/0")
         br_ok, br_msg = await _check_broker(broker_url)
         if not br_ok:
-            # Broker failure is a warning for worker, error for API
-            # (API registers ScheduleTrigger which requires broker)
-            if role == "api":
+            # Only a schedule trigger needs the broker (Celery beat fires it): the
+            # API role fails without it when it has one, and otherwise a project
+            # that has none could not be served without a Redis it never uses.
+            from volnux.engine.workflows.trigger.triggers.base import TriggerType
+
+            needs_broker = role == "api" and any(
+                getattr(t, "trigger_type", None) is TriggerType.SCHEDULE
+                for t in getattr(engine, "triggers", {}).values()
+            )
+            if needs_broker:
                 errors.append(
                     f"Celery broker unreachable at {broker_url} ({br_msg}). "
                     "Set VOLNUX_REDIS_BROKER_URL."
                 )
             else:
                 warnings.append(
-                    "Celery broker unreachable — ScheduleTrigger will not fire."
+                    "Celery broker unreachable — a ScheduleTrigger would not fire."
                 )
         else:
             logger.info("Pre-flight: Celery broker OK — %s", br_msg)
@@ -341,33 +351,34 @@ class ServeCommand(BaseCommand):
 
         try:
             from volnux.server import start_api_server, start_worker_server
+        except ImportError as exc:
+            # (this used to fall back to a loop that did nothing and looked like a
+            # running server)
+            raise CommandError(
+                f"Cannot start the {role} server: {exc}. The API needs "
+                "'fastapi' and 'uvicorn' (pip install fastapi uvicorn)."
+            ) from exc
 
-            if role == "api":
-                await start_api_server(
-                    engine=engine,
-                    host=host,
-                    port=port,
-                    metrics_port=metrics_port,
-                    log_level=log_level,
-                    reload=False,
-                    dev_mode=False,
-                    stop_event=stop_event,
-                )
-            else:
-                await start_worker_server(
-                    engine=engine,
-                    host=host,
-                    port=worker_port,
-                    metrics_port=metrics_port,
-                    log_level=log_level,
-                    stop_event=stop_event,
-                )
-
-        except ImportError:
-            # Stub: engine server not yet implemented
-            logger.warning("volnux.server not found — running stub server loop")
-            while not stop_event.is_set():
-                await asyncio.sleep(0.5)
+        if role == "api":
+            await start_api_server(
+                engine=engine,
+                host=host,
+                port=port,
+                metrics_port=metrics_port,
+                log_level=log_level,
+                reload=False,
+                dev_mode=False,
+                stop_event=stop_event,
+            )
+        else:
+            await start_worker_server(
+                engine=engine,
+                host=host,
+                port=worker_port,
+                metrics_port=metrics_port,
+                log_level=log_level,
+                stop_event=stop_event,
+            )
 
         # ── Graceful shutdown ──────────────────────────────────────────────
         logger.info("Draining checkpoint queue (timeout=%.0fs)", drain_timeout)

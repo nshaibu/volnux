@@ -1,21 +1,9 @@
 import asyncio
 import logging
-import os
+import time
 
 from volnux.config import setting
-import time
-import uvicorn
-import importlib
-from pathlib import Path
-from fastapi import FastAPI
-from typing import Optional, TYPE_CHECKING, Callable
-
-from volnux.app import get_current_app
-from volnux.models import NodeHeartbeat
 from .utils import _setup_otel, _start_prometheus
-
-if TYPE_CHECKING:
-    from volnux.engine.workflows.trigger import TriggerEngine
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +22,13 @@ async def start_worker_server(
     The worker role is fundamentally different from the API role:
 
     What the worker runs:
-        - CheckpointManager      — writes checkpoint snapshots to Redis
-        - HealthMonitor          — monitors component health, restarts failures
-        - RemoteManager          — gRPC server accepting execution requests
-                                   from GRPCExecutor on other nodes
-        - NodeHeartbeat          — publishes liveness key to Redis
-        - Prometheus + /health   — metrics scrape + liveness/readiness endpoints
+        - CheckpointManager      — writes checkpoint snapshots (configured by
+                                   CHECKPOINT_CONFIG, stored in the 'checkpoints'
+                                   entry of DATABASES)
+        - HealthMonitor          — monitors the checkpoint manager, restarts its
+                                   tasks if they die
+        - Prometheus             — the metrics scrape endpoint
+        - Telemetry              — OpenTelemetry, started by initialise_workflows
 
     What the worker does NOT run:
         - REST API (FastAPI / Uvicorn) — API pods handle HTTP
@@ -52,26 +41,20 @@ async def start_worker_server(
         on metrics_port — it does not need the full ASGI stack.
 
     Shutdown order:
-        1. RemoteManager stops accepting new gRPC execution requests
-        2. CheckpointManager drains — in-flight events write final checkpoints
-        3. HealthMonitor stops
-        4. NodeHeartbeat stops — deregisters from Redis
-        5. OTel flushes — exports pending spans
-        6. Prometheus closes
+        1. CheckpointManager drains — in-flight events write final checkpoints
+        2. HealthMonitor stops
+        3. CheckpointManager stops
+        4. OTel flushes — exports pending spans
+        5. Prometheus closes
 
     Parameters
     ----------
     engine:
-        Initialised WorkflowEngine. Carries CheckpointManager, HealthMonitor,
-        RemoteManager, and all registered event/workflow classes.
+        The initialised engine (from ``initialise_workflows``).
 
-    host:
-        Network interface for the gRPC RemoteManager. "0.0.0.0" in K8s.
-
-    port:
-        Port for the worker health endpoint HTTP server.
-        Separate from metrics_port — health is cheap, metrics may be expensive.
-        Default: 9090.
+    host, port:
+        Accepted for the CLI (``--worker-port``); the worker has no inbound
+        interface yet, so they are not used.
 
     metrics_port:
         Port for the Prometheus /metrics scrape endpoint.
@@ -85,15 +68,18 @@ async def start_worker_server(
         asyncio.Event set by the signal handler on SIGTERM / SIGINT.
         Drives the graceful shutdown sequence.
     """
-    otel_shutdown = _setup_otel(engine, dev_mode=False)
-
+    otel_shutdown = _setup_otel(engine, dev_mode=False, role="worker")
     prometheus_shutdown = _start_prometheus(metrics_port)
-    # health_server_shutdown = await _start_worker_health_server(port, engine)
 
-    # The worker is now live. Block here until SIGTERM / SIGINT sets stop_event.
-    # All actual event execution happens in the executor pool — this coroutine
-    # just keeps the process alive and monitors for shutdown.
+    checkpoint_manager = None
+    health_monitor = None
     try:
+        checkpoint_manager = await _start_checkpoint_manager(engine)
+        health_monitor = await _start_health_monitor(checkpoint_manager)
+
+        # The worker is now live. Block here until SIGTERM / SIGINT sets stop_event.
+        # All actual event execution happens in the executor pool — this coroutine
+        # just keeps the process alive and monitors for shutdown.
         await _worker_run_until_stop(
             stop_event=stop_event,
             engine=engine,
@@ -101,14 +87,41 @@ async def start_worker_server(
         )
     finally:
         await _worker_shutdown(
-            remote_manager=remote_manager,
             checkpoint_manager=checkpoint_manager,
             health_monitor=health_monitor,
-            heartbeat=heartbeat,
-            health_server_shutdown=health_server_shutdown,
             otel_shutdown=otel_shutdown,
             prometheus_shutdown=prometheus_shutdown,
         )
+
+
+# ── Worker components ──────────────────────────────────────────────────────────
+
+
+async def _start_checkpoint_manager(engine):
+    """
+    Build the checkpoint manager from the ``CHECKPOINT_CONFIG`` setting and start it.
+
+    The manager is also set as ``engine.checkpoint_manager`` so that code that looks
+    for it there (the CLI's drain on exit) finds the one that is running.
+    """
+    from volnux.engine.checkpoint_config import CheckPointConfig
+    from volnux.execution.rehydrator.checkpoint_manager import VolnuxCheckPointManager
+
+    manager = VolnuxCheckPointManager.from_config(CheckPointConfig.from_settings())
+    await manager.start()
+    engine.checkpoint_manager = manager
+    logger.info("CheckpointManager started")
+    return manager
+
+
+async def _start_health_monitor(checkpoint_manager):
+    """Supervise the checkpoint manager: its tasks are restarted if they die."""
+    from volnux.execution.resilience.health_check import HealthMonitor
+
+    monitor = HealthMonitor()
+    monitor.register(checkpoint_manager, "checkpoint")
+    await monitor.start()
+    return monitor
 
 
 # ── Worker run loop ────────────────────────────────────────────────────────────
@@ -165,45 +178,12 @@ def _log_worker_status(engine) -> None:
         logger.debug("Worker status check failed: %s", exc)
 
 
-# ── Worker-specific NodeHeartbeat ──────────────────────────────────────────────
-
-
-async def _start_heartbeat_worker():
-    """
-    Start the Redis NodeHeartbeat for a worker node.
-    Identical to the API heartbeat but publishes role=worker in the metadata.
-    """
-    try:
-        from volnux.distribution.channels.redis_channel import NodeHeartbeat
-
-        node_id = setting("NODE_ID", "local")
-        metadata = {
-            "role": "worker",
-            "version": setting("VERSION", "unknown"),
-            "grpc_port": str(setting("GRPC_PORT", 45545)),
-        }
-        heartbeat = NodeHeartbeat(node_id=node_id, metadata=metadata)
-        await heartbeat.start()
-        logger.info("NodeHeartbeat (worker) started — node_id=%s", node_id)
-        return heartbeat
-
-    except ImportError:
-        logger.debug("RedisChannel not available — NodeHeartbeat disabled")
-        return None
-    except Exception as exc:
-        logger.warning("NodeHeartbeat (worker) failed to start: %s", exc)
-        return None
-
-
 # ── Worker graceful shutdown ───────────────────────────────────────────────────
 
 
 async def _worker_shutdown(
-    remote_manager,
     checkpoint_manager,
     health_monitor,
-    heartbeat,
-    health_server_shutdown,
     otel_shutdown,
     prometheus_shutdown,
 ) -> None:
@@ -211,39 +191,17 @@ async def _worker_shutdown(
     Ordered graceful shutdown for the worker role.
 
     Shutdown order:
-        1. RemoteManager   — stop accepting new gRPC execution requests
-        2. Checkpoint drain — in-flight events write final checkpoints
-        3. HealthMonitor   — stop component health checks
-        4. NodeHeartbeat   — deregister from Redis
-        5. Health server   — close health/readiness endpoint
-        6. OTel flush      — export all pending spans
-        7. Prometheus      — close metrics scrape endpoint
+        1. Checkpoint drain  — in-flight events write their final checkpoints
+        2. HealthMonitor     — stop supervising (before the manager it restarts)
+        3. CheckpointManager — stop its tasks
+        4. OTel flush        — export all pending spans
+        5. Prometheus        — close the metrics scrape endpoint
 
-    Why RemoteManager stops first:
-        New gRPC requests must be rejected before draining begins. If the
-        RemoteManager continues accepting requests during the drain, the
-        drain window could extend indefinitely.
-
-    Why NodeHeartbeat stops after the drain:
-        The heartbeat TTL (30s) acts as a dead-man switch. Other nodes use
-        heartbeat expiry to detect that this node's tasks need recovery. If
-        the heartbeat stops before the drain is complete, other nodes may
-        start recovering tasks that are still executing on this node — a
-        race condition producing duplicate execution.
+    Each step is attempted even if an earlier one failed. ``None`` for a component
+    that never started.
     """
 
-    # ── 1. Stop RemoteManager ─────────────────────────────────────────────────
-    if remote_manager is not None and hasattr(remote_manager, "stop"):
-        logger.info("Stopping RemoteManager...")
-        try:
-            await asyncio.wait_for(remote_manager.stop(), timeout=10.0)
-            logger.info("RemoteManager stopped — no new gRPC requests accepted")
-        except asyncio.TimeoutError:
-            logger.warning("RemoteManager stop timed out after 10s")
-        except Exception as exc:
-            logger.warning("RemoteManager stop error: %s", exc)
-
-    # ── 2. Drain checkpoint queue ─────────────────────────────────────────────
+    # ── 1. Drain checkpoint queue ─────────────────────────────────────────────
     drain_timeout = float(setting("CHECKPOINT_DRAIN_TIMEOUT", 120.0))
     if checkpoint_manager is not None and hasattr(checkpoint_manager, "drain"):
         logger.info("Draining checkpoint queue (timeout=%.0fs)...", drain_timeout)
@@ -259,7 +217,7 @@ async def _worker_shutdown(
         except Exception as exc:
             logger.error("Checkpoint drain error: %s", exc)
 
-    # ── 3. Stop HealthMonitor ─────────────────────────────────────────────────
+    # ── 2. Stop HealthMonitor ─────────────────────────────────────────────────
     if health_monitor is not None and hasattr(health_monitor, "stop"):
         try:
             await asyncio.wait_for(health_monitor.stop(), timeout=5.0)
@@ -267,33 +225,25 @@ async def _worker_shutdown(
         except Exception as exc:
             logger.warning("HealthMonitor stop error: %s", exc)
 
-    # ── 4. Stop NodeHeartbeat ─────────────────────────────────────────────────
-    # Stopped AFTER drain — see docstring for why
-    if heartbeat is not None:
+    # ── 3. Stop CheckpointManager ─────────────────────────────────────────────
+    if checkpoint_manager is not None and hasattr(checkpoint_manager, "stop"):
         try:
-            await asyncio.wait_for(heartbeat.stop(), timeout=5.0)
-            logger.info("NodeHeartbeat stopped — node deregistered from Redis")
+            await asyncio.wait_for(checkpoint_manager.stop(), timeout=10.0)
+            logger.info("CheckpointManager stopped")
         except Exception as exc:
-            logger.warning("NodeHeartbeat stop error: %s", exc)
+            logger.warning("CheckpointManager stop error: %s", exc)
 
-    # ── 5. Stop health HTTP server ────────────────────────────────────────────
-    if callable(health_server_shutdown):
-        try:
-            await asyncio.get_event_loop().run_in_executor(None, health_server_shutdown)
-        except Exception as exc:
-            logger.warning("Health server shutdown error: %s", exc)
-
-    # ── 6. Flush OTel ────────────────────────────────────────────────────────
+    # ── 4. Flush OTel ────────────────────────────────────────────────────────
     if callable(otel_shutdown):
         try:
-            await asyncio.get_event_loop().run_in_executor(None, otel_shutdown)
+            await asyncio.get_running_loop().run_in_executor(None, otel_shutdown)
         except Exception as exc:
             logger.warning("OTel flush error: %s", exc)
 
-    # ── 7. Stop Prometheus ────────────────────────────────────────────────────
+    # ── 5. Stop Prometheus ────────────────────────────────────────────────────
     if callable(prometheus_shutdown):
         try:
-            await asyncio.get_event_loop().run_in_executor(None, prometheus_shutdown)
+            await asyncio.get_running_loop().run_in_executor(None, prometheus_shutdown)
         except Exception as exc:
             logger.warning("Prometheus shutdown error: %s", exc)
 

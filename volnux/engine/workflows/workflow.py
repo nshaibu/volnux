@@ -116,10 +116,16 @@ class TriggerRegistry:
         self._triggers.discard(trigger)
         logger.info("Unregistered trigger '%s'", trigger_id)
 
+    def has_type(self, trigger_type: "TriggerType") -> bool:
+        """Whether a trigger of this type is registered."""
+        return self._triggers.filter(trigger_type=trigger_type).first() is not None
+
     def get_trigger(self, trigger_id: str) -> Optional["TriggerBase"]:
         """Return a trigger by ID, or None if not found."""
         try:
-            return typing.cast("TriggerBase", self._triggers.get(id=trigger_id))
+            # (triggers expose ``trigger_id``; looking up ``id`` never found one, so
+            # ``unregister`` always said the trigger did not exist)
+            return typing.cast("TriggerBase", self._triggers.get(trigger_id=trigger_id))
         except KeyError:
             return None
 

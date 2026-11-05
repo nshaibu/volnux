@@ -1,22 +1,38 @@
 """
-OpenTelemetry Instrumentation for Flow Layer with Metrics Collection
+OpenTelemetry instrumentation of the flow layer, with metrics.
 
-This module instruments the BaseFlow and its subclasses to provide:
-1. Span tracing for flow execution
-2. Event-level spans for individual event execution
-3. Executor tracking
-4. Metrics collection (duration, counts, errors)
+* ``flow.run.<Flow>``: one span per flow ``run()``. ``run()`` returns the future
+  of the work it submitted, so the span ends when that future does (not when
+  ``run()`` returns), and its outcome and duration are the work's.
+* ``event.execute.<Event>``: one span per event submitted to an executor, ended by
+  the event's future (a failed or cancelled event ends it as an error).
+* ``flow.initialize_event`` and ``flow.map_events_to_executor``.
+
+Metrics (meter ``volnux.flows``): ``flow.duration``, ``event.duration``,
+``task.count``, ``error.count``, ``executor.usage``, ``parallel_tasks.active``.
 """
 
-import logging
-import typing
+import asyncio
 import functools
+import logging
+import threading
 import time
-from opentelemetry import trace, metrics
+import typing
+from typing import Any, Optional
+
+from opentelemetry import metrics, trace
 from opentelemetry.trace import Status, StatusCode
 
-from volnux.otel.tracer_setup import get_tracer
 from volnux.otel.context_manager import OTelContextManager, SpanHelper
+from ._common import (
+    clean_attributes,
+    end_span_with,
+    get_tracer,
+    record_error,
+    set_attributes,
+    traced,
+)
+from ._patching import patch_attr
 
 if typing.TYPE_CHECKING:
     from volnux.flows.base import BaseFlow
@@ -29,16 +45,13 @@ class FlowMetrics:
     """
     Centralized metrics collection for Flow execution.
 
-    Provides OpenTelemetry metrics for:
-    - Flow execution duration
-    - Event execution duration
-    - Task counts
-    - Error rates
-    - Executor usage
+    The instruments are made on first use, once, under a lock. :meth:`reset`
+    forgets them (a new meter provider, tests).
     """
 
     _meter = None
     _initialized = False
+    _lock = threading.Lock()
 
     # Metric instruments
     flow_duration = None
@@ -49,73 +62,72 @@ class FlowMetrics:
     parallel_task_gauge = None
 
     @classmethod
-    def initialize(cls):
-        """Initialize metrics instruments"""
+    def initialize(cls) -> None:
+        """Create the instruments (once)."""
         if cls._initialized:
             return
-
-        try:
-            meter_provider = metrics.get_meter_provider()
-            cls._meter = meter_provider.get_meter("volnux.flows", version="1.0.0")
-
-            # Flow duration histogram
-            cls.flow_duration = cls._meter.create_histogram(
-                name="flow.duration",
-                description="Duration of flow execution in milliseconds",
-                unit="ms",
-            )
-
-            # Event duration histogram
-            cls.event_duration = cls._meter.create_histogram(
-                name="event.duration",
-                description="Duration of event execution in milliseconds",
-                unit="ms",
-            )
-
-            # Task counter
-            cls.task_counter = cls._meter.create_counter(
-                name="task.count", description="Number of tasks executed", unit="1"
-            )
-
-            # Error counter
-            cls.error_counter = cls._meter.create_counter(
-                name="error.count", description="Number of errors encountered", unit="1"
-            )
-
-            # Executor usage counter
-            cls.executor_usage = cls._meter.create_counter(
-                name="executor.usage",
-                description="Number of times each executor type is used",
-                unit="1",
-            )
-
-            # Parallel task gauge
-            cls.parallel_task_gauge = cls._meter.create_up_down_counter(
-                name="parallel_tasks.active",
-                description="Number of parallel tasks currently executing",
-                unit="1",
-            )
-
-            cls._initialized = True
-            logger.info("Flow metrics initialized")
-
-        except Exception as e:
-            logger.warning(f"Failed to initialize flow metrics: {e}")
-            cls._initialized = False
+        with cls._lock:
+            if cls._initialized:
+                return
+            try:
+                meter = metrics.get_meter_provider().get_meter(
+                    "volnux.flows", version="1.0.0"
+                )
+                cls._meter = meter
+                cls.flow_duration = meter.create_histogram(
+                    name="flow.duration",
+                    description="Duration of flow execution in milliseconds",
+                    unit="ms",
+                )
+                cls.event_duration = meter.create_histogram(
+                    name="event.duration",
+                    description="Duration of event execution in milliseconds",
+                    unit="ms",
+                )
+                cls.task_counter = meter.create_counter(
+                    name="task.count", description="Number of tasks executed", unit="1"
+                )
+                cls.error_counter = meter.create_counter(
+                    name="error.count",
+                    description="Number of errors encountered",
+                    unit="1",
+                )
+                cls.executor_usage = meter.create_counter(
+                    name="executor.usage",
+                    description="Number of times each executor type is used",
+                    unit="1",
+                )
+                cls.parallel_task_gauge = meter.create_up_down_counter(
+                    name="parallel_tasks.active",
+                    description="Number of parallel tasks currently executing",
+                    unit="1",
+                )
+                cls._initialized = True
+                logger.info("Flow metrics initialized")
+            except Exception as exc:
+                logger.warning("Failed to initialize flow metrics: %s", exc)
+                cls._initialized = False
 
     @classmethod
-    def record_flow_duration(
-        cls, duration_ms: float, flow_type: str, status: str, task_count: int
-    ):
+    def reset(cls) -> None:
+        """Forget the instruments; the next use creates them again."""
+        with cls._lock:
+            cls._meter = None
+            cls._initialized = False
+            cls.flow_duration = None
+            cls.event_duration = None
+            cls.task_counter = None
+            cls.error_counter = None
+            cls.executor_usage = None
+            cls.parallel_task_gauge = None
+
+    @classmethod
+    def record_flow_duration(cls, duration_ms: float, flow_type: str, status: str):
         """Record flow execution duration"""
         if cls.flow_duration:
             cls.flow_duration.record(
                 duration_ms,
-                attributes={
-                    "flow.type": flow_type,
-                    "flow.status": status,
-                    "flow.task_count": str(task_count),
-                },
+                attributes={"flow.type": flow_type, "flow.status": status},
             )
 
     @classmethod
@@ -143,14 +155,13 @@ class FlowMetrics:
 
     @classmethod
     def increment_error_count(
-        cls, error_type: str, flow_type: str, event_name: str = None
+        cls, error_type: str, flow_type: str, event_name: Optional[str] = None
     ):
         """Increment error counter"""
         if cls.error_counter:
             attributes = {"error.type": error_type, "flow.type": flow_type}
             if event_name:
                 attributes["event.name"] = event_name
-
             cls.error_counter.add(1, attributes=attributes)
 
     @classmethod
@@ -174,464 +185,303 @@ class FlowMetrics:
             cls.parallel_task_gauge.add(-count)
 
 
+def _parallel_count(flow) -> int:
+    return sum(
+        1
+        for task in (getattr(flow, "task_profiles", None) or ())
+        if getattr(task, "is_parallel_execution_node", False)
+    )
+
+
+class EventResultError(Exception):
+    """An event finished without raising but reported an error result."""
+
+
+def _outcome(
+    future: "asyncio.Future", result_errors: bool = False
+) -> typing.Tuple[str, Optional[BaseException]]:
+    """('success' | 'error' | 'cancelled', the error) of a finished future.
+
+    With ``result_errors`` a future that completed with an error *result* (events
+    report failure as a result, not by raising) is an error too.
+    """
+    if future.cancelled():
+        return "cancelled", asyncio.CancelledError()
+    error = future.exception()
+    if error is not None:
+        return "error", error
+    if result_errors:
+        result = future.result()
+        if getattr(result, "error", False) is True:
+            return "error", EventResultError(str(getattr(result, "content", "")))
+    return "success", None
+
+
+def _end_when_done(
+    span,
+    future: Any,
+    finished: typing.Callable[[str, Optional[BaseException]], None],
+    result_errors: bool = False,
+) -> None:
+    """End ``span`` when ``future`` ends (now if it is not a future).
+
+    ``finished(status, error)`` runs first, for the metrics.
+    """
+
+    def done(fut) -> None:
+        try:
+            status, error = _outcome(fut, result_errors)
+        except Exception as exc:  # pragma: no cover - defensive
+            status, error = "error", exc
+        try:
+            finished(status, error)
+        except Exception:
+            logger.debug("Flow metrics failed", exc_info=True)
+        end_span_with(span, error)
+
+    if hasattr(future, "add_done_callback") and hasattr(future, "done"):
+        if future.done():
+            done(future)
+        else:
+            future.add_done_callback(done)
+    else:
+        finished("success", None)
+        end_span_with(span, None)
+
+
 def instrument_flow_run(original_run):
     """
-    Decorator to instrument BaseFlow.run() method.
+    Instrument a flow's ``run()`` (a coroutine function returning a future).
 
-    Creates spans for flow execution and tracks metrics.
+    The span is ended by the returned future; the work the flow submits inside
+    ``run`` nests under it.
     """
 
     @functools.wraps(original_run)
-    async def instrumented_run(self: "BaseFlow"):
+    async def instrumented_run(self: "BaseFlow", *args: Any, **kwargs: Any):
         tracer = get_tracer()
+        if tracer is None:
+            return await original_run(self, *args, **kwargs)
 
-        if not tracer:
-            return await original_run(self)
-
-        # Initialize metrics if not done
         FlowMetrics.initialize()
-
-        # Get parent context from ExecutionContext
-        parent_context = OTelContextManager.get_async_context()
-
         flow_type = self.__class__.__name__
-        task_count = len(self.task_profiles) if self.task_profiles else 0
+        profiles = getattr(self, "task_profiles", None) or ()
+        parallel = _parallel_count(self)
+        started = time.perf_counter()
 
-        start_time = time.time()
-
-        with tracer.start_as_current_span(
+        span = tracer.start_span(
             f"flow.run.{flow_type}",
-            context=parent_context,
+            context=OTelContextManager.get_async_context(),
             kind=trace.SpanKind.INTERNAL,
-            attributes={
-                "flow.type": flow_type,
-                "flow.task_count": task_count,
-                "flow.context_id": self.context.id,
-            },
-        ) as span:
-            try:
-                # Add task profile information
-                if self.task_profiles:
-                    task_names = [task.get_event_name() for task in self.task_profiles]
-                    span.set_attribute("flow.tasks", ",".join(task_names))
+        )
+        attrs = {"flow.type": flow_type, "flow.task_count": len(profiles)}
+        try:
+            attrs["flow.context_id"] = self.context.id
+            attrs["flow.tasks"] = ",".join(t.get_event_name() for t in profiles)
+        except Exception:
+            pass
+        if parallel:
+            attrs["flow.parallel_tasks"] = parallel
+            FlowMetrics.increment_parallel_tasks(parallel)
+        set_attributes(span, attrs)
+        span.add_event("flow_execution_started")
 
-                    # Check for parallel execution
-                    parallel_count = sum(
-                        1
-                        for task in self.task_profiles
-                        if getattr(task, "is_parallel_execution_node", False)
-                    )
-                    if parallel_count > 0:
-                        span.set_attribute("flow.parallel_tasks", parallel_count)
-                        FlowMetrics.increment_parallel_tasks(parallel_count)
+        def finished(status: str, error: Optional[BaseException]) -> None:
+            duration_ms = (time.perf_counter() - started) * 1000
+            span.add_event("flow_execution_completed", {"duration_ms": duration_ms})
+            FlowMetrics.record_flow_duration(duration_ms, flow_type, status)
+            if error is not None and status == "error":
+                FlowMetrics.increment_error_count(type(error).__name__, flow_type)
+            if parallel:
+                FlowMetrics.decrement_parallel_tasks(parallel)
 
-                span.add_event("flow_execution_started")
+        try:
+            with trace.use_span(span, end_on_exit=False):
+                future = await original_run(self, *args, **kwargs)
+        except BaseException as exc:
+            finished(
+                "cancelled" if isinstance(exc, asyncio.CancelledError) else "error", exc
+            )
+            end_span_with(span, exc)
+            raise
 
-                # Execute original run method
-                result = await original_run(self)
-
-                # Calculate duration
-                duration_ms = (time.time() - start_time) * 1000
-
-                span.add_event("flow_execution_completed", {"duration_ms": duration_ms})
-
-                span.set_status(Status(StatusCode.OK))
-
-                # Record metrics
-                FlowMetrics.record_flow_duration(
-                    duration_ms=duration_ms,
-                    flow_type=flow_type,
-                    status="success",
-                    task_count=task_count,
-                )
-
-                # Decrement parallel task counter
-                if self.task_profiles:
-                    parallel_count = sum(
-                        1
-                        for task in self.task_profiles
-                        if getattr(task, "is_parallel_execution_node", False)
-                    )
-                    if parallel_count > 0:
-                        FlowMetrics.decrement_parallel_tasks(parallel_count)
-
-                return result
-
-            except Exception as e:
-                duration_ms = (time.time() - start_time) * 1000
-
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-
-                # Record error metrics
-                FlowMetrics.record_flow_duration(
-                    duration_ms=duration_ms,
-                    flow_type=flow_type,
-                    status="error",
-                    task_count=task_count,
-                )
-
-                FlowMetrics.increment_error_count(
-                    error_type=type(e).__name__, flow_type=flow_type
-                )
-
-                raise
+        _end_when_done(span, future, finished)
+        return future
 
     return instrumented_run
 
 
 def instrument_get_initialized_event(original_get_initialized_event):
     """
-    Decorator to instrument BaseFlow.get_initialized_event() method.
-
-    Tracks event initialization with spans and metrics.
+    Instrument ``BaseFlow.get_initialized_event`` (a plain method: it looks the
+    event up or builds it, and is called once per task *and* on cache hits, so it
+    is traced but not counted).
     """
 
-    @functools.wraps(original_get_initialized_event)
-    def instrumented_get_initialized_event(self: "BaseFlow", task_profile):
-        tracer = get_tracer()
+    def attributes(self, task_profile, *args, **kwargs):
+        attrs = SpanHelper.task_attributes(task_profile)
+        attrs["event.name"] = attrs.get("task.name")
+        options = getattr(task_profile, "options", None)
+        if options is not None and getattr(options, "retry_attempts", 0):
+            attrs["event.retry_attempts"] = options.retry_attempts
+        return attrs
 
-        if not tracer:
-            return original_get_initialized_event(self, task_profile)
+    def on_finish(args, kwargs, duration, error):
+        if error is not None:
+            self, task_profile = args[0], args[1]
+            FlowMetrics.initialize()
+            FlowMetrics.increment_error_count(
+                type(error).__name__,
+                self.__class__.__name__,
+                task_profile.get_event_name(),
+            )
 
-        with tracer.start_as_current_span(
-            "flow.initialize_event", kind=trace.SpanKind.INTERNAL
-        ) as span:
-            try:
-                event_name = task_profile.get_event_name()
+    def after(args, kwargs, result):
+        event = result[0] if isinstance(result, tuple) and result else None
+        return {"event.class": event.__class__.__name__ if event is not None else None}
 
-                span.set_attribute("event.name", event_name)
-                span.set_attribute("task.id", str(task_profile.get_id()))
-                SpanHelper.add_task_attributes(span, task_profile)
-
-                # Track if this is a parallel task
-                if getattr(task_profile, "is_parallel_execution_node", False):
-                    span.set_attribute("task.parallel_execution", True)
-
-                # Track retry configuration
-                if task_profile.options and task_profile.options.retry_attempts:
-                    span.set_attribute(
-                        "event.retry_attempts", task_profile.options.retry_attempts
-                    )
-
-                span.add_event("event_initialization_started")
-
-                # Call original method
-                event, event_call_args = original_get_initialized_event(
-                    self, task_profile
-                )
-
-                span.add_event(
-                    "event_initialization_completed",
-                    {"event.class": event.__class__.__name__},
-                )
-
-                # Record task count metric
-                FlowMetrics.increment_task_count(
-                    task_type=event_name, flow_type=self.__class__.__name__
-                )
-
-                return event, event_call_args
-
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-
-                FlowMetrics.increment_error_count(
-                    error_type=type(e).__name__,
-                    flow_type=self.__class__.__name__,
-                    event_name=task_profile.get_event_name(),
-                )
-
-                raise
-
-    return instrumented_get_initialized_event
+    return traced(
+        "flow.initialize_event",
+        attributes=attributes,
+        after=after,
+        on_finish=on_finish,
+    )(original_get_initialized_event)
 
 
 def instrument_submit_event_to_executor(original_submit):
     """
-    Decorator to instrument BaseFlow._submit_event_to_executor() method.
+    Instrument ``BaseFlow._submit_event_to_executor``.
 
-    Tracks event submission and execution with detailed spans.
+    The span covers the event's *execution*: it is ended by the future that is
+    returned (success, error or cancellation), so a failing event is an error
+    span. Counting the task here counts each real submission once.
     """
 
     @functools.wraps(original_submit)
     async def instrumented_submit(
-        self: "BaseFlow", executor, event: "Event", event_call_kwargs, **kwargs
+        self: "BaseFlow", executor, event: "Event", event_call_kwargs, *args, **kwargs
     ):
         tracer = get_tracer()
-
-        if not tracer:
+        if tracer is None:
             return await original_submit(
-                self, executor, event, event_call_kwargs, **kwargs
+                self, executor, event, event_call_kwargs, *args, **kwargs
             )
 
+        FlowMetrics.initialize()
+        flow_type = self.__class__.__name__
         executor_type = executor.__class__.__name__
         event_name = event.__class__.__name__
+        started = time.perf_counter()
 
-        with tracer.start_as_current_span(
-            f"event.execute.{event_name}",
-            kind=trace.SpanKind.INTERNAL,
-            attributes={
+        retry_policy = getattr(event, "retry_policy", None)
+        span = tracer.start_span(
+            f"event.execute.{event_name}", kind=trace.SpanKind.INTERNAL
+        )
+        set_attributes(
+            span,
+            {
                 "event.name": event_name,
-                "event.task_id": (
-                    str(event.task_id) if hasattr(event, "task_id") else None
-                ),
+                "event.task_id": getattr(event, "_task_id", None),
                 "executor.type": executor_type,
-                "context.id": self.context.id,
+                "context.id": getattr(getattr(self, "context", None), "id", None),
+                "event.retry.max_attempts": getattr(retry_policy, "max_attempts", None),
+                "executor.max_workers": getattr(executor, "max_workers", None),
             },
-        ) as span:
-            try:
-                # Add event configuration
-                if hasattr(event, "get_retry_policy"):
-                    retry_policy = event.get_retry_policy()
-                    if retry_policy:
-                        span.set_attribute(
-                            "event.retry.max_attempts", retry_policy.max_attempts
-                        )
+        )
+        span.add_event("event_submission_started")
+        FlowMetrics.record_executor_usage(executor_type, flow_type)
+        FlowMetrics.increment_task_count(event_name, flow_type)
 
-                # Add executor configuration details
-                if hasattr(executor, "max_workers"):
-                    span.set_attribute("executor.max_workers", executor.max_workers)
-
-                span.add_event("event_submission_started")
-
-                # Record executor usage
-                FlowMetrics.record_executor_usage(
-                    executor_type=executor_type, flow_type=self.__class__.__name__
-                )
-
-                # Track event execution time
-                start_time = time.time()
-
-                # Submit event
-                future = await original_submit(
-                    self, executor, event, event_call_kwargs, **kwargs
-                )
-
-                # Note: The actual execution happens asynchronously
-                # We'll track completion in a callback
-                def record_completion(fut):
-                    duration_ms = (time.time() - start_time) * 1000
-
-                    try:
-                        result = fut.result()
-                        status = "success"
-
-                        span.add_event(
-                            "event_execution_completed",
-                            {"duration_ms": duration_ms, "status": status},
-                        )
-
-                    except Exception as e:
-                        status = "error"
-                        span.record_exception(e)
-
-                        FlowMetrics.increment_error_count(
-                            error_type=type(e).__name__,
-                            flow_type=self.__class__.__name__,
-                            event_name=event_name,
-                        )
-
-                    # Record event duration metric
-                    FlowMetrics.record_event_duration(
-                        duration_ms=duration_ms,
-                        event_name=event_name,
-                        status=status,
-                        executor_type=executor_type,
-                    )
-
-                future.add_done_callback(record_completion)
-
-                span.set_status(Status(StatusCode.OK))
-                return future
-
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-
+        def finished(status: str, error: Optional[BaseException]) -> None:
+            duration_ms = (time.perf_counter() - started) * 1000
+            span.add_event(
+                "event_execution_completed",
+                {"duration_ms": duration_ms, "status": status},
+            )
+            FlowMetrics.record_event_duration(
+                duration_ms, event_name, status, executor_type
+            )
+            if status == "error" and error is not None:
                 FlowMetrics.increment_error_count(
-                    error_type=type(e).__name__,
-                    flow_type=self.__class__.__name__,
-                    event_name=event_name,
+                    type(error).__name__, flow_type, event_name
                 )
 
-                raise
+        try:
+            with trace.use_span(span, end_on_exit=False):
+                future = await original_submit(
+                    self, executor, event, event_call_kwargs, *args, **kwargs
+                )
+        except BaseException as exc:
+            # (the submission itself failed: there is no future to wait for)
+            finished("error", exc)
+            end_span_with(span, exc)
+            raise
+
+        _end_when_done(span, future, finished, result_errors=True)
+        return future
 
     return instrumented_submit
 
 
 def instrument_map_events_to_executor(original_map_events):
-    """
-    Decorator to instrument BaseFlow._map_events_to_executor() method.
-
-    Tracks parallel event execution.
-    """
-
-    @functools.wraps(original_map_events)
-    async def instrumented_map_events(
-        self: "BaseFlow", executor, event_execution_config
-    ):
-        tracer = get_tracer()
-
-        if not tracer:
-            return await original_map_events(self, executor, event_execution_config)
-
-        executor_type = executor.__class__.__name__
-        event_count = len(event_execution_config)
-
-        with tracer.start_as_current_span(
-            "flow.map_events_to_executor",
-            kind=trace.SpanKind.INTERNAL,
-            attributes={"executor.type": executor_type, "event.count": event_count},
-        ) as span:
-            try:
-                # List event names being executed
-                event_names = [
-                    event.__class__.__name__ for event in event_execution_config.keys()
-                ]
-                span.set_attribute("events", ",".join(event_names))
-
-                span.add_event(
-                    "parallel_execution_started", {"event_count": event_count}
-                )
-
-                start_time = time.time()
-
-                # Execute original method
-                result = await original_map_events(
-                    self, executor, event_execution_config
-                )
-
-                duration_ms = (time.time() - start_time) * 1000
-
-                span.add_event(
-                    "parallel_execution_completed",
-                    {"duration_ms": duration_ms, "event_count": event_count},
-                )
-
-                span.set_status(Status(StatusCode.OK))
-                return result
-
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_map_events
+    """Instrument ``BaseFlow._map_events_to_executor`` (a coroutine function)."""
+    return traced(
+        "flow.map_events_to_executor",
+        attributes=lambda self, *a, **k: {
+            "flow.type": self.__class__.__name__,
+            "flow.task_count": len(getattr(self, "task_profiles", None) or ()),
+        },
+        result_attributes=lambda futures: {
+            "flow.futures": len(futures) if hasattr(futures, "__len__") else None
+        },
+    )(original_map_events)
 
 
-def instrument_get_flow_executor(original_get_executor):
-    """
-    Decorator to instrument BaseFlow.get_flow_executor() method.
-
-    Tracks executor selection and configuration.
-    """
-
-    @functools.wraps(original_get_executor)
-    async def instrumented_get_executor(self: "BaseFlow", *args, **kwargs):
-        tracer = get_tracer()
-
-        if not tracer:
-            return await original_get_executor(self, *args, **kwargs)
-
-        with tracer.start_as_current_span(
-            "flow.get_executor", kind=trace.SpanKind.INTERNAL
-        ) as span:
-            try:
-                # Get executor
-                executor = await original_get_executor(self, *args, **kwargs)
-
-                # Record executor type
-                executor_type = (
-                    executor.__name__
-                    if hasattr(executor, "__name__")
-                    else str(executor)
-                )
-                span.set_attribute("executor.type", executor_type)
-
-                span.add_event("executor_resolved", {"executor_type": executor_type})
-
-                return executor
-
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_get_executor
-
-
-def patch_flow_class():
-    """
-    Patch BaseFlow class to add OpenTelemetry instrumentation and metrics.
-
-    This should be called during application initialization.
-    """
+def patch_flow_class() -> int:
+    """Instrument the methods ``BaseFlow`` defines (each once)."""
     from volnux.flows.base import BaseFlow
 
-    if not hasattr(BaseFlow, "_original_run"):
-        # Store original methods
-        BaseFlow._original_run = BaseFlow.run
-        BaseFlow._original_get_initialized_event = BaseFlow.get_initialized_event
-        BaseFlow._original_submit_event = BaseFlow._submit_event_to_executor
-        BaseFlow._original_map_events = BaseFlow._map_events_to_executor
-        BaseFlow._original_get_executor = BaseFlow.get_flow_executor
-
-        # Apply instrumentation (needs to handle abstract methods properly)
-        # Note: run() is abstract, so we'll instrument it at the subclass level
-        BaseFlow.get_initialized_event = instrument_get_initialized_event(
-            BaseFlow._original_get_initialized_event
+    patched = sum(
+        (
+            patch_attr(
+                BaseFlow, "get_initialized_event", instrument_get_initialized_event
+            ),
+            patch_attr(
+                BaseFlow,
+                "_submit_event_to_executor",
+                instrument_submit_event_to_executor,
+            ),
+            patch_attr(
+                BaseFlow, "_map_events_to_executor", instrument_map_events_to_executor
+            ),
         )
-        BaseFlow._submit_event_to_executor = instrument_submit_event_to_executor(
-            BaseFlow._original_submit_event
-        )
-        BaseFlow._map_events_to_executor = instrument_map_events_to_executor(
-            BaseFlow._original_map_events
-        )
-
+    )
+    if patched:
         logger.info("BaseFlow instrumented with OpenTelemetry")
+    return patched
 
 
-def patch_concrete_flow_classes(*flow_classes):
-    """
-    Patch concrete Flow implementations (subclasses of BaseFlow).
-
-    Args:
-        flow_classes: Flow classes to instrument (e.g., SingleTaskFlow, MultiTaskFlow)
-
-    Example:
-        from volnux.flows.single import SingleTaskFlow
-        from volnux.flows.multi import MultiTaskFlow
-
-        patch_concrete_flow_classes(SingleTaskFlow, MultiTaskFlow)
-    """
+def patch_concrete_flow_classes(*flow_classes: type) -> int:
+    """Instrument ``run`` of the given flow classes, each class's own (a subclass
+    that overrides ``run`` is patched separately from its base)."""
+    patched = 0
     for flow_class in flow_classes:
-        if not hasattr(flow_class, "_original_run"):
-            flow_class._original_run = flow_class.run
-            flow_class.run = instrument_flow_run(flow_class._original_run)
+        if "run" in flow_class.__dict__ and patch_attr(
+            flow_class, "run", instrument_flow_run
+        ):
+            patched += 1
+            logger.info("%s instrumented with OpenTelemetry", flow_class.__name__)
+    return patched
 
-            logger.info(f"{flow_class.__name__} instrumented with OpenTelemetry")
 
+def patch_all_flow_components() -> None:
+    """Instrument the flow layer: ``BaseFlow`` and the concrete flows (once)."""
+    from volnux.flows.parallel import ParallelFlow
+    from volnux.flows.single import SingleFlow
+    from volnux.flows.stream import StreamFlow
 
-def patch_all_flow_components():
-    """
-    Patch all flow-related components for OpenTelemetry instrumentation.
-
-    Call this once during application initialization after importing flow classes.
-    """
     patch_flow_class()
-
-    # Try to patch concrete implementations if they're available
-    try:
-        from volnux.flows.single import SingleTaskFlow
-        from volnux.flows.multi import MultiTaskFlow
-
-        patch_concrete_flow_classes(SingleTaskFlow, MultiTaskFlow)
-        logger.info("Concrete Flow classes instrumented")
-    except ImportError:
-        logger.info("Concrete Flow classes not found, skipping")
-
+    patch_concrete_flow_classes(SingleFlow, ParallelFlow, StreamFlow)
     logger.info("All Flow components instrumented with OpenTelemetry")
 
 

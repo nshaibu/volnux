@@ -1,15 +1,28 @@
 """
-OpenTelemetry Instrumentation for Pipeline and Signal-based events
+OpenTelemetry instrumentation of the pipeline and of Volnux's signals.
+
+* ``Pipeline.start`` gets the root ``workflow.<Pipeline>`` span.
+* Every signal Volnux emits is added as a ``signal.<name>`` event to the span that
+  is current when it is emitted.
 """
 
+import functools
 import logging
 import typing
-import functools
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
-from volnux.otel.tracer_setup import get_tracer
-from volnux.otel.context_manager import OTelContextManager, SpanHelper
+from volnux.otel.context_manager import SpanHelper
+from ._common import (
+    clean_attributes,
+    get_tracer,
+    mark_interrupted,
+    record_error,
+    set_attributes,
+)
+from ._patching import patch_attr
 
 if typing.TYPE_CHECKING:
     from volnux.execution.pipeline import Pipeline
@@ -17,533 +30,298 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _summarise_execution(span, execution_context) -> None:
+    """Put the outcome of a run (status, counts, duration) on the workflow span."""
+    from volnux.execution.status import ExecutionStatus
+
+    if not execution_context:
+        span.set_attribute("workflow.no_execution", True)
+        span.set_status(Status(StatusCode.OK))
+        return
+
+    latest = execution_context.get_latest_context()
+    total_duration = 0.0
+    count = 0
+    for ctx in execution_context:
+        total_duration += ctx.metrics.duration or 0.0
+        count += 1
+
+    set_attributes(
+        span,
+        {
+            "workflow.status": latest.status.name,
+            "workflow.results_count": len(latest.results),
+            "workflow.errors_count": len(latest.errors),
+            "workflow.total_duration_ms": total_duration * 1000,
+            "workflow.context_count": count,
+        },
+    )
+
+    status = latest.status
+    if status == ExecutionStatus.COMPLETED:
+        span.set_status(Status(StatusCode.OK))
+        span.add_event("workflow_completed")
+    elif status == ExecutionStatus.FAILED:
+        span.set_status(Status(StatusCode.ERROR, "Workflow failed"))
+        span.add_event("workflow_failed")
+        for error in latest.errors:
+            record_error(span, error)
+        # (record_error marks the span failed with the error's text)
+        span.set_status(Status(StatusCode.ERROR, "Workflow failed"))
+    elif status == ExecutionStatus.CANCELLED:
+        span.set_status(Status(StatusCode.ERROR, "Workflow cancelled"))
+        span.add_event("workflow_cancelled")
+    elif status == ExecutionStatus.ABORTED:
+        span.set_status(Status(StatusCode.ERROR, "Workflow aborted"))
+        span.add_event("workflow_aborted")
+
+
 def instrument_pipeline_start(original_start):
     """
-    Decorator to instrument Pipeline.start() method.
+    Wrap ``Pipeline.start()`` (a coroutine function) in the root workflow span.
 
-    This creates the root span for the entire workflow execution.
+    The wrapper is a coroutine function too and awaits the original, so the span
+    lasts as long as the run. (It used to be a plain function that called the
+    coroutine function without awaiting it, which broke every ``start()``.)
     """
 
     @functools.wraps(original_start)
-    def instrumented_start(self: "Pipeline", force_rerun: bool = False):
+    async def instrumented_start(self: "Pipeline", *args: Any, **kwargs: Any):
         tracer = get_tracer()
+        if tracer is None:
+            return await original_start(self, *args, **kwargs)
 
-        if not tracer:
-            # No tracing configured
-            return original_start(self, force_rerun)
-
-        # Create root workflow span
+        force_rerun = kwargs.get("force_rerun", args[0] if args else False)
         with tracer.start_as_current_span(
             f"workflow.{self.__class__.__name__}",
-            kind=trace.SpanKind.SERVER,  # This is the entry point
-            attributes={
-                "workflow.name": self.__class__.__name__,
-                "workflow.force_rerun": force_rerun,
-            },
+            kind=trace.SpanKind.SERVER,  # the entry point of a run
+            attributes=clean_attributes(
+                {
+                    "workflow.name": self.__class__.__name__,
+                    "workflow.force_rerun": bool(force_rerun),
+                }
+            ),
         ) as span:
             try:
-                # Add pipeline attributes
                 SpanHelper.add_pipeline_attributes(span, self)
+            except Exception:
+                logger.debug("Could not describe the pipeline", exc_info=True)
+            span.add_event("workflow_started")
 
-                # Add custom attributes from pipeline fields
-                for name, field in self.get_fields():
-                    value = getattr(self, name, None)
-                    if value is not None:
-                        # Truncate long values
-                        str_value = str(value)
-                        if len(str_value) > 200:
-                            str_value = str_value[:200] + "..."
-                        span.set_attribute(f"workflow.input.{name}", str_value)
-
-                span.add_event("workflow_started")
-
-                # Execute original start method
-                execution_context = original_start(self, force_rerun)
-
-                if execution_context:
-                    # Add execution summary
-                    latest_context = execution_context.get_latest_context()
-
-                    span.set_attribute("workflow.status", latest_context.status.name)
-                    span.set_attribute(
-                        "workflow.results_count", len(latest_context.results)
-                    )
-                    span.set_attribute(
-                        "workflow.errors_count", len(latest_context.errors)
-                    )
-
-                    # Calculate total duration across all contexts
-                    total_duration = 0.0
-                    context_count = 0
-                    for ctx in execution_context:
-                        total_duration += ctx.metrics.duration
-                        context_count += 1
-
-                    span.set_attribute(
-                        "workflow.total_duration_ms", total_duration * 1000
-                    )
-                    span.set_attribute("workflow.context_count", context_count)
-
-                    # Set span status based on workflow outcome
-                    from volnux.execution.status import ExecutionStatus
-
-                    if latest_context.status == ExecutionStatus.COMPLETED:
-                        span.set_status(Status(StatusCode.OK))
-                        span.add_event("workflow_completed")
-                    elif latest_context.status == ExecutionStatus.FAILED:
-                        span.set_status(Status(StatusCode.ERROR, "Workflow failed"))
-                        span.add_event("workflow_failed")
-                        # Add errors
-                        for error in latest_context.errors:
-                            span.record_exception(error)
-                    elif latest_context.status == ExecutionStatus.CANCELLED:
-                        span.set_status(Status(StatusCode.ERROR, "Workflow cancelled"))
-                        span.add_event("workflow_cancelled")
-                    elif latest_context.status == ExecutionStatus.ABORTED:
-                        span.set_status(Status(StatusCode.ERROR, "Workflow aborted"))
-                        span.add_event("workflow_aborted")
-                else:
-                    span.set_attribute("workflow.no_execution", True)
-                    span.set_status(Status(StatusCode.OK))
-
-                return execution_context
-
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
+            try:
+                execution_context = await original_start(self, *args, **kwargs)
+            except BaseException as exc:
+                mark_interrupted(span, exc)
                 span.add_event(
                     "workflow_error",
-                    {"exception.type": type(e).__name__, "exception.message": str(e)},
+                    clean_attributes(
+                        {
+                            "exception.type": type(exc).__name__,
+                            "exception.message": str(exc),
+                        }
+                    ),
                 )
-                raise
+                raise  # (the span records it and is marked failed on the way out)
+
+            try:
+                _summarise_execution(span, execution_context)
+            except Exception:
+                logger.debug("Could not summarise the run", exc_info=True)
+            return execution_context
 
     return instrumented_start
 
 
-def patch_pipeline():
-    """
-    Patch Pipeline class to add OpenTelemetry instrumentation.
-
-    This should be called during application initialization.
-    """
+def patch_pipeline() -> bool:
+    """Instrument ``Pipeline.start`` (once). Returns whether it patched."""
     from volnux.execution.pipeline import Pipeline
 
-    if not hasattr(Pipeline, "_original_start"):
-        Pipeline._original_start = Pipeline.start
-        Pipeline.start = instrument_pipeline_start(Pipeline._original_start)
+    patched = patch_attr(Pipeline, "start", instrument_pipeline_start)
+    if patched:
         logger.info("Pipeline.start instrumented with OpenTelemetry")
+    return patched
+
+
+# --------------------------------------------------------------------- signals
+def _names(task_profiles) -> str:
+    return ",".join(task.get_event_name() for task in task_profiles or ())
+
+
+def _context_id(execution_context) -> Optional[str]:
+    return getattr(execution_context, "id", None) if execution_context else None
+
+
+def _batch_id(batch) -> Optional[str]:
+    batch_id = getattr(batch, "id", None)
+    return None if batch_id is None else str(batch_id)
+
+
+def _event_class(event) -> str:
+    return event.__class__.__name__
+
+
+# signal name -> function of the signal's keyword arguments returning the
+# attributes of the event added to the current span
+_SIGNAL_ATTRIBUTES: Dict[str, Callable[..., Mapping[str, Any]]] = {
+    "pipeline_pre_init": lambda args, kwargs, **_: {
+        "args_count": len(args),
+        "kwargs_keys": ",".join(kwargs) if kwargs else "",
+    },
+    "pipeline_post_init": lambda pipeline, **_: {
+        "pipeline.class": _event_class(pipeline),
+        "pipeline.id": getattr(pipeline, "id", None),
+    },
+    "pipeline_execution_start": lambda pipeline, **_: {
+        "pipeline.class": _event_class(pipeline),
+        "pipeline.id": getattr(pipeline, "id", None),
+    },
+    "pipeline_execution_end": lambda execution_context, **_: {
+        "context.id": _context_id(execution_context)
+    },
+    "pipeline_stop": lambda pipeline, execution_context, **_: {
+        "pipeline.id": getattr(pipeline, "id", None),
+        "context.id": _context_id(execution_context),
+    },
+    "pipeline_shutdown": lambda pipeline, execution_context, **_: {
+        "pipeline.id": getattr(pipeline, "id", None),
+        "context.id": _context_id(execution_context),
+    },
+    "event_init": lambda event, **_: {
+        "event.class": _event_class(event),
+        "event.task_id": getattr(event, "_task_id", None),
+    },
+    "event_execution_start": lambda event, execution_context, **_: {
+        "event.class": _event_class(event),
+        "context.id": _context_id(execution_context),
+    },
+    "event_execution_end": lambda event, execution_context, **_: {
+        "event.class": _event_class(event),
+        "context.id": _context_id(execution_context),
+    },
+    "event_execution_retry": lambda event, task_id, backoff, retry_count, max_attempts, **_: {
+        "event.class": _event_class(event),
+        "task_id": task_id,
+        "retry_count": retry_count,
+        "max_attempts": max_attempts,
+        "backoff": backoff,
+    },
+    "event_execution_retry_done": lambda event, task_id, max_attempts, **_: {
+        "event.class": _event_class(event),
+        "task_id": task_id,
+        "max_attempts": max_attempts,
+    },
+    "event_execution_failed": lambda task_profiles, execution_context, state, **_: {
+        "tasks": _names(task_profiles),
+        "context.id": _context_id(execution_context),
+        "state": getattr(state, "name", state),
+    },
+    "event_execution_cancelled": lambda task_profiles, execution_context, state, **_: {
+        "tasks": _names(task_profiles),
+        "context.id": _context_id(execution_context),
+        "state": getattr(state, "name", state),
+    },
+    "event_execution_aborted": lambda task_profiles, execution_context, state, **_: {
+        "tasks": _names(task_profiles),
+        "context.id": _context_id(execution_context),
+        "state": getattr(state, "name", state),
+    },
+    "batch_pipeline_started": lambda batch, total_pipelines, timestamp, **_: {
+        "batch.id": _batch_id(batch),
+        "total_pipelines": total_pipelines,
+        "timestamp": timestamp,
+    },
+    "batch_pipeline_finished": lambda batch, success_rate, total_duration, timestamp, **_: {
+        "batch.id": _batch_id(batch),
+        "success_rate": success_rate,
+        "total_duration": total_duration,
+        "timestamp": timestamp,
+    },
+    "pipeline_metrics_updated": lambda batch_id, active_count, completion_rate, timestamp, **_: {
+        "batch.id": None if batch_id is None else str(batch_id),
+        "active_count": active_count,
+        "completion_rate": completion_rate,
+        "timestamp": timestamp,
+    },
+}
+
+# The first argument of the signal's handler is the sender, the rest are its
+# keyword arguments (the names above).
+SIGNAL_NAMES: Tuple[str, ...] = tuple(_SIGNAL_ATTRIBUTES)
+
+
+def _make_handler(signal_name: str) -> Callable[..., None]:
+    attributes = _SIGNAL_ATTRIBUTES[signal_name]
+
+    def handler(sender, **kwargs):
+        if get_tracer() is None:
+            return
+        span = trace.get_current_span()
+        if span is None or not span.is_recording():
+            return
+        try:
+            attrs = clean_attributes(attributes(**kwargs))
+        except Exception:
+            # a signal with other arguments than expected must not break its emitter
+            logger.debug("signal.%s: unexpected arguments", signal_name, exc_info=True)
+            return
+        span.add_event(f"signal.{signal_name}", attrs)
+
+    handler.__name__ = f"on_{signal_name}"
+    handler.__qualname__ = f"SignalInstrumentation.on_{signal_name}"
+    return handler
 
 
 class SignalInstrumentation:
+    """One ``on_<signal>`` hook per Volnux signal.
+
+    Each adds a ``signal.<name>`` event to the current span, if there is a
+    recording one; it does nothing without an initialised tracer.
     """
-    Instrumentation hooks for Volnux signals.
-
-    This allows automatic span events and logging based on signal emissions.
-    """
-
-    @staticmethod
-    def on_pipeline_pre_init(sender, args, kwargs, **extra):
-        """Hook for pipeline_pre_init signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.add_event(
-                "signal.pipeline_pre_init",
-                {
-                    "args_count": len(args),
-                    "kwargs_keys": ",".join(kwargs.keys()) if kwargs else "",
-                },
-            )
-
-    @staticmethod
-    def on_pipeline_post_init(sender, pipeline, **extra):
-        """Hook for pipeline_post_init signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.add_event(
-                "signal.pipeline_post_init",
-                {
-                    "pipeline.class": pipeline.__class__.__name__,
-                    "pipeline.id": pipeline.id,
-                },
-            )
-
-    @staticmethod
-    def on_pipeline_execution_start(sender, pipeline, **extra):
-        """Hook for pipeline_execution_start signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.add_event(
-                "signal.pipeline_execution_start",
-                {
-                    "pipeline.class": pipeline.__class__.__name__,
-                    "pipeline.id": pipeline.id,
-                },
-            )
-
-    @staticmethod
-    def on_pipeline_execution_end(sender, execution_context, **extra):
-        """Hook for pipeline_execution_end signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            if execution_context:
-                span.add_event(
-                    "signal.pipeline_execution_end",
-                    {"context.id": execution_context.id},
-                )
-
-    @staticmethod
-    def on_pipeline_stop(sender, pipeline, execution_context, **extra):
-        """Hook for pipeline_stop signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.add_event(
-                "signal.pipeline_stop",
-                {
-                    "pipeline.id": pipeline.id,
-                    "context.id": execution_context.id if execution_context else None,
-                },
-            )
-
-    @staticmethod
-    def on_pipeline_shutdown(sender, pipeline, execution_context, **extra):
-        """Hook for pipeline_shutdown signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.add_event(
-                "signal.pipeline_shutdown",
-                {
-                    "pipeline.id": pipeline.id,
-                    "context.id": execution_context.id if execution_context else None,
-                },
-            )
-
-    @staticmethod
-    def on_event_init(sender, event, init_kwargs, **extra):
-        """Hook for event_init signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.add_event(
-                "signal.event_init",
-                {
-                    "event.class": event.__class__.__name__,
-                    "event.task_id": (
-                        str(event.task_id) if hasattr(event, "task_id") else None
-                    ),
-                },
-            )
-
-    @staticmethod
-    def on_event_execution_start(sender, event, execution_context, **extra):
-        """Hook for event_execution_start signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.add_event(
-                "signal.event_execution_start",
-                {
-                    "event.class": event.__class__.__name__,
-                    "context.id": execution_context.id,
-                },
-            )
-
-    @staticmethod
-    def on_event_execution_end(sender, event, execution_context, **extra):
-        """Hook for event_execution_end signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.add_event(
-                "signal.event_execution_end",
-                {
-                    "event.class": event.__class__.__name__,
-                    "context.id": execution_context.id,
-                },
-            )
-
-    @staticmethod
-    def on_event_execution_retry(
-        sender,
-        event,
-        execution_context,
-        task_id,
-        backoff,
-        retry_count,
-        max_attempts,
-        **extra,
-    ):
-        """Hook for event_execution_retry signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.add_event(
-                "signal.event_execution_retry",
-                {
-                    "event.class": event.__class__.__name__,
-                    "task_id": str(task_id),
-                    "retry_count": retry_count,
-                    "max_attempts": max_attempts,
-                    "backoff": backoff,
-                },
-            )
-
-    @staticmethod
-    def on_event_execution_retry_done(
-        sender, event, execution_context, task_id, max_attempts, **extra
-    ):
-        """Hook for event_execution_retry_done signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.add_event(
-                "signal.event_execution_retry_done",
-                {
-                    "event.class": event.__class__.__name__,
-                    "task_id": str(task_id),
-                    "max_attempts": max_attempts,
-                },
-            )
-
-    @staticmethod
-    def on_event_execution_failed(
-        sender, task_profiles, execution_context, state, **extra
-    ):
-        """Hook for event_execution_failed signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            task_names = [task.get_event_name() for task in task_profiles]
-            span.add_event(
-                "signal.event_execution_failed",
-                {
-                    "tasks": ",".join(task_names),
-                    "context.id": execution_context.id,
-                    "state": state.name,
-                },
-            )
-
-    @staticmethod
-    def on_event_execution_cancelled(
-        sender, task_profiles, execution_context, state, **extra
-    ):
-        """Hook for event_execution_cancelled signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            task_names = [task.get_event_name() for task in task_profiles]
-            span.add_event(
-                "signal.event_execution_cancelled",
-                {
-                    "tasks": ",".join(task_names),
-                    "context.id": execution_context.id,
-                    "state": state.name,
-                },
-            )
-
-    @staticmethod
-    def on_event_execution_aborted(
-        sender, task_profiles, execution_context, state, **extra
-    ):
-        """Hook for event_execution_aborted signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            task_names = [task.get_event_name() for task in task_profiles]
-            span.add_event(
-                "signal.event_execution_aborted",
-                {
-                    "tasks": ",".join(task_names),
-                    "context.id": execution_context.id,
-                    "state": state.name,
-                },
-            )
-
-    @staticmethod
-    def on_batch_pipeline_started(sender, batch, total_pipelines, timestamp, **extra):
-        """Hook for batch_pipeline_started signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.add_event(
-                "signal.batch_pipeline_started",
-                {
-                    "batch.id": str(batch.id) if hasattr(batch, "id") else None,
-                    "total_pipelines": total_pipelines,
-                    "timestamp": str(timestamp),
-                },
-            )
-
-    @staticmethod
-    def on_batch_pipeline_finished(
-        sender, batch, metrics, success_rate, total_duration, timestamp, **extra
-    ):
-        """Hook for batch_pipeline_finished signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.add_event(
-                "signal.batch_pipeline_finished",
-                {
-                    "batch.id": str(batch.id) if hasattr(batch, "id") else None,
-                    "success_rate": success_rate,
-                    "total_duration": total_duration,
-                    "timestamp": str(timestamp),
-                },
-            )
-
-    @staticmethod
-    def on_pipeline_metrics_updated(
-        sender, batch_id, metrics, active_count, completion_rate, timestamp, **extra
-    ):
-        """Hook for pipeline_metrics_updated signal"""
-        tracer = get_tracer()
-        if not tracer:
-            return
-
-        span = trace.get_current_span()
-        if span and span.is_recording():
-            span.add_event(
-                "signal.pipeline_metrics_updated",
-                {
-                    "batch.id": str(batch_id),
-                    "active_count": active_count,
-                    "completion_rate": completion_rate,
-                    "timestamp": str(timestamp),
-                },
-            )
 
 
-def connect_signal_instrumentation():
-    """
-    Connect signal handlers for OpenTelemetry instrumentation.
+_HANDLERS: Dict[str, Callable[..., None]] = {}
+for _name in SIGNAL_NAMES:
+    _HANDLERS[_name] = _make_handler(_name)
+    setattr(SignalInstrumentation, f"on_{_name}", staticmethod(_HANDLERS[_name]))
+del _name
 
-    This should be called during application initialization.
-    Connects to ALL Volnux signals for comprehensive event tracking.
-    """
-    from volnux.signal.signals import (
-        pipeline_pre_init,
-        pipeline_post_init,
-        pipeline_execution_start,
-        pipeline_execution_end,
-        pipeline_stop,
-        pipeline_shutdown,
-        event_init,
-        event_execution_start,
-        event_execution_end,
-        event_execution_retry,
-        event_execution_retry_done,
-        event_execution_failed,
-        event_execution_cancelled,
-        event_execution_aborted,
-        batch_pipeline_started,
-        batch_pipeline_finished,
-        pipeline_metrics_updated,
+
+def connect_signal_instrumentation() -> int:
+    """Connect the hooks to all of Volnux's signals (once; connecting again is a
+    no-op). Returns the number of signals."""
+    from volnux.signal import signals
+
+    for name, handler in _HANDLERS.items():
+        getattr(signals, name).connect(None, handler)
+    logger.info(
+        "Signal instrumentation connected for OpenTelemetry (%d signals)",
+        len(_HANDLERS),
     )
-
-    # Pipeline lifecycle signals
-    pipeline_pre_init.connect(None, SignalInstrumentation.on_pipeline_pre_init)
-    pipeline_post_init.connect(None, SignalInstrumentation.on_pipeline_post_init)
-    pipeline_execution_start.connect(
-        None, SignalInstrumentation.on_pipeline_execution_start
-    )
-    pipeline_execution_end.connect(
-        None, SignalInstrumentation.on_pipeline_execution_end
-    )
-    pipeline_stop.connect(None, SignalInstrumentation.on_pipeline_stop)
-    pipeline_shutdown.connect(None, SignalInstrumentation.on_pipeline_shutdown)
-
-    # Event lifecycle signals
-    event_init.connect(None, SignalInstrumentation.on_event_init)
-    event_execution_start.connect(None, SignalInstrumentation.on_event_execution_start)
-    event_execution_end.connect(None, SignalInstrumentation.on_event_execution_end)
-    event_execution_retry.connect(None, SignalInstrumentation.on_event_execution_retry)
-    event_execution_retry_done.connect(
-        None, SignalInstrumentation.on_event_execution_retry_done
-    )
-    event_execution_failed.connect(
-        None, SignalInstrumentation.on_event_execution_failed
-    )
-    event_execution_cancelled.connect(
-        None, SignalInstrumentation.on_event_execution_cancelled
-    )
-    event_execution_aborted.connect(
-        None, SignalInstrumentation.on_event_execution_aborted
-    )
-
-    # Batch pipeline signals
-    batch_pipeline_started.connect(
-        None, SignalInstrumentation.on_batch_pipeline_started
-    )
-    batch_pipeline_finished.connect(
-        None, SignalInstrumentation.on_batch_pipeline_finished
-    )
-    pipeline_metrics_updated.connect(
-        None, SignalInstrumentation.on_pipeline_metrics_updated
-    )
-
-    logger.info("Signal instrumentation connected for OpenTelemetry (16 signals)")
+    return len(_HANDLERS)
 
 
-def patch_all_pipeline_components():
-    """
-    Patch all pipeline-related components for OpenTelemetry instrumentation.
+def disconnect_signal_instrumentation() -> int:
+    """Disconnect the hooks again. Returns the number of signals."""
+    from volnux.signal import signals
 
-    Call this once during application initialization.
-    """
+    for name, handler in _HANDLERS.items():
+        getattr(signals, name).disconnect(None, handler)
+    return len(_HANDLERS)
+
+
+def patch_all_pipeline_components() -> None:
+    """Instrument the pipeline and connect the signal hooks (once)."""
     patch_pipeline()
     connect_signal_instrumentation()
     logger.info("All pipeline components instrumented with OpenTelemetry")
+
+
+__all__ = [
+    "SIGNAL_NAMES",
+    "SignalInstrumentation",
+    "instrument_pipeline_start",
+    "patch_pipeline",
+    "connect_signal_instrumentation",
+    "disconnect_signal_instrumentation",
+    "patch_all_pipeline_components",
+]

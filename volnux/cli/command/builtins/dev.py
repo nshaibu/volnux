@@ -5,8 +5,6 @@ import asyncio
 import logging
 import os
 import signal
-import sys
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -223,33 +221,24 @@ class DevCommand(ProjectMixin, CheckMixin, BaseCommand):
         signal.signal(signal.SIGINT, _handle_signal)
 
         try:
-            from volnux.server import create_app
             from volnux.server import start_api_server
+        except ImportError as exc:
+            raise CommandError(
+                f"Cannot start the dev server: {exc}. "
+                "It needs 'fastapi' and 'uvicorn' (pip install fastapi uvicorn)."
+            ) from exc
 
-            await start_api_server(
-                engine=engine,
-                host=host,
-                port=port,
-                metrics_port=metrics_port,
-                log_level=log_level.lower(),
-                reload=reload,
-                project_dir=project_dir,
-                stop_event=stop_event,
-                dev_mode=True,
-            )
-
-        except ImportError:
-            # Engine server module not yet implemented — fallback stub
-            logger.debug("volnux.server not found — running stub dev loop")
-            self.stdout.write(
-                self.style.WARNING(
-                    "  [stub] volnux.server not found. "
-                    "Engine will run when implemented."
-                )
-            )
-            # Keep alive until signal
-            while not stop_event.is_set():
-                await asyncio.sleep(0.5)
+        await start_api_server(
+            engine=engine,
+            host=host,
+            port=port,
+            metrics_port=metrics_port,
+            log_level=log_level.lower(),
+            reload=reload,
+            project_dir=project_dir,
+            stop_event=stop_event,
+            dev_mode=True,
+        )
 
         # Checkpoint drain on shutdown
         drain_timeout = float(os.environ.get("VOLNUX_CHECKPOINT_DRAIN_TIMEOUT", "30"))

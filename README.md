@@ -509,7 +509,20 @@ compensations that cannot complete.
 ## The server
 
 `volnux serve --role api` runs the FastAPI application; `--role worker` runs the
-execution side. The API (`/api/v1/...`) covers:
+execution side. Run it from a project directory (or pass `--project-dir`).
+
+* **Fails loudly.** A project that cannot load, a pre-flight check that fails (every
+  database in `DATABASES` must answer; the Celery broker too when the project has a
+  schedule trigger), or a server that cannot start (no `SECRET_KEY`, port in use)
+  stops the command with a message and a non-zero exit status.
+* **API.** Needs `SECRET_KEY` (or `DEBUG`); starts the trigger engine once the HTTP
+  server is up; SIGTERM stops it gracefully.
+* **Worker.** Starts the checkpoint manager (`CHECKPOINT_CONFIG`, stored in the
+  `checkpoints` database) under a health monitor, plus metrics and telemetry; on
+  SIGTERM it drains the checkpoint queue (up to `CHECKPOINT_DRAIN_TIMEOUT`) and
+  stops. It has no inbound interface yet, so `--worker-port` is unused.
+
+The API (`/api/v1/...`) covers:
 
 * **Workflows and executions**: execute, list, inspect, trace, pause, resume, stop
 * **Triggers**: list, create, delete
@@ -555,10 +568,135 @@ independently.
 
 ## Observability
 
-OpenTelemetry instrumentation covers engines, flows, execution contexts,
-coordinators and signals, with Prometheus metrics (and optional Elasticsearch)
-and Grafana dashboards under `deploy/docker/`. Governance events are published
-for audit and reporting.
+Volnux traces and measures itself with [OpenTelemetry](https://opentelemetry.io).
+Nothing is recorded, and nothing is slowed down, until you turn it on; when it is
+on, the same trace follows a run from the API through the trigger engine, a Celery
+worker or a Kubernetes Job, down to each event.
+
+### Turn it on
+
+Telemetry starts inside `initialise_workflows()`, the first thing every way of
+running workflows calls (the CLI, `volnux serve` / `dev`, Celery workers, Kubernetes
+Jobs, your `init.py`). Set the `OTEL_*` settings, in the environment (with the
+`VOLNUX_` prefix) or in the project's `settings.py` / `init.py`, and there is
+nothing to call:
+
+```bash
+export VOLNUX_OTEL_ENABLED=true
+export VOLNUX_OTEL_BACKEND=grafana                     # grafana | tempo | datadog | jaeger | otlp
+export VOLNUX_OTEL_ENDPOINT=http://otel-collector:4317 # OTLP gRPC
+export VOLNUX_OTEL_SAMPLE_RATE=0.2                     # keep 20% of traces
+```
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `OTEL_ENABLED` | `False` | Master switch. |
+| `OTEL_BACKEND` | `"grafana"` | Where traces and metrics go: `grafana`/`tempo`, `datadog`, `jaeger`, or `otlp` for any OTLP collector. |
+| `OTEL_ENDPOINT` | `http://localhost:4317` | OTLP gRPC endpoint. |
+| `OTEL_TEMPO_URL`, `OTEL_DATADOG_URL` | `None` | Backend-specific endpoint, if different from `OTEL_ENDPOINT`. |
+| `OTEL_SERVICE_NAME` | project name | `service.name` of the telemetry. |
+| `OTEL_SAMPLE_RATE` | `1.0` | Fraction of traces kept (0.0 to 1.0). |
+| `ROLE` (`VOLNUX_ROLE`) | `"api"` | `volnux.role` label of the telemetry; `volnux serve --role worker` sets it. |
+
+Initialisation itself is traced: a `setup.initialise_workflows` span with one child
+per phase (`setup.configure_reporters`, `setup.discover_workflows`,
+`setup.load_workflows` with `registry.load` inside it, `setup.configure_executor`),
+the time the configuration took (`setup.config_load_ms`) as an attribute, and the
+`setup.duration` metric. Telemetry starts right after the configuration is loaded,
+because the `OTEL_*` settings may come from it. A process that already started
+telemetry itself (below) is left as it is, and a telemetry problem never stops
+initialisation.
+
+To start it yourself instead, in your own process:
+
+```python
+from volnux.otel import initialize_otel, shutdown_otel
+
+initialize_otel(
+    "billing-workflows",
+    environment="production",
+    backends=["tempo", "datadog"],
+    config={
+        "tempo": {"endpoint": "http://tempo:4317"},
+        "datadog": {"agent_url": "http://datadog-agent:4317"},
+    },
+    sample_rate=0.25,
+)
+
+# ... run workflows: they are instrumented ...
+
+shutdown_otel()   # flushes spans and metrics, restores the instrumented classes
+```
+
+`initialize_otel` is safe to call again: it does nothing while already running, and
+after `shutdown_otel()` it starts afresh with the new configuration.
+
+### What you get
+
+One trace per run, with this shape:
+
+```
+workflow.<Pipeline>                         the run (Pipeline.start)
+└─ engine.execute                           the workflow engine
+   └─ context.dispatch                      one per task group, chained
+      ├─ coordinator.execute_async
+      └─ flow.run.<SingleFlow|ParallelFlow|StreamFlow>
+         └─ event.execute.<Event>           lasts until the event finishes
+```
+
+and, around it, spans for the parts of the framework that start and feed runs:
+
+| Part | Spans | Metrics |
+| --- | --- | --- |
+| Trigger engine | `trigger.activate`, `trigger.fire`, `trigger_engine.start` / `stop` / `force_stop` | `trigger.activations` |
+| Workflow executors (async, Celery, Kubernetes) | `workflow.run`, `executor.<Class>.execute` | `workflow.run.count`, `workflow.run.duration` |
+| Workflow registry | `registry.load`, `registry.load_source` | `registry.load.duration` |
+| Checkpoints and rehydration | `checkpoint.persist`, `checkpoint.build_event`, `rehydrate.event`, `rehydrate.resume`, `rehydrate.node` | `checkpoint.operations`, `checkpoint.duration` |
+| Sagas | `saga.execute`, `saga.resume`, `saga.step`, `saga.compensate`, `saga.dead_letter`, `saga.recovery.save` / `load` / `delete` | `saga.executions`, `saga.duration` |
+| Messaging (`MessagingBackendIntegrationMixin`) | `messaging.publish` / `push` / `pop` / `pop_many` / `enqueue` / `dequeue` / `queue_delete` / `stream_append` / `stream_read` / `stream_ack` | `messaging.operations`, `messaging.duration` |
+| Remote batch streaming | `remote.execute_task`, `remote.read_stream` | |
+| Flows and events | `flow.run.*`, `event.execute.*`, `flow.initialize_event`, `flow.map_events_to_executor` | `flow.duration`, `event.duration`, `task.count`, `error.count`, `executor.usage`, `parallel_tasks.active` |
+| Engine and system | | `engine.queue_length`, `engine.target_workers`, `engine.actual_workers`, `engine.parallel_tasks`, `resource.cpu_usage`, `resource.memory_usage` (MB) |
+
+Volnux's signals (`pipeline_execution_start`, `event_execution_retry`, ...) are added
+as `signal.<name>` events to the span that is current when they are emitted. An
+event that fails is an error span; an event that reports an error result (the way
+events normally fail) is too, even though the workflow routes on it and completes.
+
+### Traces across processes
+
+When a workflow is sent to a Celery worker or a Kubernetes Job, the carrier that
+carries the run's context (`volnux.context`) also carries the active trace
+(`traceparent`). The worker's spans join the dispatcher's trace, with no code on
+your side. A task function you write yourself gets the same with
+`@dispatch_worker_task`.
+
+### From your own code
+
+```python
+from volnux.otel.utils import add_span_attribute, add_span_event, get_current_trace_id
+
+add_span_attribute("customer.id", customer_id)
+add_span_event("validated", {"rows": 1000})
+logger.info("processing", extra={"trace_id": get_current_trace_id()})
+```
+
+### Good to know
+
+* **Safe by default.** Instrumentation never changes what your code returns or
+  raises. Without `initialize_otel` the wrapped methods behave as before.
+* **Secrets stay out.** Pipeline inputs whose name suggests a secret (`password`,
+  `token`, `secret`, `api_key`, ...) are recorded as `[redacted]`; every attribute
+  value is cut to 256 characters; message and result contents are never recorded.
+* **Metric labels are bounded** (class, workflow, executor and outcome names; never
+  ids), so they do not blow up your metrics backend. Ids are span attributes only.
+* **Debugging.** `initialize_otel(..., debug=True)` turns on debug logging for
+  `volnux.otel` and `opentelemetry`. No spans? Check `OTEL_ENABLED`, that the endpoint
+  is reachable, and `OTEL_SAMPLE_RATE`.
+
+The full reference (every span and metric, the configuration, extending the
+instrumentation, testing it) is in [`volnux/otel/readme.md`](volnux/otel/readme.md).
+Prometheus metrics and Grafana dashboards are under `deploy/docker/`.
 
 ---
 

@@ -587,7 +587,8 @@ class VolnuxConfig:
                     )
                 )
 
-    def load_from_file(self, config_file: typing.Union[str, os.PathLike]) -> None:
+    def load_from_file(self, config_file: typing.Union[str, os.PathLike]) -> ModuleType:
+        """Run a settings file, load its settings, and return the module it made."""
         if not os.path.exists(config_file):
             logger.info("Config file %s does not exist. Skipping.", config_file)
             raise FileNotFoundError("Config file does not exist")
@@ -605,6 +606,7 @@ class VolnuxConfig:
             config_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(config_module)
             self._load_module(config_module, source=str(config_file))
+            return config_module
 
         except ModuleNotFoundError as exc:
             logger.error("Config file %s could not be loaded.", config_file)
@@ -660,8 +662,8 @@ class VolnuxConfig:
 
     async def load_from_file_async(
         self, config_file: typing.Union[str, os.PathLike]
-    ) -> None:
-        await to_thread(self.load_from_file, config_file)
+    ) -> ModuleType:
+        return await to_thread(self.load_from_file, config_file)
 
     def get_config_entry(
         self, key: str, namespace: Optional[str] = None

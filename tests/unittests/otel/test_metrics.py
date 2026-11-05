@@ -238,7 +238,6 @@ def test_shutdown_resets_state(monkeypatch):
 
     assert metrics_mod.VolnuxMetricsCollector.get_instance() is None
     assert metrics_mod.VolnuxMetricsCollector._meter is None
-    assert metrics_mod.VolnuxMetricsCollector._instruments == {}
     assert metrics_mod.VolnuxMetricsCollector._initialized is False
 
 
@@ -264,3 +263,157 @@ def test_initialize_metrics_delegates_to_collector(monkeypatch):
 
     assert result == "collector"
     assert called == {"service_name": "svc", "service_version": "2.0.0"}
+
+
+# --- levels, units, the new definitions ------------------------------------------
+import pytest as _pytest  # noqa: E402
+
+
+class TestLevels:
+    """Queue lengths and worker counts are levels: the series must read the level,
+    not the sum of every sample."""
+
+    def test_recording_the_same_level_twice_does_not_double_it(self, otel):
+        definition = metrics_mod.VolnuxMetricsRegistry.ENGINE_QUEUE_LENGTH
+        otel.collector.record_level(definition, 5, {"pipeline.name": "p"})
+        otel.collector.record_level(definition, 5, {"pipeline.name": "p"})
+        assert otel.total("engine.queue_length") == 5
+
+    def test_a_falling_level_goes_down(self, otel):
+        definition = metrics_mod.VolnuxMetricsRegistry.ENGINE_QUEUE_LENGTH
+        for value in (5, 9, 2):
+            otel.collector.record_level(definition, value, {"pipeline.name": "p"})
+        assert otel.total("engine.queue_length") == 2
+
+    def test_each_series_has_its_own_level(self, otel):
+        definition = metrics_mod.VolnuxMetricsRegistry.ENGINE_QUEUE_LENGTH
+        otel.collector.record_level(definition, 4, {"pipeline.name": "a"})
+        otel.collector.record_level(definition, 7, {"pipeline.name": "b"})
+        assert otel.total("engine.queue_length", **{"pipeline.name": "a"}) == 4
+        assert otel.total("engine.queue_length", **{"pipeline.name": "b"}) == 7
+
+    def test_engine_metrics_are_levels(self, otel):
+        snapshot = {
+            "task_queue_length": 3,
+            "target_workers": 8,
+            "actual_workers": 4,
+            "parallel_tasks": 2,
+        }
+        for _ in range(3):
+            otel.collector.record_engine_metrics(snapshot, "pipe")
+        assert otel.total("engine.queue_length") == 3
+        assert otel.total("engine.target_workers") == 8
+        assert otel.total("engine.actual_workers") == 4
+        assert otel.total("engine.parallel_tasks") == 2
+
+    def test_parallel_tasks_is_a_level_too(self, otel):
+        otel.collector.record_parallel_tasks(6, "pipe")
+        otel.collector.record_parallel_tasks(6, "pipe")
+        assert otel.total("engine.parallel_tasks") == 6
+
+    def test_memory_is_in_mb_whichever_way_it_is_reported(self, otel):
+        # (record_engine_metrics reported GB into an instrument whose unit is MB)
+        otel.collector.record_engine_metrics({"memory_usage_gb": 2}, "pipe")
+        otel.collector.record_system_utilization(1.0, 512, "other")
+        sums = {
+            p["attributes"]["pipeline.name"]: p["sum"]
+            for p in otel.points("resource.memory_usage")
+        }
+        assert sums == {"pipe": 2048.0, "other": 512.0}
+
+    def test_a_level_of_zero_from_nothing_records_nothing(self, otel):
+        otel.collector.record_level(
+            metrics_mod.VolnuxMetricsRegistry.ENGINE_QUEUE_LENGTH, 0, {}
+        )
+        assert otel.points("engine.queue_length") == []
+
+
+class TestRegistry:
+    NEW = (
+        ("TRIGGER_ACTIVATIONS", "trigger.activations", "counter"),
+        ("WORKFLOW_RUN_DURATION", "workflow.run.duration", "histogram"),
+        ("WORKFLOW_RUN_COUNT", "workflow.run.count", "counter"),
+        ("REGISTRY_LOAD_DURATION", "registry.load.duration", "histogram"),
+        ("CHECKPOINT_DURATION", "checkpoint.duration", "histogram"),
+        ("CHECKPOINT_COUNT", "checkpoint.operations", "counter"),
+        ("SAGA_DURATION", "saga.duration", "histogram"),
+        ("SAGA_COUNT", "saga.executions", "counter"),
+        ("MESSAGING_DURATION", "messaging.duration", "histogram"),
+        ("MESSAGING_OPERATIONS", "messaging.operations", "counter"),
+    )
+
+    @_pytest.mark.parametrize("attribute, name, kind", NEW)
+    def test_the_definitions(self, attribute, name, kind):
+        definition = getattr(metrics_mod.VolnuxMetricsRegistry, attribute)
+        assert definition.name == name and definition.metric_type.value == kind
+
+    def test_names_are_unique(self):
+        names = [
+            d.name
+            for d in vars(metrics_mod.VolnuxMetricsRegistry).values()
+            if isinstance(d, metrics_mod.MetricDefinition)
+        ]
+        assert len(names) == len(set(names))
+
+    def test_a_definition_is_created_for_every_entry(self, otel):
+        names = {
+            d.name
+            for d in vars(metrics_mod.VolnuxMetricsRegistry).values()
+            if isinstance(d, metrics_mod.MetricDefinition)
+        }
+        assert names <= set(otel.collector._instruments)
+
+    def test_parallel_tasks_is_an_up_down_counter(self):
+        assert (
+            metrics_mod.VolnuxMetricsRegistry.ENGINE_PARALLEL_TASKS.metric_type
+            is metrics_mod.MetricType.UP_DOWN_COUNTER
+        )
+
+
+class TestRecordMetric:
+    def test_a_counter_adds_and_a_histogram_records(self, otel):
+        otel.collector.increment_workflow_count("p", "success")
+        otel.collector.record_workflow_duration(40.0, "p", "success")
+        assert otel.total("workflow.executions", **{"pipeline.name": "p"}) == 1
+        assert otel.points("workflow.duration")[0]["sum"] == 40.0
+
+    def test_a_failing_instrument_is_swallowed(self, otel):
+        class Broken:
+            def add(self, *a, **k):
+                raise RuntimeError("x")
+
+        otel.collector._instruments["workflow.executions"] = Broken()
+        otel.collector.increment_workflow_count("p", "success")  # no raise
+
+    def test_an_unknown_instrument_does_nothing(self, otel):
+        definition = metrics_mod.MetricDefinition(
+            "no.such", "d", "1", metrics_mod.MetricType.COUNTER
+        )
+        otel.collector.record_metric(definition, 1)
+
+    def test_initialize_creates_the_collector_once_under_concurrency(self, monkeypatch):
+        import threading
+
+        metrics_mod.VolnuxMetricsCollector.shutdown()
+        created = []
+        real = metrics_mod.VolnuxMetricsCollector._setup_instruments
+
+        def counting(self):
+            created.append(1)
+            real(self)
+
+        monkeypatch.setattr(
+            metrics_mod.VolnuxMetricsCollector, "_setup_instruments", counting
+        )
+        threads = [
+            threading.Thread(
+                target=metrics_mod.VolnuxMetricsCollector.initialize, args=("svc",)
+            )
+            for _ in range(8)
+        ]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        try:
+            assert len(created) == 1
+        finally:
+            metrics_mod.VolnuxMetricsCollector.shutdown()

@@ -29,6 +29,9 @@ class DummyProvider:
     def shutdown(self):
         self.shutdown_called = True
 
+    def get_tracer(self, *args, **kwargs):
+        return DummyTracer()
+
 
 class DummyTracer:
     pass
@@ -277,3 +280,121 @@ def test_shutdown_calls_provider_shutdown(monkeypatch):
     tracer.shutdown()
 
     assert provider.shutdown_called is True
+
+
+# --- the tracer comes from its own provider; shutdown and re-initialisation -----
+class _NoLoggingInstrumentor:
+    calls = []
+
+    def instrument(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+@pytest.fixture
+def real_provider(monkeypatch):
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    exporters = []
+
+    def with_memory_exporter(self):
+        exporter = InMemorySpanExporter()
+        self._provider.add_span_processor(SimpleSpanProcessor(exporter))
+        exporters.append(exporter)
+
+    monkeypatch.setattr(VolnuxTracer, "_setup_exporters", with_memory_exporter)
+    monkeypatch.setattr(
+        "volnux.otel.tracer_setup.trace.set_tracer_provider", lambda provider: None
+    )
+    _NoLoggingInstrumentor.calls = []
+    monkeypatch.setattr(
+        "volnux.otel.tracer_setup.LoggingInstrumentor", _NoLoggingInstrumentor
+    )
+    return exporters
+
+
+def test_spans_go_to_the_tracers_own_provider(real_provider):
+    # (the tracer used to come from the *global* provider: with another one
+    # installed first, nothing reached our exporters)
+    tracer = VolnuxTracer.initialize(VolnuxTracerConfig(sample_rate=1.0))
+    with tracer.get_tracer().start_as_current_span("s"):
+        pass
+    assert [s.name for s in real_provider[0].get_finished_spans()] == ["s"]
+
+
+def test_shutdown_forgets_the_instance():
+    tracer = VolnuxTracer.initialize(VolnuxTracerConfig())
+    tracer.shutdown()
+    assert VolnuxTracer.get_instance() is None
+    assert get_tracer() is None
+
+
+def test_shutdown_of_an_old_tracer_leaves_a_newer_instance(real_provider):
+    first = VolnuxTracer.initialize(VolnuxTracerConfig())
+    VolnuxTracer._instance = None
+    second = VolnuxTracer.initialize(VolnuxTracerConfig())
+    first.shutdown()
+    assert VolnuxTracer.get_instance() is second
+
+
+def test_initialising_again_after_a_shutdown_builds_a_new_tracer(real_provider):
+    first = VolnuxTracer.initialize(VolnuxTracerConfig(service_name="one"))
+    first.shutdown()
+    second = VolnuxTracer.initialize(
+        VolnuxTracerConfig(service_name="two", sample_rate=1.0, environment="b")
+    )
+    assert second is not first
+    assert second.config.service_name == "two" and second.config.environment == "b"
+    with second.get_tracer().start_as_current_span("s"):
+        pass
+    assert [s.name for s in real_provider[1].get_finished_spans()] == ["s"]
+
+
+def test_initialising_twice_returns_the_same_tracer(real_provider):
+    first = VolnuxTracer.initialize(VolnuxTracerConfig(service_name="one"))
+    assert VolnuxTracer.initialize(VolnuxTracerConfig(service_name="two")) is first
+
+
+def test_reset_clears_everything():
+    VolnuxTracer.initialize(VolnuxTracerConfig())
+    VolnuxTracer.reset()
+    assert VolnuxTracer.get_instance() is None
+    assert VolnuxTracer._provider is None and VolnuxTracer._tracer is None
+    assert VolnuxTracer._global_provider_set is False
+
+
+def test_logging_is_instrumented_once(real_provider):
+    VolnuxTracer.initialize(VolnuxTracerConfig())
+    VolnuxTracer._instance = None
+    VolnuxTracer.initialize(VolnuxTracerConfig())
+    assert len(_NoLoggingInstrumentor.calls) == 1
+
+
+def test_logging_instrumentation_can_be_switched_off(real_provider):
+    VolnuxTracer.initialize(VolnuxTracerConfig(instrument_logging=False))
+    assert _NoLoggingInstrumentor.calls == []
+
+
+def test_the_service_resource_attributes(real_provider):
+    tracer = VolnuxTracer.initialize(
+        VolnuxTracerConfig(
+            service_name="svc",
+            service_version="3.1",
+            environment="staging",
+            custom_attributes={"team": "data"},
+        )
+    )
+    resource = tracer._provider.resource.attributes
+    assert resource["service.name"] == "svc"
+    assert resource["service.version"] == "3.1"
+    assert resource["deployment.environment"] == "staging"
+    assert resource["team"] == "data"
+
+
+def test_a_sample_rate_of_zero_records_nothing(real_provider):
+    tracer = VolnuxTracer.initialize(VolnuxTracerConfig(sample_rate=0.0))
+    with tracer.get_tracer().start_as_current_span("s"):
+        pass
+    assert real_provider[0].get_finished_spans() == ()

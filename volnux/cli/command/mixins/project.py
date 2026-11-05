@@ -3,7 +3,7 @@ import types
 from typing import Optional, Tuple, cast
 from pathlib import Path
 
-from volnux.setup import initialise_workflows
+from volnux.setup import get_project_init_module, initialise_workflows
 from volnux.import_utils import load_module_from_path
 from volnux.exceptions import CommandError
 from volnux.engine.workflows.trigger.engine import TriggerEngine, WorkflowExecutionError
@@ -31,23 +31,29 @@ class ProjectMixin:
         self, project_dir: Path, workflow_name: Optional[str] = None
     ) -> TriggerEngine:
         """Initialize the engine for a project directory."""
-        if workflow_name is None:
-            module = load_module_from_path("initialiser", project_dir / "init.py")
-            engine = getattr(module, "engine", None)
-            if engine is None:
-                raise CommandError(
-                    f"init.py in {project_dir} does not define an 'engine' variable.\n"
-                    "Ensure init.py contains:\n"
-                    "  engine = initialise_workflows(project_dir)"
-                )
-            if not isinstance(engine, TriggerEngine):
-                raise CommandError(
-                    f"init.py 'engine' is not a TriggerEngine. "
-                    f"Got {type(engine).__name__}."
-                )
+        # init.py is run once, by initialise_workflows (as the project's
+        # configuration); the engine it declares is read from that run rather than
+        # by running init.py again.
+        engine = await initialise_workflows(project_dir, workflow_name)
+        if workflow_name is not None:
             return engine
 
-        return await initialise_workflows(project_dir, workflow_name)
+        module = get_project_init_module(project_dir)
+        if module is None:
+            return engine  # a project without an init.py
+        declared = getattr(module, "engine", None)
+        if declared is None:
+            raise CommandError(
+                f"init.py in {project_dir} does not define an 'engine' variable.\n"
+                "Ensure init.py contains:\n"
+                "  engine = initialise_workflows(project_dir)"
+            )
+        if not isinstance(declared, TriggerEngine):
+            raise CommandError(
+                f"init.py 'engine' is not a TriggerEngine. "
+                f"Got {type(declared).__name__}."
+            )
+        return declared
 
     def initialise_workflows(
         self, project_dir: Path, workflow_name: Optional[str] = None

@@ -40,6 +40,8 @@ class VolnuxTracerConfig:
         sample_rate: Optional[float] = None,
         # Additional attributes
         custom_attributes: Optional[dict[str, Any]] = None,
+        # Put trace ids in log records (opentelemetry-instrumentation-logging)
+        instrument_logging: bool = True,
     ):
         if sample_rate is None:
             from volnux.config import setting
@@ -56,6 +58,7 @@ class VolnuxTracerConfig:
         self.tempo_endpoint = tempo_endpoint
         self.sample_rate = sample_rate
         self.custom_attributes = custom_attributes or {}
+        self.instrument_logging = instrument_logging
 
 
 class VolnuxTracer:
@@ -109,15 +112,21 @@ class VolnuxTracer:
         self._setup_exporters()
 
         if not self.__class__._global_provider_set:
+            # (libraries that use the global provider, such as the FastAPI
+            # instrumentation, share our exporters; the global provider can only be
+            # set once, so if another one is already installed we keep our own)
             trace.set_tracer_provider(self._provider)
             self.__class__._global_provider_set = True
 
-        self._tracer = trace.get_tracer(
+        # The tracer comes from OUR provider, not the global one: after a shutdown
+        # and a new initialize, or when another provider was installed first, the
+        # global provider is not the one that has our exporters.
+        self._tracer = self._provider.get_tracer(
             instrumenting_module_name="volnux",
             instrumenting_library_version=self.config.service_version,
         )
 
-        if not self.__class__._logging_instrumented:
+        if self.config.instrument_logging and not self.__class__._logging_instrumented:
             LoggingInstrumentor().instrument(set_logging_format=True)
             self.__class__._logging_instrumented = True
 
@@ -161,10 +170,26 @@ class VolnuxTracer:
         return self._tracer
 
     def shutdown(self):
-        """Shutdown the tracer and flush remaining spans"""
+        """Shutdown the tracer and flush remaining spans.
+
+        The tracer is no longer the global instance afterwards, so the
+        instrumentation stops making spans and a new ``initialize`` builds a fresh
+        tracer from its own configuration.
+        """
         if self._provider:
             self._provider.shutdown()
             logger.info("OpenTelemetry tracer shutdown complete")
+        if self.__class__._instance is self:
+            self.__class__._instance = None
+
+    @classmethod
+    def reset(cls) -> None:
+        """Forget the instance and the one-time setup flags (tests)."""
+        cls._instance = None
+        cls._tracer = None
+        cls._provider = None
+        cls._global_provider_set = False
+        cls._logging_instrumented = False
 
 
 def get_tracer() -> Optional[trace.Tracer]:

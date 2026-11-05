@@ -1,18 +1,34 @@
-""" "
-OpenTelemetry Instrumentation for ExecutionContext and ExecutionCoordinator
+"""
+OpenTelemetry instrumentation of ExecutionContext and ExecutionCoordinator.
+
+Every context method that changes or runs a context gets a ``context.<method>``
+span (``dispatch`` also parents on the previous context of the chain, so a run
+reads as one trace); the coordinator's ``_execute_async`` gets
+``coordinator.execute_async``.
+
+Each wrapper has the same call shape as the method it wraps (it forwards
+``*args, **kwargs``) and the same kind (a coroutine function stays one).
 """
 
-import functools
-import logging
-import typing
 import asyncio
+import logging
+import functools
+import typing
+from typing import Any, Dict
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
-from volnux.otel.context_manager import OTelContextManager, SpanHelper
-from volnux.otel.tracer_setup import get_tracer
 from volnux.execution.coordinator import ExecutionTimeoutError
+from volnux.otel.context_manager import OTelContextManager, SpanHelper
+from ._common import (
+    get_tracer,
+    mark_interrupted,
+    record_error,
+    set_attributes,
+    traced,
+)
+from ._patching import patch_attr
 
 if typing.TYPE_CHECKING:
     from volnux.execution.context import ExecutionContext
@@ -31,58 +47,75 @@ def _add_execution_context_attributes(
     SpanHelper.add_context_attributes(span, execution_context)
 
 
+def _context_attrs(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    return SpanHelper.context_attributes(self)
+
+
+def _state_attrs(args, kwargs, result) -> Dict[str, Any]:
+    """What a context holds after a method ran."""
+    self = args[0]
+    return {
+        "context.current_status": self.status.value,
+        "context.errors_count": len(self.errors),
+        "context.results_count": len(self.results),
+    }
+
+
 def instrument_execution_context_dispatch(original_dispatch):
     """
-    Decorator to instrument ExecutionContext.dispatch() method.
+    Instrument ``ExecutionContext.dispatch`` (a coroutine function).
+
+    The span is parented on the previous context of the chain and made the async
+    context while the context runs, so the coordinator and flows below it nest
+    under it.
     """
 
     @functools.wraps(original_dispatch)
-    async def instrumented_dispatch(self: "ExecutionContext", timeout=None):
+    async def instrumented_dispatch(self: "ExecutionContext", *args, **kwargs):
         tracer = get_tracer()
-        if not tracer:
-            return await original_dispatch(self, timeout)
+        if tracer is None:
+            return await original_dispatch(self, *args, **kwargs)
 
         parent_otel_context = OTelContextManager.get_parent_context(self)
+        timeout = kwargs.get("timeout", args[0] if args else None)
 
         with tracer.start_as_current_span(
             "context.dispatch",
             context=parent_otel_context,
             kind=trace.SpanKind.INTERNAL,
         ) as span:
+            _add_execution_context_attributes(span, self)
+            if timeout is not None:
+                set_attributes(span, {"context.timeout": timeout})
+
+            current_otel_context = trace.set_span_in_context(span)
+            OTelContextManager.attach_span_to_context(self, span, current_otel_context)
+            OTelContextManager.set_async_context(current_otel_context)
+            span.add_event("context.dispatch_started")
             try:
-                _add_execution_context_attributes(span, self)
-
-                if timeout is not None:
-                    span.set_attribute("context.timeout", timeout)
-
-                current_otel_context = trace.set_span_in_context(span)
-                OTelContextManager.attach_span_to_context(
-                    self, span, current_otel_context
-                )
-                OTelContextManager.set_async_context(current_otel_context)
-
-                span.add_event("context.dispatch_started")
-
-                result = await original_dispatch(self, timeout)
+                result = await original_dispatch(self, *args, **kwargs)
 
                 span.add_event("context.dispatch_completed")
-                span.set_attribute("context.duration_ms", self.metrics.duration * 1000)
-
-                span.set_attribute("context.results_count", len(self.results))
-                span.set_attribute("context.errors_count", len(self.errors))
-                span.set_attribute("context.status", self.status.value)
-
-                SpanHelper.set_status_from_execution(span, self)
-
-                if self.next_context:
-                    OTelContextManager.propagate_context_to_next(
-                        self, self.next_context
+                try:
+                    set_attributes(
+                        span,
+                        {
+                            "context.duration_ms": (self.metrics.duration or 0) * 1000,
+                            "context.results_count": len(self.results),
+                            "context.errors_count": len(self.errors),
+                            "context.status": self.status.value,
+                        },
                     )
-
+                    SpanHelper.set_status_from_execution(span, self)
+                    if self.next_context:
+                        OTelContextManager.propagate_context_to_next(
+                            self, self.next_context
+                        )
+                except Exception:
+                    logger.debug("Could not summarise the dispatch", exc_info=True)
                 return result
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
+            except BaseException as exc:
+                mark_interrupted(span, exc)
                 raise
             finally:
                 OTelContextManager.clear_async_context()
@@ -91,551 +124,192 @@ def instrument_execution_context_dispatch(original_dispatch):
 
 
 def instrument_execution_context_spawn_child(original_spawn_child):
-    """
-    Decorator to instrument ExecutionContext.spawn_child().
-    """
-
-    @functools.wraps(original_spawn_child)
-    async def instrumented_spawn_child(self: "ExecutionContext", task_profiles):
-        tracer = get_tracer()
-        if not tracer:
-            return await original_spawn_child(self, task_profiles)
-
-        with tracer.start_as_current_span(
-            "context.spawn_child",
-            kind=trace.SpanKind.INTERNAL,
-        ) as span:
-            try:
-                _add_execution_context_attributes(span, self)
-                span.set_attribute("child.task_count", len(task_profiles))
-                result = await original_spawn_child(self, task_profiles)
-
-                span.set_attribute("child.context_id", result.id)
-                span.set_attribute("child.depth", result.get_depth())
-                span.set_status(Status(StatusCode.OK))
-                return result
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_spawn_child
+    """Instrument ``ExecutionContext.spawn_child`` (a coroutine function)."""
+    return traced(
+        "context.spawn_child",
+        attributes=lambda self, task_profiles=(), *a, **k: {
+            **SpanHelper.context_attributes(self),
+            "child.task_count": len(task_profiles),
+        },
+        result_attributes=lambda child: {
+            "child.context_id": getattr(child, "id", None),
+            "child.depth": child.get_depth() if hasattr(child, "get_depth") else None,
+        },
+    )(original_spawn_child)
 
 
-def instrument_execution_context_update_status(original_update_status):
-    """
-    Decorator to instrument ExecutionContext.update_status().
-    """
+def _method_instrumenter(span_name: str, **options: Any):
+    """An ``instrument_*`` function: wraps a method in ``span_name``."""
 
-    @functools.wraps(original_update_status)
-    def instrumented_update_status(self: "ExecutionContext", new_status):
-        tracer = get_tracer()
-        if not tracer:
-            return original_update_status(self, new_status)
+    def instrument(original):
+        return traced(span_name, attributes=_context_attrs, **options)(original)
 
-        with tracer.start_as_current_span(
-            "context.update_status",
-            kind=trace.SpanKind.INTERNAL,
-        ) as span:
-            try:
-                _add_execution_context_attributes(span, self)
-                span.set_attribute("context.new_status", new_status.value)
-                result = original_update_status(self, new_status)
-
-                span.set_attribute("context.current_status", self.status.value)
-                span.set_attribute("context.errors_count", len(self.errors))
-                span.set_attribute("context.results_count", len(self.results))
-                span.set_status(Status(StatusCode.OK))
-                return result
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_update_status
+    return instrument
 
 
-def instrument_execution_context_update_status_async(original_update_status_async):
-    """
-    Decorator to instrument ExecutionContext.update_status_async().
-    """
-
-    @functools.wraps(original_update_status_async)
-    async def instrumented_update_status_async(self: "ExecutionContext", new_status):
-        tracer = get_tracer()
-        if not tracer:
-            return await original_update_status_async(self, new_status)
-
-        with tracer.start_as_current_span(
-            "context.update_status_async",
-            kind=trace.SpanKind.INTERNAL,
-        ) as span:
-            try:
-                _add_execution_context_attributes(span, self)
-                span.set_attribute("context.new_status", new_status.value)
-                result = await original_update_status_async(self, new_status)
-
-                span.set_attribute("context.current_status", self.status.value)
-                span.set_attribute("context.errors_count", len(self.errors))
-                span.set_attribute("context.results_count", len(self.results))
-                span.set_status(Status(StatusCode.OK))
-                return result
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_update_status_async
+instrument_execution_context_update_status = _method_instrumenter(
+    "context.update_status",
+    after=_state_attrs,
+)
+instrument_execution_context_update_status_async = _method_instrumenter(
+    "context.update_status_async",
+    after=_state_attrs,
+)
+instrument_execution_context_cancel = _method_instrumenter(
+    "context.cancel", after=_state_attrs
+)
+instrument_execution_context_cancel_async = _method_instrumenter(
+    "context.cancel_async", after=_state_attrs
+)
+instrument_execution_context_abort = _method_instrumenter(
+    "context.abort", after=_state_attrs
+)
+instrument_execution_context_abort_async = _method_instrumenter(
+    "context.abort_async", after=_state_attrs
+)
+instrument_execution_context_failed = _method_instrumenter(
+    "context.failed", after=_state_attrs
+)
+instrument_execution_context_failed_async = _method_instrumenter(
+    "context.failed_async", after=_state_attrs
+)
+instrument_execution_context_save = _method_instrumenter(
+    "context.save",
+    after=lambda args, kwargs, result: {"context.status": args[0].status.value},
+)
 
 
 def instrument_execution_context_add_error(original_add_error):
-    """
-    Decorator to instrument ExecutionContext.add_error().
-    """
+    """Instrument ``ExecutionContext.add_error``: the error is recorded on the span."""
 
     @functools.wraps(original_add_error)
-    def instrumented_add_error(self: "ExecutionContext", error):
+    def instrumented_add_error(self: "ExecutionContext", error, *args, **kwargs):
         tracer = get_tracer()
-        if not tracer:
-            return original_add_error(self, error)
+        if tracer is None:
+            return original_add_error(self, error, *args, **kwargs)
 
         with tracer.start_as_current_span(
-            "context.add_error",
-            kind=trace.SpanKind.INTERNAL,
+            "context.add_error", kind=trace.SpanKind.INTERNAL
         ) as span:
-            try:
-                _add_execution_context_attributes(span, self)
-                span.record_exception(error)
-                span.set_status(Status(StatusCode.ERROR, "context error recorded"))
-                return original_add_error(self, error)
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
+            _add_execution_context_attributes(span, self)
+            record_error(span, error)
+            return original_add_error(self, error, *args, **kwargs)
 
     return instrumented_add_error
 
 
 def instrument_execution_context_add_result(original_add_result):
-    """
-    Decorator to instrument ExecutionContext.add_result().
-    """
-
-    @functools.wraps(original_add_result)
-    def instrumented_add_result(self: "ExecutionContext", result):
-        tracer = get_tracer()
-        if not tracer:
-            return original_add_result(self, result)
-
-        with tracer.start_as_current_span(
-            "context.add_result",
-            kind=trace.SpanKind.INTERNAL,
-        ) as span:
-            try:
-                _add_execution_context_attributes(span, self)
-                span.set_attribute("context.result_type", result.__class__.__name__)
-                response = original_add_result(self, result)
-                span.set_attribute("context.results_count", len(self.results))
-                span.set_status(Status(StatusCode.OK))
-                return response
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_add_result
-
-
-def instrument_execution_context_cancel(original_cancel):
-    """
-    Decorator to instrument ExecutionContext.cancel().
-    """
-
-    @functools.wraps(original_cancel)
-    def instrumented_cancel(self: "ExecutionContext"):
-        tracer = get_tracer()
-        if not tracer:
-            return original_cancel(self)
-
-        with tracer.start_as_current_span(
-            "context.cancel",
-            kind=trace.SpanKind.INTERNAL,
-        ) as span:
-            try:
-                _add_execution_context_attributes(span, self)
-                result = original_cancel(self)
-                span.set_attribute("context.status", self.status.value)
-                span.set_status(Status(StatusCode.OK))
-                return result
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_cancel
-
-
-def instrument_execution_context_cancel_async(original_cancel_async):
-    """
-    Decorator to instrument ExecutionContext.cancel_async().
-    """
-
-    @functools.wraps(original_cancel_async)
-    async def instrumented_cancel_async(self: "ExecutionContext"):
-        tracer = get_tracer()
-        if not tracer:
-            return await original_cancel_async(self)
-
-        with tracer.start_as_current_span(
-            "context.cancel_async",
-            kind=trace.SpanKind.INTERNAL,
-        ) as span:
-            try:
-                _add_execution_context_attributes(span, self)
-                result = await original_cancel_async(self)
-                span.set_attribute("context.status", self.status.value)
-                span.set_status(Status(StatusCode.OK))
-                return result
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_cancel_async
-
-
-def instrument_execution_context_abort(original_abort):
-    """
-    Decorator to instrument ExecutionContext.abort().
-    """
-
-    @functools.wraps(original_abort)
-    def instrumented_abort(self: "ExecutionContext"):
-        tracer = get_tracer()
-        if not tracer:
-            return original_abort(self)
-
-        with tracer.start_as_current_span(
-            "context.abort",
-            kind=trace.SpanKind.INTERNAL,
-        ) as span:
-            try:
-                _add_execution_context_attributes(span, self)
-                result = original_abort(self)
-                span.set_attribute("context.status", self.status.value)
-                span.set_status(Status(StatusCode.OK))
-                return result
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_abort
-
-
-def instrument_execution_context_abort_async(original_abort_async):
-    """
-    Decorator to instrument ExecutionContext.abort_async().
-    """
-
-    @functools.wraps(original_abort_async)
-    async def instrumented_abort_async(self: "ExecutionContext"):
-        tracer = get_tracer()
-        if not tracer:
-            return await original_abort_async(self)
-
-        with tracer.start_as_current_span(
-            "context.abort_async",
-            kind=trace.SpanKind.INTERNAL,
-        ) as span:
-            try:
-                _add_execution_context_attributes(span, self)
-                result = await original_abort_async(self)
-                span.set_attribute("context.status", self.status.value)
-                span.set_status(Status(StatusCode.OK))
-                return result
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_abort_async
-
-
-def instrument_execution_context_failed(original_failed):
-    """
-    Decorator to instrument ExecutionContext.failed().
-    """
-
-    @functools.wraps(original_failed)
-    def instrumented_failed(self: "ExecutionContext"):
-        tracer = get_tracer()
-        if not tracer:
-            return original_failed(self)
-
-        with tracer.start_as_current_span(
-            "context.failed",
-            kind=trace.SpanKind.INTERNAL,
-        ) as span:
-            try:
-                _add_execution_context_attributes(span, self)
-                result = original_failed(self)
-                span.set_attribute("context.status", self.status.value)
-                span.set_status(Status(StatusCode.ERROR, "context marked failed"))
-                return result
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_failed
-
-
-def instrument_execution_context_failed_async(original_failed_async):
-    """
-    Decorator to instrument ExecutionContext.failed_async().
-    """
-
-    @functools.wraps(original_failed_async)
-    async def instrumented_failed_async(self: "ExecutionContext"):
-        tracer = get_tracer()
-        if not tracer:
-            return await original_failed_async(self)
-
-        with tracer.start_as_current_span(
-            "context.failed_async",
-            kind=trace.SpanKind.INTERNAL,
-        ) as span:
-            try:
-                _add_execution_context_attributes(span, self)
-                result = await original_failed_async(self)
-                span.set_attribute("context.status", self.status.value)
-                span.set_status(Status(StatusCode.ERROR, "context marked failed"))
-                return result
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_failed_async
-
-
-def instrument_execution_context_save(original_save):
-    """
-    Decorator to instrument ExecutionContext.save().
-    """
-
-    @functools.wraps(original_save)
-    async def instrumented_save(self: "ExecutionContext", *args, **kwargs):
-        tracer = get_tracer()
-        if not tracer:
-            return await original_save(self, *args, **kwargs)
-
-        with tracer.start_as_current_span(
-            "context.save",
-            kind=trace.SpanKind.INTERNAL,
-        ) as span:
-            try:
-                _add_execution_context_attributes(span, self)
-                result = await original_save(self, *args, **kwargs)
-                span.set_attribute("context.status", self.status.value)
-                span.set_status(Status(StatusCode.OK))
-                return result
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_save
-
-
-def instrument_coordinator_execute(original_execute):
-    """
-    Decorator to instrument ExecutionCoordinator.execute().
-    """
-
-    @functools.wraps(original_execute)
-    def instrumented_execute(self: "ExecutionCoordinator"):
-        tracer = get_tracer()
-        if not tracer:
-            return original_execute(self)
-
-        parent_context = OTelContextManager.get_async_context()
-
-        with tracer.start_as_current_span(
-            "coordinator.execute",
-            context=parent_context,
-            kind=trace.SpanKind.INTERNAL,
-        ) as span:
-            try:
-                if getattr(self, "_timeout", None) is not None:
-                    span.set_attribute("coordinator.timeout", self._timeout)
-
-                span.add_event("coordinator_started")
-                result = original_execute(self)
-                span.add_event("coordinator_completed")
-                span.set_status(Status(StatusCode.OK))
-                return result
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-
-    return instrumented_execute
+    """Instrument ``ExecutionContext.add_result``."""
+    return traced(
+        "context.add_result",
+        attributes=lambda self, result=None, *a, **k: {
+            **SpanHelper.context_attributes(self),
+            "context.result_type": result.__class__.__name__,
+        },
+        after=lambda args, kwargs, result: {
+            "context.results_count": len(args[0].results)
+        },
+    )(original_add_result)
 
 
 def instrument_coordinator_execute_async(original_execute_async):
-    """
-    Decorator to instrument ExecutionCoordinator._execute_async().
-    """
+    """Instrument ``ExecutionCoordinator._execute_async`` (a coroutine function)."""
 
     @functools.wraps(original_execute_async)
-    async def instrumented_execute_async(self: "ExecutionCoordinator"):
+    async def instrumented_execute_async(self: "ExecutionCoordinator", *args, **kw):
         tracer = get_tracer()
-        if not tracer:
-            return await original_execute_async(self)
-
-        parent_context = OTelContextManager.get_async_context()
+        if tracer is None:
+            return await original_execute_async(self, *args, **kw)
 
         with tracer.start_as_current_span(
             "coordinator.execute_async",
-            context=parent_context,
+            context=OTelContextManager.get_async_context(),
             kind=trace.SpanKind.INTERNAL,
+            # (the status is set below: a timeout reads "Execution timeout", which
+            # the span's own handling of the exception would overwrite)
+            record_exception=False,
+            set_status_on_exception=False,
         ) as span:
+            timeout = getattr(self, "_timeout", None)
+            if timeout is not None:
+                set_attributes(span, {"coordinator.timeout": timeout})
+            span.add_event("coordinator_started_async")
             try:
-                if getattr(self, "_timeout", None) is not None:
-                    span.set_attribute("coordinator.timeout", self._timeout)
-
-                span.add_event("coordinator_started_async")
-                result = await original_execute_async(self)
-                span.add_event("coordinator_completed_async")
-                span.set_status(Status(StatusCode.OK))
-                return result
-            # _execute_async() already translates a raw asyncio.TimeoutError
-            # into ExecutionTimeoutError internally, so that's what surfaces here.
-            except (asyncio.TimeoutError, ExecutionTimeoutError) as e:
-                span.record_exception(e)
+                result = await original_execute_async(self, *args, **kw)
+            except (asyncio.TimeoutError, ExecutionTimeoutError) as exc:
+                # (_execute_async turns a raw TimeoutError into
+                # ExecutionTimeoutError; both read as a timeout)
+                span.record_exception(exc)
                 span.set_status(Status(StatusCode.ERROR, "Execution timeout"))
                 raise
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
+            except BaseException as exc:
+                if isinstance(exc, Exception):
+                    record_error(span, exc)
+                else:
+                    mark_interrupted(span, exc)
                 raise
+            span.add_event("coordinator_completed_async")
+            span.set_status(Status(StatusCode.OK))
+            return result
 
     return instrumented_execute_async
 
 
-def patch_execution_context():
-    """
-    Patch ExecutionContext class to add OpenTelemetry instrumentation.
-    """
+# method name -> instrumenter, for the ExecutionContext
+_CONTEXT_PATCHES = {
+    "dispatch": instrument_execution_context_dispatch,
+    "spawn_child": instrument_execution_context_spawn_child,
+    "update_status": instrument_execution_context_update_status,
+    "update_status_async": instrument_execution_context_update_status_async,
+    "add_error": instrument_execution_context_add_error,
+    "add_result": instrument_execution_context_add_result,
+    "cancel": instrument_execution_context_cancel,
+    "cancel_async": instrument_execution_context_cancel_async,
+    "abort": instrument_execution_context_abort,
+    "abort_async": instrument_execution_context_abort_async,
+    "failed": instrument_execution_context_failed,
+    "failed_async": instrument_execution_context_failed_async,
+    "save": instrument_execution_context_save,
+}
+
+
+def patch_execution_context() -> int:
+    """Instrument the ExecutionContext methods (each once). Returns how many were
+    patched by this call."""
     from volnux.execution.context import ExecutionContext
 
-    if not hasattr(ExecutionContext, "_otel_instrumented"):
-        ExecutionContext._otel_instrumented = True
-
-        ExecutionContext._original_dispatch = ExecutionContext.dispatch
-        ExecutionContext.dispatch = instrument_execution_context_dispatch(
-            ExecutionContext._original_dispatch
-        )
-
-        ExecutionContext._original_spawn_child = ExecutionContext.spawn_child
-        ExecutionContext.spawn_child = instrument_execution_context_spawn_child(
-            ExecutionContext._original_spawn_child
-        )
-
-        ExecutionContext._original_update_status = ExecutionContext.update_status
-        ExecutionContext.update_status = instrument_execution_context_update_status(
-            ExecutionContext._original_update_status
-        )
-
-        ExecutionContext._original_update_status_async = (
-            ExecutionContext.update_status_async
-        )
-        ExecutionContext.update_status_async = (
-            instrument_execution_context_update_status_async(
-                ExecutionContext._original_update_status_async
-            )
-        )
-
-        ExecutionContext._original_add_error = ExecutionContext.add_error
-        ExecutionContext.add_error = instrument_execution_context_add_error(
-            ExecutionContext._original_add_error
-        )
-
-        ExecutionContext._original_add_result = ExecutionContext.add_result
-        ExecutionContext.add_result = instrument_execution_context_add_result(
-            ExecutionContext._original_add_result
-        )
-
-        ExecutionContext._original_cancel = ExecutionContext.cancel
-        ExecutionContext.cancel = instrument_execution_context_cancel(
-            ExecutionContext._original_cancel
-        )
-
-        ExecutionContext._original_cancel_async = ExecutionContext.cancel_async
-        ExecutionContext.cancel_async = instrument_execution_context_cancel_async(
-            ExecutionContext._original_cancel_async
-        )
-
-        ExecutionContext._original_abort = ExecutionContext.abort
-        ExecutionContext.abort = instrument_execution_context_abort(
-            ExecutionContext._original_abort
-        )
-
-        ExecutionContext._original_abort_async = ExecutionContext.abort_async
-        ExecutionContext.abort_async = instrument_execution_context_abort_async(
-            ExecutionContext._original_abort_async
-        )
-
-        ExecutionContext._original_failed = ExecutionContext.failed
-        ExecutionContext.failed = instrument_execution_context_failed(
-            ExecutionContext._original_failed
-        )
-
-        ExecutionContext._original_failed_async = ExecutionContext.failed_async
-        ExecutionContext.failed_async = instrument_execution_context_failed_async(
-            ExecutionContext._original_failed_async
-        )
-
-        ExecutionContext._original_save = ExecutionContext.save
-        ExecutionContext.save = instrument_execution_context_save(
-            ExecutionContext._original_save
-        )
-
+    patched = sum(
+        patch_attr(ExecutionContext, name, instrument)
+        for name, instrument in _CONTEXT_PATCHES.items()
+    )
+    if patched:
         logger.info("ExecutionContext instrumented with OpenTelemetry")
+    return patched
 
 
-def patch_execution_coordinator():
-    """
-    Patch ExecutionCoordinator class to add OpenTelemetry instrumentation.
-    """
+def patch_execution_coordinator() -> bool:
+    """Instrument ``ExecutionCoordinator._execute_async`` (once)."""
     from volnux.execution.coordinator import ExecutionCoordinator
 
-    if not hasattr(ExecutionCoordinator, "_otel_instrumented"):
-        ExecutionCoordinator._otel_instrumented = True
-
-        # ExecutionCoordinator._original_execute = ExecutionCoordinator.execute
-        # ExecutionCoordinator.execute = instrument_coordinator_execute(
-        #     ExecutionCoordinator._original_execute
-        # )
-
-        ExecutionCoordinator._original_execute_async = (
-            ExecutionCoordinator._execute_async
-        )
-        original_async = ExecutionCoordinator._original_execute_async
-
-        async def wrapped_async(self):
-            return await instrument_coordinator_execute_async(original_async)(self)
-
-        ExecutionCoordinator._execute_async = wrapped_async
+    patched = patch_attr(
+        ExecutionCoordinator, "_execute_async", instrument_coordinator_execute_async
+    )
+    if patched:
         logger.info("ExecutionCoordinator instrumented with OpenTelemetry")
+    return patched
 
 
-def patch_all_execution_components():
-    """
-    Patch all execution components for OpenTelemetry instrumentation.
-    """
+def patch_all_execution_components() -> None:
+    """Patch all execution components for OpenTelemetry instrumentation."""
     patch_execution_context()
     patch_execution_coordinator()
     logger.info("All execution components instrumented with OpenTelemetry")
+
+
+__all__ = [
+    "instrument_execution_context_dispatch",
+    "instrument_coordinator_execute_async",
+    "patch_execution_context",
+    "patch_execution_coordinator",
+    "patch_all_execution_components",
+]

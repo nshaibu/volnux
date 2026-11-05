@@ -1,13 +1,16 @@
 import inspect
 import functools
+import logging
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional, Generator, TypeVar, Callable
-from contextlib import contextmanager
+from typing import Any, ContextManager, Dict, Optional, Generator, TypeVar, Callable
+from contextlib import ExitStack, contextmanager
 
 from volnux import config as _config_module
 from volnux.config import VolnuxConfig
 
+
+logger = logging.getLogger(__name__)
 
 _WORKFLOW_ID: ContextVar[Optional[str]] = ContextVar("volnux_workflow_id", default=None)
 _WORKFLOW_VERSION: ContextVar[Optional[str]] = ContextVar(
@@ -33,6 +36,35 @@ _CONFIG: ContextVar[Optional[VolnuxConfig]] = ContextVar("volnux_config", defaul
 
 CARRIER_KEY = "__volnux_context__"
 
+
+class TracePropagation:
+    """How the active distributed trace travels in a carrier.
+
+    ``volnux.otel`` registers one (:func:`register_trace_propagation`); this module
+    does not import OpenTelemetry. ``inject`` returns the trace context to put in
+    the snapshot (a JSON-compatible dict, ``None`` when no trace is active);
+    ``attach`` is a context manager that makes a carried trace context the parent
+    of what runs inside it.
+    """
+
+    def __init__(
+        self,
+        inject: Callable[[], Optional[Dict[str, str]]],
+        attach: Callable[[Dict[str, str]], ContextManager[Any]],
+    ) -> None:
+        self.inject = inject
+        self.attach = attach
+
+
+_trace_propagation: Optional[TracePropagation] = None
+
+
+def register_trace_propagation(propagation: Optional[TracePropagation]) -> None:
+    """Install (or, with ``None``, remove) the trace propagation hook."""
+    global _trace_propagation
+    _trace_propagation = propagation
+
+
 # Let ``volnux.config.setting()`` read the configuration this context carries.
 _config_module._active_context_config = _CONFIG.get
 
@@ -51,6 +83,9 @@ class ExecutionContextSnapshot:
     project_id: Optional[str] = None
     node_id: Optional[str] = None
     config: Optional[Dict[str, Any]] = None
+    # The distributed trace (W3C trace context) this was taken in; see
+    # TracePropagation. Lets a worker or pod continue the dispatcher's trace.
+    trace_context: Optional[Dict[str, str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -123,7 +158,19 @@ def snapshot_context() -> ExecutionContextSnapshot:
         project_id=_PROJECT_ID.get(),
         node_id=_NODE_ID.get(),
         config=cfg.to_dict(),
+        trace_context=_current_trace_context(),
     )
+
+
+def _current_trace_context() -> Optional[Dict[str, str]]:
+    propagation = _trace_propagation
+    if propagation is None:
+        return None
+    try:
+        return propagation.inject()
+    except Exception:  # tracing must never break execution
+        logger.debug("Could not inject the trace context", exc_info=True)
+        return None
 
 
 def inject_carrier(
@@ -177,6 +224,7 @@ def volnux_context(
     and restores tokens on exit.
     """
     tokens: Dict[ContextVar, Token] = {}
+    stack = ExitStack()
 
     if snapshot:
         workflow_id = snapshot.workflow_id if workflow_id is None else workflow_id
@@ -200,6 +248,11 @@ def volnux_context(
         node_id = snapshot.node_id if node_id is None else node_id
         if config is None and snapshot.config:
             config = snapshot.get_config_instance()
+        if snapshot.trace_context and _trace_propagation is not None:
+            try:
+                stack.enter_context(_trace_propagation.attach(snapshot.trace_context))
+            except Exception:  # tracing must never break execution
+                logger.debug("Could not attach the trace context", exc_info=True)
 
     def _set_var(var: ContextVar, val: Any) -> None:
         if val is not None:
@@ -221,6 +274,7 @@ def volnux_context(
         # whatever was set is put back, last set first
         for var, token in reversed(list(tokens.items())):
             var.reset(token)
+        stack.close()
 
 
 F = TypeVar("F", bound=Callable[..., Any])

@@ -6,6 +6,7 @@ It assumes OpenTelemetry has already been initialized by the observability boots
 """
 
 import logging
+import threading
 import typing
 from dataclasses import dataclass
 from enum import Enum
@@ -102,7 +103,8 @@ class VolnuxMetricsRegistry:
         name="engine.parallel_tasks",
         description="Number of parallel tasks detected",
         unit="1",
-        metric_type=MetricType.COUNTER,
+        # a level (see record_level), not a total that every sample adds to
+        metric_type=MetricType.UP_DOWN_COUNTER,
     )
     ENGINE_TARGET_WORKERS = MetricDefinition(
         name="engine.target_workers",
@@ -181,6 +183,84 @@ class VolnuxMetricsRegistry:
         metric_type=MetricType.HISTOGRAM,
     )
 
+    # Trigger / workflow-run Metrics
+    TRIGGER_ACTIVATIONS = MetricDefinition(
+        name="trigger.activations",
+        description="Trigger activations, by trigger type and outcome",
+        unit="1",
+        metric_type=MetricType.COUNTER,
+    )
+    WORKFLOW_RUN_DURATION = MetricDefinition(
+        name="workflow.run.duration",
+        description="Duration of a workflow run started by a trigger",
+        unit="ms",
+        metric_type=MetricType.HISTOGRAM,
+    )
+    WORKFLOW_RUN_COUNT = MetricDefinition(
+        name="workflow.run.count",
+        description="Workflow runs started by a trigger, by executor and outcome",
+        unit="1",
+        metric_type=MetricType.COUNTER,
+    )
+
+    # Setup Metrics
+    SETUP_DURATION = MetricDefinition(
+        name="setup.duration",
+        description="Time initialise_workflows took (configuration to ready engine)",
+        unit="ms",
+        metric_type=MetricType.HISTOGRAM,
+    )
+
+    # Registry Metrics
+    REGISTRY_LOAD_DURATION = MetricDefinition(
+        name="registry.load.duration",
+        description="Time to load the workflow sources",
+        unit="ms",
+        metric_type=MetricType.HISTOGRAM,
+    )
+
+    # Checkpoint / Rehydration Metrics
+    CHECKPOINT_DURATION = MetricDefinition(
+        name="checkpoint.duration",
+        description="Time to persist, build or restore a checkpoint",
+        unit="ms",
+        metric_type=MetricType.HISTOGRAM,
+    )
+    CHECKPOINT_COUNT = MetricDefinition(
+        name="checkpoint.operations",
+        description="Checkpoint operations, by operation and outcome",
+        unit="1",
+        metric_type=MetricType.COUNTER,
+    )
+
+    # Saga Metrics
+    SAGA_DURATION = MetricDefinition(
+        name="saga.duration",
+        description="Duration of a saga execution",
+        unit="ms",
+        metric_type=MetricType.HISTOGRAM,
+    )
+    SAGA_COUNT = MetricDefinition(
+        name="saga.executions",
+        description="Saga executions, by outcome",
+        unit="1",
+        metric_type=MetricType.COUNTER,
+    )
+
+    # Messaging Metrics
+    MESSAGING_DURATION = MetricDefinition(
+        name="messaging.duration",
+        description="Duration of a messaging operation (a blocking pop includes its wait)",
+        unit="ms",
+        metric_type=MetricType.HISTOGRAM,
+    )
+    MESSAGING_OPERATIONS = MetricDefinition(
+        name="messaging.operations",
+        description="Messaging operations, by operation, model and outcome",
+        unit="1",
+        metric_type=MetricType.COUNTER,
+    )
+
     # Business Metrics
     RECORDS_PROCESSED = MetricDefinition(
         name="business.records_processed",
@@ -205,11 +285,14 @@ class VolnuxMetricsCollector:
 
     _instance: Optional["VolnuxMetricsCollector"] = None
     _meter: Optional[metrics.Meter] = None
-    _instruments: Dict[str, Any] = {}
     _initialized: bool = False
+    _lock = threading.Lock()
 
     def __init__(self, meter: Optional[metrics.Meter] = None):
-        self._instruments = {}
+        self._instruments: Dict[str, Any] = {}
+        # the last level recorded for each series (see record_level)
+        self._levels: Dict[typing.Tuple[str, typing.FrozenSet], float] = {}
+        self._levels_lock = threading.Lock()
         self._meter = meter or self.__class__._meter
 
     @classmethod
@@ -230,19 +313,23 @@ class VolnuxMetricsCollector:
         :rtype: VolnuxMetricsCollector
         :raises Exception: If the metrics collector fails to initialize.
         """
-        if cls._instance and cls._initialized:
-            return cls._instance
+        with cls._lock:
+            if cls._instance and cls._initialized:
+                return cls._instance
 
-        try:
-            cls._meter = metrics.get_meter(service_name, version=service_version)
-            cls._instance = cls(cls._meter)
-            cls._instance._setup_instruments()
-            cls._initialized = True
-            logger.info("Metrics collector initialized for %s", service_name)
-            return cls._instance
-        except Exception as e:
-            logger.error("Failed to initialize metrics collector: %s", e, exc_info=True)
-            raise
+            try:
+                cls._meter = metrics.get_meter(service_name, version=service_version)
+                instance = cls(cls._meter)
+                instance._setup_instruments()
+                cls._instance = instance
+                cls._initialized = True
+                logger.info("Metrics collector initialized for %s", service_name)
+                return instance
+            except Exception as e:
+                logger.error(
+                    "Failed to initialize metrics collector: %s", e, exc_info=True
+                )
+                raise
 
     @classmethod
     def get_instance(cls) -> Optional["VolnuxMetricsCollector"]:
@@ -252,10 +339,10 @@ class VolnuxMetricsCollector:
     @classmethod
     def shutdown(cls) -> None:
         """Reset the collector state."""
-        cls._instance = None
-        cls._meter = None
-        cls._instruments = {}
-        cls._initialized = False
+        with cls._lock:
+            cls._instance = None
+            cls._meter = None
+            cls._initialized = False
         logger.info("Metrics collector shut down")
 
     def _setup_instruments(self) -> None:
@@ -333,39 +420,53 @@ class VolnuxMetricsCollector:
         except Exception as e:
             logger.error("Failed to record metric %s: %s", metric_def.name, e)
 
+    def record_level(
+        self,
+        metric_def: MetricDefinition,
+        value: float,
+        attributes: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """
+        Record the current *level* of something (a queue length, a worker count).
+
+        An up-down counter takes changes, not levels: adding every sample made the
+        series grow with each call. The collector remembers the last level of each
+        series and adds the difference.
+        """
+        attrs = attributes or {}
+        key = (metric_def.name, frozenset(attrs.items()))
+        with self._levels_lock:
+            delta = value - self._levels.get(key, 0.0)
+            self._levels[key] = value
+        if delta:
+            self.record_metric(metric_def, delta, attrs)
+
     def record_engine_metrics(
         self, metrics_dict: Dict[str, Any], pipeline_name: str
     ) -> None:
-        """Record runtime engine metrics from a metrics snapshot."""
-        self.record_metric(
-            VolnuxMetricsRegistry.ENGINE_QUEUE_LENGTH,
-            float(metrics_dict.get("task_queue_length", 0)),
-            attributes={"pipeline.name": pipeline_name},
-        )
-        self.record_metric(
-            VolnuxMetricsRegistry.ENGINE_TARGET_WORKERS,
-            float(metrics_dict.get("target_workers", 0)),
-            attributes={"pipeline.name": pipeline_name},
-        )
-        self.record_metric(
-            VolnuxMetricsRegistry.ENGINE_ACTUAL_WORKERS,
-            float(metrics_dict.get("actual_workers", 0)),
-            attributes={"pipeline.name": pipeline_name},
-        )
-        self.record_metric(
-            VolnuxMetricsRegistry.ENGINE_PARALLEL_TASKS,
-            float(metrics_dict.get("parallel_tasks", 0)),
-            attributes={"pipeline.name": pipeline_name},
-        )
+        """Record runtime engine metrics from a metrics snapshot.
+
+        The queue, worker and parallel-task numbers are levels
+        (:meth:`record_level`); memory is converted from GB to the MB of the
+        instrument's unit.
+        """
+        attrs = {"pipeline.name": pipeline_name}
+        for definition, key in (
+            (VolnuxMetricsRegistry.ENGINE_QUEUE_LENGTH, "task_queue_length"),
+            (VolnuxMetricsRegistry.ENGINE_TARGET_WORKERS, "target_workers"),
+            (VolnuxMetricsRegistry.ENGINE_ACTUAL_WORKERS, "actual_workers"),
+            (VolnuxMetricsRegistry.ENGINE_PARALLEL_TASKS, "parallel_tasks"),
+        ):
+            self.record_level(definition, float(metrics_dict.get(key, 0)), attrs)
         self.record_metric(
             VolnuxMetricsRegistry.CPU_USAGE,
             float(metrics_dict.get("cpu_usage_cores", 0.0)),
-            attributes={"pipeline.name": pipeline_name},
+            attributes=attrs,
         )
         self.record_metric(
             VolnuxMetricsRegistry.MEMORY_USAGE,
-            float(metrics_dict.get("memory_usage_gb", 0.0)),
-            attributes={"pipeline.name": pipeline_name},
+            float(metrics_dict.get("memory_usage_gb", 0.0)) * 1024,
+            attributes=attrs,
         )
 
     def record_system_utilization(
@@ -451,8 +552,8 @@ class VolnuxMetricsCollector:
         self.record_metric(VolnuxMetricsRegistry.ERROR_COUNT, 1, attributes=attrs)
 
     def record_parallel_tasks(self, count: int, pipeline_name: str) -> None:
-        """Record number of parallel tasks."""
-        self.record_metric(
+        """Record the number of parallel tasks (a level)."""
+        self.record_level(
             VolnuxMetricsRegistry.ENGINE_PARALLEL_TASKS,
             count,
             attributes={"pipeline.name": pipeline_name},

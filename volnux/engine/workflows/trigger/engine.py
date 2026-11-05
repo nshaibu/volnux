@@ -59,9 +59,9 @@ class TriggerEngine:
     :ivar triggers: A mapping between trigger IDs and the respective TriggerBase instances.
     :type triggers: Dict[str, TriggerBase]
     :ivar drain_timeout: The timeout in seconds to wait for the task queue to drain during shutdown.
-    :type drain_timeout: int
+    :type drain_timeout: float
     :ivar _state_sync_interval: The interval in seconds for synchronizing trigger states.
-    :type _state_sync_interval: int
+    :type _state_sync_interval: float
     :ivar task_queue: An asynchronous queue holding tuples of workflow names and their parameters.
     :type task_queue: asyncio.Queue[Tuple[str, Dict[str, Any]]]
     """
@@ -71,8 +71,8 @@ class TriggerEngine:
         workflow_executor: Optional[WorkflowExecutor] = None,
         consumer_concurrency: Optional[int] = None,
         max_queue_size: Optional[int] = None,
-        drain_timeout: Optional[int] = None,
-        state_sync_interval: Optional[int] = None,
+        drain_timeout: Optional[float] = None,
+        state_sync_interval: Optional[float] = None,
     ):
         """
         Initialize the class with configurations related to the consumer concurrency,
@@ -86,9 +86,9 @@ class TriggerEngine:
             processing the task queue. Must be at least 1. Defaults to the
             ``TRIGGER_ENGINE_CONSUMER_CONCURRENCY`` setting (5).
         :param max_queue_size: The maximum size of the task queue. Once the queue
-            reaches this size, additional tasks will be blocked from being added until
-            space is available. Defaults to the ``TRIGGER_ENGINE_MAX_QUEUE_SIZE``
-            setting (1000).
+            reaches this size, further activations are dropped (and counted as errors
+            of their trigger). 0 means unbounded. Defaults to the
+            ``TRIGGER_ENGINE_MAX_QUEUE_SIZE`` setting (1000).
         :param drain_timeout: Specifies the timeout (in seconds) for draining the task
             queue when shutting down. Must be a positive number. Defaults to the
             ``TRIGGER_ENGINE_DRAIN_TIMEOUT`` setting (30).
@@ -103,9 +103,11 @@ class TriggerEngine:
         if max_queue_size is None:
             max_queue_size = int(setting("TRIGGER_ENGINE_MAX_QUEUE_SIZE", 1000))
         if drain_timeout is None:
-            drain_timeout = int(setting("TRIGGER_ENGINE_DRAIN_TIMEOUT", 30))
+            drain_timeout = float(setting("TRIGGER_ENGINE_DRAIN_TIMEOUT", 30))
         if state_sync_interval is None:
-            state_sync_interval = int(setting("TRIGGER_ENGINE_STATE_SYNC_INTERVAL", 10))
+            state_sync_interval = float(
+                setting("TRIGGER_ENGINE_STATE_SYNC_INTERVAL", 10)
+            )
 
         if consumer_concurrency < 1:
             raise ValueError("consumer_concurrency must be at least 1")
@@ -113,11 +115,19 @@ class TriggerEngine:
         if drain_timeout <= 0:
             raise ValueError("drain_timeout must be a positive number")
 
+        if state_sync_interval <= 0:
+            # (a zero interval would poll the state store in a busy loop)
+            raise ValueError("state_sync_interval must be a positive number")
+
+        if max_queue_size < 0:
+            raise ValueError("max_queue_size must not be negative (0 means unbounded)")
+
         self.workflow_executor: WorkflowExecutor = workflow_executor  # type: ignore[assignment]
         self.consumer_concurrency = consumer_concurrency
         self.triggers: Dict[str, TriggerBase] = {}
         self._running = False
         self.drain_timeout = drain_timeout
+        self._max_queue_size = max_queue_size
         self._state_sync_interval = state_sync_interval
 
         # The asynchronous queue to hold (workflow_name, params) tuples
@@ -246,8 +256,8 @@ class TriggerEngine:
         if not self.has_workflow_executor():
             raise RuntimeError("Workflow executor is not ready.")
 
-        workflow_registry: Optional["WorkflowRegistry"] = getattr(
-            self.workflow_executor, "_workflow_registry", None
+        workflow_registry: Optional["WorkflowRegistry"] = (
+            self.workflow_executor.get_workflow_registry()
         )
         if workflow_registry is None:
             raise RuntimeError(
@@ -258,19 +268,32 @@ class TriggerEngine:
         if workflow_config is None:
             raise RuntimeError("Workflow config not found.")
 
-        qs = workflow_config._registry._triggers.filter(trigger_type=trigger_type)
-        if not qs.exists():
+        if not workflow_config.triggers.has_type(trigger_type):
             raise ValueError(
                 f"Trigger type {trigger_type.value} not enabled for workflow {workflow_name}"
             )
 
-        try:
-            self.task_queue.put_nowait((workflow_name, workflow_params))
+        if self._enqueue(workflow_name, workflow_params):
             logger.debug(f"fire_trigger: workflow '{workflow_name}' enqueued.")
-        except asyncio.QueueFull:
+        else:
             logger.warning(
                 f"fire_trigger: task queue is full, dropping workflow '{workflow_name}'."
             )
+
+    def _enqueue(self, workflow_name: str, params: Dict[str, Any]) -> bool:
+        """Put a workflow run on the queue without waiting.
+
+        ``put_nowait``, not ``put``: on a full bounded queue ``put()`` waits for room
+        and never raises ``QueueFull``, which would stall the caller (a trigger, and
+        everything awaiting its ``activate()``) behind a backlog.
+
+        :return: False if the queue is full (the run is dropped), True otherwise.
+        """
+        try:
+            self.task_queue.put_nowait((workflow_name, params))
+        except asyncio.QueueFull:
+            return False
+        return True
 
     async def start(self):
         """
@@ -289,10 +312,16 @@ class TriggerEngine:
         :raises RuntimeError: If the workflow_executor attribute is not set before
             starting the engine.
         """
-        if self.workflow_executor is None:
+        if not self.has_workflow_executor():
             raise RuntimeError(
                 "Cannot start TriggerEngine: workflow_executor is not set."
             )
+
+        if self._running:
+            # (a second start would add a second pool of consumers and a second
+            # state-sync loop)
+            logger.warning("TriggerEngine is already running; start() ignored.")
+            return
 
         self._running = True
         logger.info(f"Starting trigger engine with {len(self.triggers)} triggers")
@@ -327,8 +356,8 @@ class TriggerEngine:
         cancelled and awaited cleanly. If the queue draining timeout occurs, any
         remaining items in the queue will be dropped.
 
-        :raises asyncio.TimeoutError: If the queue draining operation exceeds the
-            defined drain timeout.
+        A drain that exceeds ``drain_timeout`` is not an error: what is still queued
+        is dropped (and logged), so a later ``start()`` does not run stale items.
         """
         self._running = False
         logger.info("Stopping trigger engine — draining queue before shutdown.")
@@ -340,18 +369,7 @@ class TriggerEngine:
             except Exception as e:
                 logger.error(f"Failed to stop trigger {trigger.trigger_id}: {e}")
 
-        if self._state_sync_task:
-            if not self._state_sync_task.done():
-                logger.info("Stopping state-sync loop.")
-                self._state_sync_task.cancel()
-                try:
-                    await self._state_sync_task
-                except asyncio.CancelledError:
-                    pass
-                finally:
-                    self._state_sync_task = None
-            else:
-                logger.info("State-sync loop already stopped.")
+        await self._stop_state_sync()
 
         remaining = self.task_queue.qsize()
         if remaining > 0:
@@ -371,14 +389,11 @@ class TriggerEngine:
                     f"Drain timed out after {self.drain_timeout}s — "
                     f"{leftover} item(s) will be dropped."
                 )
+                self._clear_queue()
         else:
             logger.info("Queue already empty, skipping drain.")
 
-        for task in self._consumer_tasks:
-            task.cancel()
-
-        await asyncio.gather(*self._consumer_tasks, return_exceptions=True)
-        self._consumer_tasks.clear()
+        await self._cancel_consumers()
 
         logger.info("Trigger engine and consumer pool stopped.")
 
@@ -413,20 +428,11 @@ class TriggerEngine:
                     f"force_stop: failed to stop trigger '{trigger_id}': {err}"
                 )
 
-        for task in self._consumer_tasks:
-            task.cancel()
+        # (the state-sync loop used to be left running after a force stop)
+        await self._stop_state_sync()
+        await self._cancel_consumers()
 
-        await asyncio.gather(*self._consumer_tasks, return_exceptions=True)
-        self._consumer_tasks.clear()
-
-        dropped = 0
-        while not self.task_queue.empty():
-            try:
-                self.task_queue.get_nowait()
-                self.task_queue.task_done()
-                dropped += 1
-            except asyncio.QueueEmpty:
-                break
+        dropped = self._clear_queue()
 
         if dropped:
             logger.warning(f"force_stop: dropped {dropped} unprocessed queue item(s).")
@@ -435,6 +441,39 @@ class TriggerEngine:
 
         logger.warning("Trigger engine force-stopped.")
         return dropped
+
+    async def _stop_state_sync(self) -> None:
+        """Cancel the state-sync loop and wait until it has ended."""
+        task, self._state_sync_task = self._state_sync_task, None
+        if task is None:
+            return
+        if task.done():
+            logger.info("State-sync loop already stopped.")
+            return
+        logger.info("Stopping state-sync loop.")
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _cancel_consumers(self) -> None:
+        """Cancel the consumer pool and wait until every worker has ended."""
+        tasks, self._consumer_tasks = self._consumer_tasks, []
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _clear_queue(self) -> int:
+        """Drop everything still queued; returns how many items were dropped."""
+        dropped = 0
+        while True:
+            try:
+                self.task_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return dropped
+            self.task_queue.task_done()
+            dropped += 1
 
     @staticmethod
     async def _end_trigger(trigger: TriggerBase) -> bool:
@@ -553,23 +592,21 @@ class TriggerEngine:
             return
 
         try:
-            # Enqueue the workflow details. put_nowait, not put: on a full bounded
-            # queue put() waits for room and never raises QueueFull, which would stall
-            # the trigger (and everything awaiting its activate()) behind a backlog.
-            self.task_queue.put_nowait(
-                (trigger.workflow_name, activation.workflow_params)
-            )
-            logger.debug(f"Workflow '{trigger.workflow_name}' enqueued.")
-        except asyncio.QueueFull:
-            logger.warning(
-                f"Task queue is full; dropping activation for trigger '{trigger.trigger_id}' "
-                f"(workflow: '{trigger.workflow_name}')."
-            )
-            trigger.state.error_count += 1
-            await trigger.state.save_async()
+            queued = self._enqueue(trigger.workflow_name, activation.workflow_params)
         except Exception as e:
-            # If putting on the queue fails (rare for asyncio.Queue)
+            # (rare for an asyncio.Queue)
             logger.error(f"Failed to enqueue workflow for {trigger.trigger_id}: {e}")
+            queued = False
+        else:
+            if queued:
+                logger.debug(f"Workflow '{trigger.workflow_name}' enqueued.")
+            else:
+                logger.warning(
+                    f"Task queue is full; dropping activation for trigger "
+                    f"'{trigger.trigger_id}' (workflow: '{trigger.workflow_name}')."
+                )
+
+        if not queued:
             trigger.state.error_count += 1
             await trigger.state.save_async()
 

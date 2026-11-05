@@ -1,19 +1,16 @@
 import logging
 import typing
-import os
 import asyncio
 from pathlib import Path
 from collections import ChainMap
 from typing import Any, Dict, List, Optional, Type, TYPE_CHECKING, Set
-from concurrent.futures import ThreadPoolExecutor
 
 from volnux import __version__ as version
 from volnux.exceptions import ImproperlyConfigured
 from volnux.event.registry import RegistryNotReady
-from volnux.result import EventResult
 from .source import WorkflowSource, RegistrySource
 
-__all__ = ["get_workflow_registry", "WorkflowRegistry"]
+__all__ = ["get_workflow_registry", "reset_workflow_registry", "WorkflowRegistry"]
 
 logger = logging.getLogger(__name__)
 
@@ -41,15 +38,32 @@ class WorkflowRegistry:
 
         self._ready = False
         self._loading = False
-        self._load_lock = asyncio.Lock()  # guards against concurrent loads
+        # Guards against concurrent loads. Made when first needed, inside the
+        # running loop: the registry is a module-level singleton built at import,
+        # and before Python 3.10 a lock belongs to the loop current when it is made.
+        self._load_lock: Optional[asyncio.Lock] = None
+        # Bumped when a load finishes: a caller that waited for the lock can tell
+        # that the load it was waiting for has been done by someone else.
+        self._load_generation = 0
+        self._load_errors: Dict[str, str] = {}
 
-        # Cache directory for remote workflows
+        # Cache directory for remote workflows (created when a load needs it, not
+        # as a side effect of importing the module)
         self._cache_dir = cache_dir or Path.home() / ".volnux" / "workflow_cache"
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def workflow_count(self) -> int:
+        """How many workflow configurations are registered."""
+        return len(self._workflows)
 
     @property
     def combined_workflow_sources(self) -> ChainMap[str, WorkflowSource]:
         return ChainMap(self._workflow_local_sources, self._workflow_remote_sources)
+
+    @property
+    def load_errors(self) -> Dict[str, str]:
+        """Why each source of the last load failed (source name -> message)."""
+        return dict(self._load_errors)
 
     def register(self, workflow_config: "WorkflowConfig"):
         """Register a workflow configuration."""
@@ -120,14 +134,26 @@ class WorkflowRegistry:
         if not workflows_root.is_dir():
             raise ImproperlyConfigured(f"Not a directory: {workflows_root}")
 
-        for workflow_dir in workflows_root.iterdir():
+        found = False
+        # (sorted: the order the directory lists them in is not stable, and so
+        # neither would the order the workflows load in)
+        for workflow_dir in sorted(workflows_root.iterdir()):
             if not workflow_dir.is_dir():
                 continue
 
             dirname = workflow_dir.name
+            if dirname.startswith((".", "_")):
+                # __pycache__, .git, ...: not workflows
+                continue
             if workflow_name is not None and workflow_name != dirname:
                 continue
 
+            found = True
+            if dirname in self._workflow_remote_sources:
+                logger.warning(
+                    "Local workflow '%s' shadows the remote source of the same name",
+                    dirname,
+                )
             local = WorkflowSource(
                 name=dirname,
                 location=workflow_dir,
@@ -136,56 +162,101 @@ class WorkflowRegistry:
             )
             self._workflow_local_sources[dirname] = local
 
+        if workflow_name is not None and not found:
+            logger.warning(
+                "Workflow '%s' was not found in %s", workflow_name, workflows_root
+            )
+
     async def load_workflow_configs(self) -> None:
         """
         Load workflows from all configured sources.
 
+        Sources load concurrently; one that fails (it raises, or reports an error)
+        is logged and recorded in :attr:`load_errors`, and the others still load.
+        The registry is ready afterwards, whether or not anything loaded.
+
+        A call made while another load is running waits for that load and returns
+        without loading again (loading twice would register every workflow twice).
+
         :return: None
         """
+        if self._load_lock is None:
+            self._load_lock = asyncio.Lock()
+
+        generation = self._load_generation
         async with self._load_lock:
-            if self._loading:
-                return
+            if self._load_generation != generation:
+                return  # the load we waited for has done the work
+
             self._loading = True
+            try:
+                self._load_errors = {}
+                sources = list(self.combined_workflow_sources.values())
+                if not sources:
+                    logger.warning("No workflow sources to load")
+                    return
 
+                self._ensure_cache_dir(sources)
+                params = {"cache_dir": self._cache_dir}
+
+                results = await asyncio.gather(
+                    *[
+                        self.process_workflow_source(source, self, params)
+                        for source in sources
+                    ],
+                    return_exceptions=True,
+                )
+
+                for source, result in zip(sources, results):
+                    self._record_load(source, result)
+
+            finally:
+                self._loading = False
+                self._load_generation += 1
+
+                # Mark ready unconditionally — loading completed (even if nothing
+                # loaded). Callers should inspect the registered workflows to
+                # determine whether any configs are available, not treat an empty
+                # registry as "not ready".
+                self.make_ready()
+
+    def _ensure_cache_dir(self, sources: List[WorkflowSource]) -> None:
+        """Create the cache directory if a remote source will want it."""
+        if all(source.source_type == RegistrySource.LOCAL for source in sources):
+            return
         try:
-            sources = list(self.combined_workflow_sources.values())
-            if not sources:
-                logger.warning("No workflow sources to load")
-                return
-
-            params = {"cache_dir": self._cache_dir}
-
-            results = await asyncio.gather(
-                *[
-                    self.process_workflow_source(source, self, params)
-                    for source in sources
-                ],
-                return_exceptions=True,
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "Cannot create the workflow cache %s: %s", self._cache_dir, exc
             )
 
-            for source, result in zip(sources, results):
-                if isinstance(result, BaseException):
-                    logger.error(
-                        "Failed to load config from %s: %s",
-                        source.name,
-                        result,
-                        exc_info=result,
-                    )
-                else:
-                    logger.debug("Successfully loaded config from %s", source.name)
+    def _record_load(self, source: WorkflowSource, result: Any) -> None:
+        """Log the outcome of loading one source and remember a failure.
 
-        finally:
-            self._loading = False
-
-            # Mark ready unconditionally — loading completed (even if nothing loaded).
-            # Callers should inspect _workflows to determine whether any configs
-            # are available, not treat an empty registry as "not ready".
-            self.make_ready()
+        A loader reports most failures as an error result rather than by raising,
+        so both are failures here (an error result used to be logged as a success).
+        """
+        if isinstance(result, BaseException):
+            message = str(result) or type(result).__name__
+            logger.error(
+                "Failed to load config from %s: %s",
+                source.name,
+                message,
+                exc_info=result,
+            )
+        elif getattr(result, "error", False):
+            message = str(getattr(result, "content", None) or "the loader failed")
+            logger.error("Failed to load config from %s: %s", source.name, message)
+        else:
+            logger.debug("Successfully loaded config from %s", source.name)
+            return
+        self._load_errors[source.name] = message
 
     @staticmethod
     async def process_workflow_source(
         workflow_source: WorkflowSource, registry, params: Dict[str, Any]
-    ) -> EventResult:
+    ) -> Any:
         """
         Process a workflow source.
         """
@@ -259,8 +330,20 @@ def _configured_cache_dir() -> Optional[Path]:
     return Path(value).expanduser() if value else None
 
 
-_workflow_registry = WorkflowRegistry(cache_dir=_configured_cache_dir())
+_workflow_registry: Optional[WorkflowRegistry] = None
 
 
 def get_workflow_registry() -> WorkflowRegistry:
+    """The process-wide registry, made on first use (so importing this module
+    neither reads the configuration nor touches the file system)."""
+    global _workflow_registry
+    if _workflow_registry is None:
+        _workflow_registry = WorkflowRegistry(cache_dir=_configured_cache_dir())
     return _workflow_registry
+
+
+def reset_workflow_registry() -> None:
+    """Forget the process-wide registry; the next ``get_workflow_registry()``
+    makes a fresh one (a restart in the same process, tests)."""
+    global _workflow_registry
+    _workflow_registry = None

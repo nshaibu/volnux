@@ -46,7 +46,7 @@ async def _run_server(
     )
 
     trigger_task = asyncio.create_task(
-        _start_triggers_after_startup(server, trigger_engine),
+        _start_triggers_after_startup(server, trigger_engine, server_task),
         name="trigger-engine-start",
     )
 
@@ -56,7 +56,24 @@ async def _run_server(
     )
 
     try:
-        await asyncio.gather(server_task, trigger_task, stop_task)
+        done, _ = await asyncio.wait(
+            {server_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if server_task in done:
+            # Uvicorn ended before anything asked it to: a crash, or a startup
+            # that failed (the application's lifespan raised: no SECRET_KEY, a
+            # port in use...). That must fail the command, not leave a process
+            # that looks like a running server.
+            error = server_task.exception()
+            if error is not None:
+                raise error
+            if not server.started and not stop_event.is_set():
+                raise RuntimeError(
+                    "The API server failed to start (see the error above)."
+                )
+        else:
+            # Asked to stop: let Uvicorn finish its graceful shutdown.
+            await server_task
     except asyncio.CancelledError:
         # Propagate cancellation — outer finally handles cleanup
         raise
@@ -91,18 +108,24 @@ async def _watch_stop_event(stop_event: asyncio.Event, server: uvicorn.Server) -
 
 
 async def _start_triggers_after_startup(
-    server: "uvicorn.Server", trigger_engine: "TriggerEngine"
+    server: "uvicorn.Server",
+    trigger_engine: "TriggerEngine",
+    server_task: Optional["asyncio.Task"] = None,
 ) -> None:
     """
     Polls until Uvicorn has started accepting connections, then arms all triggers.
     This ensures that components like WebhookTrigger which register HTTP
     endpoints on the live app do not start before Uvicorn is ready.
 
+    The triggers are not armed if Uvicorn never starts: when ``server_task`` has
+    ended without the server having started, or after 5 s.
+
     :param server: The Uvicorn server instance to monitor.
     :type server: uvicorn.Server
     :param trigger_engine: The trigger engine responsible for managing triggers.
         This may be None if no engine is being used.
     :type trigger_engine: TriggerEngine
+    :param server_task: The task running ``server.serve()``, to notice it ending.
     :return: None
     """
 
@@ -110,11 +133,13 @@ async def _start_triggers_after_startup(
     for _ in range(50):  # 50 × 0.1s = 5s maximum wait
         if getattr(server, "started", False):
             break
+        if server_task is not None and server_task.done():
+            logger.error("Uvicorn stopped before it started — triggers not armed")
+            return
         await asyncio.sleep(0.1)
     else:
-        logger.warning(
-            "Uvicorn did not report started after 5s — " "starting TriggerEngine anyway"
-        )
+        logger.error("Uvicorn did not report started after 5s — triggers not armed")
+        return
 
     if trigger_engine is not None:
         try:
@@ -281,189 +306,21 @@ async def _detect_file_change(
     return []
 
 
-def _setup_otel(engine: "TriggerEngine", dev_mode: bool):
+def _setup_otel(engine, dev_mode: bool, role: str = "api"):
     """
-    Configure Volnux OTel instrumentation using the existing Volnux OTel layer.
-
-    Delegates entirely to the Volnux OTel infrastructure rather than
-    configuring the raw OTel SDK directly. This ensures the span hierarchy,
-    attribute naming conventions, and component patching are consistent with
-    the rest of the Volnux framework.
-
-    What this does:
-        1. Builds VolnuxTracerConfig from environment variables.
-           Supports three backend modes:
-             - Datadog (VOLNUX_OTEL_BACKEND=datadog)
-             - Grafana (VOLNUX_OTEL_BACKEND=grafana, or default)
-             - Generic (any OTLP-compatible collector)
-        2. Calls VolnuxTracer.initialize(config) — sets the global
-           TracerProvider and configures OTLP export.
-        3. Patches all Volnux execution components:
-             - patch_all_execution_components() — ExecutionContext + Coordinator
-             - patch_all_pipeline_components()  — Pipeline + Signals
-        4. Instruments the engine via instrument_engine() so that
-           workflow.*, engine.*, context.*, coordinator.*, flow.* spans
-           are emitted automatically (matching the documented hierarchy).
-        5. Instruments FastAPI via opentelemetry-instrumentation-fastapi
-           so that every HTTP request to the REST API gets a root span
-           with method, route, and status_code attributes.
-        6. Returns a shutdown callable that calls tracer.shutdown() —
-           flushes the BatchSpanProcessor before the process exits.
-
-    Return:
-        Callable[[], None]
-            Shutdown function. Call during a graceful shutdown to flush pending
-            spans before the process exits.
+    Start OpenTelemetry from the ``OTEL_*`` settings and return the function that
+    shuts it down (see :func:`volnux.otel.bootstrap.setup_otel`: one path for the
+    tracer, the instrumented components, metrics and trace propagation, shared by
+    every server).
     """
-    otel_enabled = bool(setting("OTEL_ENABLED", False))
-    if not otel_enabled:
-        logger.debug("OTel disabled by VOLNUX_OTEL_ENABLED=false")
-        return lambda: None
+    from volnux.otel.bootstrap import setup_otel
 
-    try:
-        from volnux.otel.tracer_setup import VolnuxTracerConfig, VolnuxTracer
-        from volnux.otel.instrumentations.context_coordinator import (
-            patch_all_execution_components,
-        )
-        from volnux.otel.instrumentations.signal import patch_all_pipeline_components
-        from volnux.otel.instrumentations.engine import instrument_engine
-    except ImportError as exc:
-        logger.warning(
-            "Volnux OTel module not available (%s) — tracing disabled. "
-            "Ensure volnux[otel] is installed.",
-            exc,
-        )
-        return lambda: None
-
-    try:
-        # Build VolnuxTracerConfig from environment
-        #
-        # Backend selection via VOLNUX_OTEL_BACKEND:
-        #   "datadog" → routes to Datadog Agent OTLP receiver (port 4317)
-        #   "grafana"  → routes directly to Tempo or Grafana Agent
-        #   anything else → generic OTLP endpoint (OTel Collector, Jaeger, etc.)
-        #
-        # Endpoint selection (in priority order):
-        #   1. VOLNUX_OTEL_DATADOG_URL (Datadog Agent OTLP gRPC)
-        #   2. VOLNUX_OTEL_TEMPO_URL (Tempo / Grafana Agent)
-        #   3. VOLNUX_OTEL_ENDPOINT (generic OTLP — OTel Collector default)
-
-        backend = str(setting("OTEL_BACKEND", "grafana")).lower()
-        endpoint = setting("OTEL_ENDPOINT", "http://localhost:4317")
-        service_name = setting("OTEL_SERVICE_NAME", None) or getattr(
-            engine, "project_name", "volnux"
-        )
-        service_ver = getattr(engine, "version", setting("VERSION", "unknown"))
-        environment = (
-            "development" if dev_mode or setting("DEBUG", False) else "production"
-        )
-        node_id = setting("NODE_ID", "local")
-
-        config_kwargs: dict = {
-            "service_name": service_name,
-            "service_version": service_ver,
-            "environment": environment,
-            "custom_attributes": {
-                "volnux.node.id": node_id,
-                "volnux.role": "api",
-            },
-        }
-
-        if backend == "datadog":
-            datadog_url = setting("OTEL_DATADOG_URL", None) or endpoint
-            config_kwargs["datadog_agent_url"] = datadog_url
-            logger.info("OTel backend: Datadog Agent at %s", datadog_url)
-
-        elif backend == "grafana":
-            tempo_url = setting("OTEL_TEMPO_URL", None) or endpoint
-            config_kwargs["tempo_endpoint"] = tempo_url
-            logger.info("OTel backend: Grafana/Tempo at %s", tempo_url)
-
-        else:
-            # Generic OTLP — OTel Collector, Jaeger, etc.
-            config_kwargs["otlp_endpoint"] = endpoint
-            logger.info("OTel backend: generic OTLP at %s", endpoint)
-
-        config = VolnuxTracerConfig(**config_kwargs)
-
-        # Initialize the global TracerProvider
-        tracer = VolnuxTracer.initialize(config)
-        logger.info(
-            "Volnux OTel tracer initialised: service=%s env=%s",
-            service_name,
-            environment,
-        )
-
-        # Patch Volnux execution components
-        # Instruments ExecutionContext, Coordinator, Pipeline, and Signal
-        # subsystems so that all workflow spans are emitted automatically
-        # with the documented hierarchy:
-        #   workflow.* → engine.* → context.* → coordinator.* → flow.*
-        patch_all_execution_components()
-        patch_all_pipeline_components()
-        logger.debug("Volnux execution components patched")
-
-        # Instrument the engine
-        # Wraps DefaultWorkflowEngine methods to emit engine.execute,
-        # engine.process_task, engine.resolve_next_task, engine.sink_nodes
-        # spans as documented in the span hierarchy.
-        try:
-            instrumented = instrument_engine(engine)
-            # Replace the engine reference on the module level if it is a
-            # module-level singleton. For injected engines, the caller is
-            # responsible for using the returned instrumented instance.
-            # We update the engine in-place where possible.
-            if instrumented is not engine:
-                logger.debug(
-                    "Engine wrapped by instrument_engine — "
-                    "instrumented instance returned"
-                )
-        except Exception as exc:
-            # Non-fatal — engine still works, just without engine-level spans
-            logger.warning(
-                "instrument_engine failed (%s) — engine spans will be missing",
-                exc,
-            )
-
-        # Instrument FastAPI
-        # Adds a root HTTP span for every incoming request.
-        # Attributes: http.method, http.route, http.status_code, net.host.name
-        # This connects external HTTP spans to the Volnux workflow spans below.
-        try:
-            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-
-            FastAPIInstrumentor().instrument(
-                # Exclude health and metrics endpoints from tracing — they
-                # are high-frequency and produce no useful trace information.
-                excluded_urls="api/v1/health,metrics",
-            )
-            logger.debug("FastAPI instrumented with OTel")
-        except ImportError:
-            logger.debug(
-                "opentelemetry-instrumentation-fastapi not installed — "
-                "HTTP request spans will be missing. "
-                "Install with: pip install opentelemetry-instrumentation-fastapi"
-            )
-
-        # Return shutdown callable
-        # tracer.shutdown() flushes the BatchSpanProcessor — all in-flight
-        # spans are exported before the process exits.
-        def _shutdown() -> None:
-            try:
-                tracer.shutdown()
-                logger.info("OTel tracer shut down and spans flushed")
-            except Exception as exc:
-                logger.warning("OTel shutdown error: %s", exc)
-
-        return _shutdown
-
-    except Exception as exc:
-        logger.warning(
-            "OTel setup failed (%s) — tracing disabled. "
-            "Workflow execution is unaffected.",
-            exc,
-        )
-        return lambda: None
+    return setup_otel(
+        project_name=getattr(engine, "project_name", "volnux"),
+        version=getattr(engine, "version", setting("VERSION", "unknown")),
+        dev_mode=dev_mode,
+        role=role,
+    )
 
 
 # Prometheus

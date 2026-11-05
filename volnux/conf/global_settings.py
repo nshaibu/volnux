@@ -109,7 +109,7 @@ NODE_ID = "local"
 # -----------------------------------------------------------------------------
 # VERSION
 #   What:        Application version reported by workers and telemetry.
-#   Used by:     volnux/adapters/lifecycle/*, volnux/adapters/worker_server.py
+#   Used by:     volnux/adapters/lifecycle/*, volnux/adapters/lifecycle/worker_server.py
 #   Env:         VOLNUX_VERSION
 #   Production:
 #       VERSION = "2.1.0"
@@ -419,7 +419,7 @@ CHECKPOINT_CONFIG = {
 # CHECKPOINT_DRAIN_TIMEOUT
 #   What:        Seconds a stopping worker waits for queued checkpoints to be written
 #                before it exits. (`volnux dev` uses 30.)
-#   Used by:     volnux/cli/command/builtins/serve.py, volnux/adapters/worker_server.py
+#   Used by:     volnux/cli/command/builtins/serve.py, volnux/adapters/lifecycle/worker_server.py
 #   Env:         VOLNUX_CHECKPOINT_DRAIN_TIMEOUT
 #   Production:
 #       CHECKPOINT_DRAIN_TIMEOUT = 300.0
@@ -788,7 +788,7 @@ API_DOCS = False
 # ACCESS_LOG
 #   What:        Log every HTTP request.
 #   Used by:     volnux/adapters/lifecycle/api_server.py,
-#                volnux/adapters/worker_server.py
+#                volnux/adapters/lifecycle/worker_server.py
 #   Env:         VOLNUX_ACCESS_LOG
 #   Production:
 #       ACCESS_LOG = False             # usually the ingress logs requests already
@@ -816,7 +816,7 @@ WORKER_PORT = 9090
 # -----------------------------------------------------------------------------
 # GRPC_PORT
 #   What:        Port of a worker's gRPC remote-manager endpoint.
-#   Used by:     volnux/adapters/worker_server.py, volnux/adapters/lifecycle/*
+#   Used by:     volnux/adapters/lifecycle/worker_server.py, volnux/adapters/lifecycle/*
 #   Env:         VOLNUX_GRPC_PORT
 #   Production:
 #       GRPC_PORT = 45545
@@ -935,7 +935,7 @@ LOGGING = {
 # OTEL_ENABLED
 #   What:        Export OpenTelemetry traces. Off by default because it needs a collector
 #                to send to.
-#   Used by:     volnux/adapters/lifecycle/utils.py, volnux/adapters/worker_server.py
+#   Used by:     volnux/otel/bootstrap.py, volnux/observability.py
 #   Env:         VOLNUX_OTEL_ENABLED
 #   Production:
 #       OTEL_ENABLED = True
@@ -945,7 +945,7 @@ OTEL_ENABLED = False
 # OTEL_BACKEND
 #   What:        Where traces go: 'grafana' (Tempo), 'datadog' (Datadog Agent) or
 #                anything else for a generic OTLP collector.
-#   Used by:     volnux/adapters/lifecycle/utils.py, volnux/adapters/worker_server.py
+#   Used by:     volnux/otel/bootstrap.py, volnux/observability.py
 #   Env:         VOLNUX_OTEL_BACKEND
 #   Production:
 #       OTEL_BACKEND = "grafana"
@@ -954,7 +954,7 @@ OTEL_BACKEND = "grafana"
 # -----------------------------------------------------------------------------
 # OTEL_ENDPOINT
 #   What:        OTLP endpoint, used by every backend unless it has its own URL below.
-#   Used by:     volnux/adapters/lifecycle/utils.py, volnux/adapters/worker_server.py
+#   Used by:     volnux/otel/bootstrap.py, volnux/observability.py
 #   Env:         VOLNUX_OTEL_ENDPOINT
 #   Production:
 #       OTEL_ENDPOINT = "http://otel-collector.observability:4317"
@@ -963,7 +963,7 @@ OTEL_ENDPOINT = "http://localhost:4317"
 # -----------------------------------------------------------------------------
 # OTEL_SERVICE_NAME
 #   What:        Service name on the traces. None: the project name, else 'volnux'.
-#   Used by:     volnux/adapters/lifecycle/utils.py, volnux/adapters/worker_server.py
+#   Used by:     volnux/otel/bootstrap.py, volnux/observability.py
 #   Env:         VOLNUX_OTEL_SERVICE_NAME
 #   Production:
 #       OTEL_SERVICE_NAME = "volnux-trading"
@@ -972,7 +972,7 @@ OTEL_SERVICE_NAME = None
 # -----------------------------------------------------------------------------
 # OTEL_DATADOG_URL
 #   What:        Datadog Agent OTLP URL (backend 'datadog'). None: OTEL_ENDPOINT.
-#   Used by:     volnux/adapters/lifecycle/utils.py, volnux/adapters/worker_server.py
+#   Used by:     volnux/otel/bootstrap.py, volnux/observability.py
 #   Env:         VOLNUX_OTEL_DATADOG_URL
 #   Production:
 #       OTEL_DATADOG_URL = "http://datadog-agent:4317"
@@ -981,7 +981,7 @@ OTEL_DATADOG_URL = None
 # -----------------------------------------------------------------------------
 # OTEL_TEMPO_URL
 #   What:        Tempo / Grafana Agent URL (backend 'grafana'). None: OTEL_ENDPOINT.
-#   Used by:     volnux/adapters/lifecycle/utils.py, volnux/adapters/worker_server.py
+#   Used by:     volnux/otel/bootstrap.py, volnux/observability.py
 #   Env:         VOLNUX_OTEL_TEMPO_URL
 #   Production:
 #       OTEL_TEMPO_URL = "http://tempo:4317"

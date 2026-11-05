@@ -3,6 +3,7 @@ OpenTelemetry Context Manager for Volnux Execution Contexts
 Handles context propagation through the execution chain
 """
 
+import logging
 import typing
 from contextvars import ContextVar
 from opentelemetry import trace, context
@@ -12,9 +13,30 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 if typing.TYPE_CHECKING:
     from volnux.execution.context import ExecutionContext
 
+logger = logging.getLogger(__name__)
+
 # Context variable to store OTel context across async boundaries
 _otel_context_var: ContextVar[typing.Optional[context.Context]] = ContextVar(
     "volnux_otel_context", default=None
+)
+# What each set_async_context replaced, innermost last: clear_async_context puts
+# the previous value back, so nested contexts unwind to their parent (clearing to
+# None lost the outer context for the rest of the outer dispatch).
+_otel_context_stack: ContextVar[typing.Tuple[typing.Optional[context.Context], ...]] = (
+    ContextVar("volnux_otel_context_stack", default=())
+)
+
+#: Attribute names that hold a secret: their values are never put on a span.
+SENSITIVE_NAME_PARTS = (
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "credential",
+    "authorization",
+    "api_key",
+    "apikey",
+    "private_key",
 )
 
 
@@ -48,13 +70,18 @@ class OTelContextManager:
             span: The OpenTelemetry span
             otel_context: The OpenTelemetry context (optional)
         """
-        # Store span and context on the execution context
-        setattr(execution_context, cls.SPAN_KEY, span)
-
         if otel_context is None:
             otel_context = trace.set_span_in_context(span)
 
-        setattr(execution_context, cls.CONTEXT_KEY, otel_context)
+        # Store span and context on the execution context. An object that cannot
+        # take the attributes (slots, frozen) just does not carry them.
+        try:
+            setattr(execution_context, cls.SPAN_KEY, span)
+            setattr(execution_context, cls.CONTEXT_KEY, otel_context)
+        except (AttributeError, TypeError, ValueError):
+            logger.debug(
+                "Cannot attach the span to %s", type(execution_context).__name__
+            )
 
     @classmethod
     def get_span_from_context(
@@ -101,11 +128,14 @@ class OTelContextManager:
         Returns:
             Parent OTel context or None
         """
-        if execution_context.previous_context:
-            return cls.get_otel_context_from_execution_context(
-                execution_context.previous_context
-            )
-        return None
+        previous = getattr(execution_context, "previous_context", None)
+        if previous:
+            parent = cls.get_otel_context_from_execution_context(previous)
+            if parent is not None:
+                return parent
+        # (what propagate_context_to_next stored, for a context linked after the
+        # previous one had finished)
+        return getattr(execution_context, cls.PARENT_CONTEXT_KEY, None)
 
     @classmethod
     def propagate_context_to_next(
@@ -122,7 +152,10 @@ class OTelContextManager:
             current_context
         )
         if current_otel_context:
-            setattr(next_context, cls.PARENT_CONTEXT_KEY, current_otel_context)
+            try:
+                setattr(next_context, cls.PARENT_CONTEXT_KEY, current_otel_context)
+            except (AttributeError, TypeError, ValueError):
+                logger.debug("Cannot propagate the trace to the next context")
 
     @classmethod
     def serialize_context(
@@ -173,6 +206,7 @@ class OTelContextManager:
         Args:
             otel_context: The OTel context to set
         """
+        _otel_context_stack.set((*_otel_context_stack.get(), _otel_context_var.get()))
         _otel_context_var.set(otel_context)
 
     @classmethod
@@ -187,12 +221,29 @@ class OTelContextManager:
 
     @classmethod
     def clear_async_context(cls) -> None:
-        """Clear the async context variable."""
-        _otel_context_var.set(None)
+        """Undo the last :meth:`set_async_context` (back to the context it replaced,
+        None if there is none)."""
+        stack = _otel_context_stack.get()
+        if not stack:
+            _otel_context_var.set(None)
+            return
+        _otel_context_stack.set(stack[:-1])
+        _otel_context_var.set(stack[-1])
+
+
+def _is_sensitive(name: str) -> bool:
+    lowered = name.lower()
+    return any(part in lowered for part in SENSITIVE_NAME_PARTS)
 
 
 class SpanHelper:
-    """Helper utilities for working with OpenTelemetry spans"""
+    """Helper utilities for working with OpenTelemetry spans.
+
+    The ``*_attributes`` functions build the attributes; ``add_*`` put them on a
+    span. Values OpenTelemetry cannot hold (``None``, objects) are cleaned, and an
+    attribute that cannot be read is left out: describing a span never fails the
+    code that is being traced.
+    """
 
     @staticmethod
     def set_status_from_execution(
@@ -206,18 +257,41 @@ class SpanHelper:
             execution_context: The execution context with state
         """
         from volnux.execution.status import ExecutionStatus
+        from volnux.otel.instrumentations._common import record_error
 
-        if execution_context.status == ExecutionStatus.COMPLETED:
+        status = execution_context.status
+        if status == ExecutionStatus.COMPLETED:
             span.set_status(Status(StatusCode.OK))
-        elif execution_context.status == ExecutionStatus.FAILED:
-            span.set_status(Status(StatusCode.ERROR, "Execution failed"))
-            # Add errors as events
+        elif status == ExecutionStatus.FAILED:
+            # Add errors as events (a stored error may be text, not an exception)
             for error in execution_context.errors:
-                span.record_exception(error)
-        elif execution_context.status == ExecutionStatus.CANCELLED:
+                record_error(span, error)
+            span.set_status(Status(StatusCode.ERROR, "Execution failed"))
+        elif status == ExecutionStatus.CANCELLED:
             span.set_status(Status(StatusCode.ERROR, "Execution cancelled"))
-        elif execution_context.status == ExecutionStatus.ABORTED:
+        elif status == ExecutionStatus.ABORTED:
             span.set_status(Status(StatusCode.ERROR, "Execution aborted"))
+
+    @staticmethod
+    def task_attributes(task) -> typing.Dict[str, typing.Any]:
+        attributes: typing.Dict[str, typing.Any] = {}
+        for key, read in (
+            ("task.id", lambda: str(task.get_id())),
+            ("task.name", lambda: task.get_event_name()),
+            ("task.is_conditional", lambda: getattr(task, "is_conditional", None)),
+            (
+                "task.is_parallel",
+                lambda: getattr(task, "is_parallel_execution_node", False),
+            ),
+            ("task.descriptor", lambda: str(task.descriptor)),
+        ):
+            try:
+                attributes[key] = read()
+            except Exception:
+                continue
+        if getattr(task, "is_sink", False):
+            attributes["task.is_sink"] = True
+        return attributes
 
     @staticmethod
     def add_task_attributes(span: Span, task) -> None:
@@ -228,18 +302,36 @@ class SpanHelper:
             span: The OpenTelemetry span
             task: The task object
         """
-        span.set_attribute("task.id", str(task.get_id()))
-        span.set_attribute("task.name", task.get_event_name())
-        span.set_attribute("task.is_conditional", task.is_conditional)
-        span.set_attribute(
-            "task.is_parallel", getattr(task, "is_parallel_execution_node", False)
-        )
+        from volnux.otel.instrumentations._common import set_attributes
 
-        if hasattr(task, "descriptor"):
-            span.set_attribute("task.descriptor", str(task.descriptor))
+        set_attributes(span, SpanHelper.task_attributes(task))
 
-        if hasattr(task, "is_sink") and task.is_sink:
-            span.set_attribute("task.is_sink", True)
+    @staticmethod
+    def context_attributes(execution_context) -> typing.Dict[str, typing.Any]:
+        attributes: typing.Dict[str, typing.Any] = {}
+
+        def put(key: str, read: typing.Callable[[], typing.Any]) -> None:
+            try:
+                attributes[key] = read()
+            except Exception:
+                pass
+
+        put("context.id", lambda: execution_context.id)
+        put("context.is_multitask", lambda: execution_context.is_multitask())
+        if getattr(execution_context, "pipeline", None):
+            put("context.pipeline_id", lambda: execution_context.pipeline.id)
+        try:
+            task_profiles = execution_context.get_task_profiles()
+            attributes["context.task_count"] = len(task_profiles)
+            attributes["context.tasks"] = ",".join(
+                task.get_event_name() for task in task_profiles
+            )
+        except Exception:
+            pass
+        put("context.depth", lambda: execution_context.get_depth())
+        if getattr(execution_context, "previous_context", None):
+            put("context.previous_id", lambda: execution_context.previous_context.id)
+        return attributes
 
     @staticmethod
     def add_context_attributes(
@@ -252,37 +344,40 @@ class SpanHelper:
             span: The OpenTelemetry span
             execution_context: The execution context
         """
-        span.set_attribute("context.id", execution_context.id)
-        span.set_attribute("context.is_multitask", execution_context.is_multitask())
-        if execution_context.pipeline:
-            span.set_attribute("context.pipeline_id", execution_context.pipeline.id)
+        from volnux.otel.instrumentations._common import set_attributes
 
-        task_profiles = execution_context.get_task_profiles()
-        span.set_attribute("context.task_count", len(task_profiles))
+        set_attributes(span, SpanHelper.context_attributes(execution_context))
 
-        task_names = [task.get_event_name() for task in task_profiles]
-        span.set_attribute("context.tasks", ",".join(task_names))
-        span.set_attribute("context.depth", execution_context.get_depth())
-
-        if execution_context.previous_context:
-            span.set_attribute(
-                "context.previous_id", execution_context.previous_context.id
+    @staticmethod
+    def pipeline_attributes(pipeline) -> typing.Dict[str, typing.Any]:
+        attributes: typing.Dict[str, typing.Any] = {
+            "pipeline.id": getattr(pipeline, "id", None),
+            "pipeline.class": pipeline.__class__.__name__,
+        }
+        try:
+            fields = list(pipeline.get_fields())
+        except Exception:
+            fields = []
+        for name, _field in fields:
+            value = getattr(pipeline, name, None)
+            if value is None:
+                continue
+            # (inputs are on every trace: never a secret, and never unbounded)
+            attributes[f"pipeline.input.{name}"] = (
+                "[redacted]" if _is_sensitive(name) else str(value)
             )
+        return attributes
 
     @staticmethod
     def add_pipeline_attributes(span: Span, pipeline) -> None:
         """
-        Add Pipeline attributes to a span.
+        Add Pipeline attributes to a span. Inputs whose name suggests a secret
+        (password, token, ...) are recorded as ``[redacted]``; long values are cut.
 
         Args:
             span: The OpenTelemetry span
             pipeline: The Pipeline object
         """
-        span.set_attribute("pipeline.id", pipeline.id)
-        span.set_attribute("pipeline.class", pipeline.__class__.__name__)
+        from volnux.otel.instrumentations._common import set_attributes
 
-        # Add input fields
-        for name, field in pipeline.get_fields():
-            value = getattr(pipeline, name, None)
-            if value is not None:
-                span.set_attribute(f"pipeline.input.{name}", str(value))
+        set_attributes(span, SpanHelper.pipeline_attributes(pipeline))
