@@ -68,6 +68,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+
+from volnux.config import setting
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -82,7 +84,12 @@ __all__ = ["KubernetesWorkflowExecutor"]
 _RESULT_KEY_PREFIX = "volnux:k8s-job:result"
 _ERROR_KEY_PREFIX = "volnux:k8s-job:error"
 _PARAMS_KEY_PREFIX = "volnux:k8s-job:params"
-_KEY_TTL_SECONDS = 3600  # 1 hour — long enough for any reasonable job
+
+
+def _key_ttl_seconds() -> int:
+    """Seconds the Redis keys of a job live (the K8S_KEY_TTL_SECONDS setting): long
+    enough for any reasonable job."""
+    return int(setting("K8S_KEY_TTL_SECONDS", 3600))
 
 
 class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
@@ -123,9 +130,9 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
     def __init__(
         self,
         workflow_registry: "WorkflowRegistry",
-        namespace: str = "default",
-        image: str = "volnux-engine:latest",
-        image_pull_policy: str = "IfNotPresent",
+        namespace: Optional[str] = None,
+        image: Optional[str] = None,
+        image_pull_policy: Optional[str] = None,
         service_account: Optional[str] = None,
         resource_requests: Optional[Dict[str, str]] = None,
         resource_limits: Optional[Dict[str, str]] = None,
@@ -134,9 +141,9 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
         node_selector: Optional[Dict[str, str]] = None,
         tolerations: Optional[List[dict]] = None,
         active_deadline_seconds: Optional[int] = None,
-        ttl_seconds_after_finished: int = 3600,
-        backoff_limit: int = 2,
-        poll_interval: float = 2.0,
+        ttl_seconds_after_finished: Optional[int] = None,
+        backoff_limit: Optional[int] = None,
+        poll_interval: Optional[float] = None,
         kube_config_file: Optional[str] = None,
         redis_url: Optional[str] = None,
     ):
@@ -216,9 +223,12 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
         """
         super().__init__(workflow_registry)
 
-        self._namespace = namespace
-        self._image = image
-        self._image_pull_policy = image_pull_policy
+        # (None: the K8S_NAMESPACE / K8S_IMAGE / K8S_IMAGE_PULL_POLICY settings)
+        self._namespace = namespace or setting("K8S_NAMESPACE", "default")
+        self._image = image or setting("K8S_IMAGE", "volnux-engine:latest")
+        self._image_pull_policy = image_pull_policy or setting(
+            "K8S_IMAGE_PULL_POLICY", "IfNotPresent"
+        )
         self._service_account = service_account
         self._resource_requests = resource_requests or {}
         self._resource_limits = resource_limits or {}
@@ -227,11 +237,23 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
         self._node_selector = node_selector
         self._tolerations = tolerations
         self._active_deadline_seconds = active_deadline_seconds
-        self._ttl_seconds_after_finished = ttl_seconds_after_finished
-        self._backoff_limit = backoff_limit
-        self._poll_interval = poll_interval
-        self._redis_url = redis_url or os.environ.get(
-            "VOLNUX_REDIS_CHECKPOINT_URL", "redis://localhost:6379/0"
+        self._ttl_seconds_after_finished = int(
+            ttl_seconds_after_finished
+            if ttl_seconds_after_finished is not None
+            else setting("K8S_JOB_TTL_SECONDS", 3600)
+        )
+        self._backoff_limit = int(
+            backoff_limit
+            if backoff_limit is not None
+            else setting("K8S_BACKOFF_LIMIT", 2)
+        )
+        self._poll_interval = float(
+            poll_interval
+            if poll_interval is not None
+            else setting("K8S_POLL_INTERVAL", 2.0)
+        )
+        self._redis_url = redis_url or setting(
+            "REDIS_CHECKPOINT_URL", "redis://localhost:6379/0"
         )
 
         # Track submitted jobs for observability and cancellation
@@ -288,7 +310,7 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
         try:
 
             # Avoids environment variable size limits for large param payloads.
-            # Key expires after _KEY_TTL_SECONDS whether the job reads it or not.
+            # Key expires after the K8S_KEY_TTL_SECONDS setting whether the job reads it or not.
             await self._write_params_to_redis(params_key, params)
 
             job = self._build_job_spec(
@@ -521,7 +543,7 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
             import redis.asyncio as aioredis
 
             client = aioredis.Redis.from_url(self._redis_url)
-            await client.setex(params_key, _KEY_TTL_SECONDS, json.dumps(params))
+            await client.setex(params_key, _key_ttl_seconds(), json.dumps(params))
             await client.aclose()
             logger.debug("Params stored at Redis key %s", params_key)
         except Exception as exc:
@@ -851,10 +873,8 @@ def job_runner_main() -> None:
     error_key = os.environ.get("VOLNUX_JOB_ERROR_KEY") or _die(
         "VOLNUX_JOB_ERROR_KEY not set"
     )
-    redis_url = os.environ.get(
-        "VOLNUX_REDIS_CHECKPOINT_URL", "redis://localhost:6379/0"
-    )
-    project_dir = Path(os.environ.get("VOLNUX_PROJECT_DIR", "."))
+    redis_url = setting("REDIS_CHECKPOINT_URL", "redis://localhost:6379/0")
+    project_dir = Path(setting("PROJECT_DIR", None) or ".")
 
     async def _run():
         import redis.asyncio as aioredis
@@ -882,7 +902,7 @@ def job_runner_main() -> None:
                     "traceback": "",
                 }
             )
-            await r.setex(error_key, _KEY_TTL_SECONDS, error_payload)
+            await r.setex(error_key, _key_ttl_seconds(), error_payload)
             await r.aclose()
             sys.exit(1)
 
@@ -892,7 +912,7 @@ def job_runner_main() -> None:
                 run_type="single",
             )
             result_payload = json.dumps({"result": result}, default=str)
-            await r.setex(result_key, _KEY_TTL_SECONDS, result_payload)
+            await r.setex(result_key, _key_ttl_seconds(), result_payload)
             print(
                 f"[volnux-job-runner] Workflow {workflow_name!r} completed", flush=True
             )
@@ -905,7 +925,7 @@ def job_runner_main() -> None:
                     "traceback": tb,
                 }
             )
-            await r.setex(error_key, _KEY_TTL_SECONDS, error_payload)
+            await r.setex(error_key, _key_ttl_seconds(), error_payload)
             print(
                 f"[volnux-job-runner] Workflow {workflow_name!r} FAILED: {exc}",
                 file=sys.stderr,

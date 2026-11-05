@@ -8,10 +8,11 @@ from typing import Optional
 from volnux import __version__ as version
 
 from ..base import BaseCommand, CommandCategory
+from ..mixins.template import TemplateMixin
 from volnux.exceptions import CommandError
 
 
-class InitProjectCommand(BaseCommand):
+class InitProjectCommand(TemplateMixin, BaseCommand):
     """
     Scaffold a new Volnux project in the given directory.
 
@@ -25,7 +26,7 @@ class InitProjectCommand(BaseCommand):
     Creates the standard project layout:
 
         <project_folder>/
-            config.py — project configuration
+            settings.py — project settings (Django-style: DATABASES, DEBUG ...)
             init.py — workflow initialiser (defines engine)
             workflows/
                 __init__.py
@@ -83,7 +84,7 @@ class InitProjectCommand(BaseCommand):
             )
             workflow_initializer_file.write_text(initialiser_content, encoding="utf-8")
 
-            self._create_config_file(project_path, project_name)
+            self._create_settings_file(project_path, project_name)
             self._create_readme(project_path, project_name)
             self._create_gitignore(project_path)
 
@@ -143,15 +144,15 @@ class InitProjectCommand(BaseCommand):
             if dir_path.name in ["workflows", "commands", "tests"]:
                 (dir_path / "__init__.py").touch()
 
-    def _create_config_file(self, project_path: Path, project_name: str) -> None:
-        """Create the project configuration file."""
-        config_content = self._get_rendered_template(
-            "project_config.txt",
+    def _create_settings_file(self, project_path: Path, project_name: str) -> None:
+        """Create the project settings file (``settings.py``)."""
+        settings_content = self._get_rendered_template(
+            "settings_template.txt",
             params={"version": version, "project_name": project_name},
         )
 
-        config_file = project_path / "config.py"
-        config_file.write_text(config_content, encoding="utf-8")
+        settings_file = project_path / "settings.py"
+        settings_file.write_text(settings_content, encoding="utf-8")
 
     def _create_readme(self, project_path: Path, project_name: str) -> None:
         """Create the project README file."""

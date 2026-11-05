@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from volnux.constants import MAX_RETRIES
 from volnux.execution.rehydrator.event.builder import SnapshotBuilder
 from volnux.execution.rehydrator.event.snapshot import (
     EventCheckpointSnapshot,
@@ -42,8 +43,10 @@ def _make_mock_event(**overrides: Any) -> MagicMock:
         "previous_result": [],
     }
 
-    # call_args
-    event.get_call_args.return_value = {"args": [1, 2], "kwargs": {"key": "val"}}
+    # call arguments: the keyword ones from get_call_args(), the positional ones
+    # kept apart (the builder puts them together in the snapshot's shape)
+    event.get_call_args.return_value = {"key": "val"}
+    event._call_positional = (1, 2)
 
     # retry
     event._retry_count = 1
@@ -63,15 +66,6 @@ def _make_mock_event(**overrides: Any) -> MagicMock:
         }
     }
 
-    # user attrs
-    event.__dict__ = {
-        "_page": 3,
-        "_filter": "active",
-        "init_args": {},
-        "call_args": {},
-        "external_resources": {},
-    }
-
     event.class_path = "test.events.MockEvent"
 
     # Apply overrides
@@ -88,11 +82,20 @@ def builder() -> SnapshotBuilder:
 
 class TestSnapshotBuilderBuild:
 
-    @patch("volnux.execution.checkpoint.builder.StateSerializer.serialize_init_args")
-    @patch("volnux.execution.checkpoint.builder.StateSerializer.serialize_call_args")
-    @patch("volnux.execution.checkpoint.builder.StateSerializer.serialize_exec_result")
-    @patch("volnux.execution.checkpoint.builder.StateSerializer.serialize_attribs")
-    @patch("volnux.execution.checkpoint.builder.get_obj_klass_import_str")
+    @pytest.mark.asyncio
+    @patch(
+        "volnux.execution.rehydrator.event.builder.StateSerializer.serialize_init_args"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event.builder.StateSerializer.serialize_call_args"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event.builder.StateSerializer.serialize_exec_result"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event.builder.StateSerializer.serialize_attribs"
+    )
+    @patch("volnux.execution.rehydrator.event.builder.get_obj_klass_import_str")
     async def test_build_returns_snapshot(
         self,
         mock_import_str: MagicMock,
@@ -122,11 +125,20 @@ class TestSnapshotBuilderBuild:
         assert snapshot.attribs == {"_page": 3, "_filter": "active"}
         assert snapshot.external_resources == event._external_resources
 
-    @patch("volnux.execution.checkpoint.builder.StateSerializer.serialize_init_args")
-    @patch("volnux.execution.checkpoint.builder.StateSerializer.serialize_call_args")
-    @patch("volnux.execution.checkpoint.builder.StateSerializer.serialize_exec_result")
-    @patch("volnux.execution.checkpoint.builder.StateSerializer.serialize_attribs")
-    @patch("volnux.execution.checkpoint.builder.get_obj_klass_import_str")
+    @pytest.mark.asyncio
+    @patch(
+        "volnux.execution.rehydrator.event.builder.StateSerializer.serialize_init_args"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event.builder.StateSerializer.serialize_call_args"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event.builder.StateSerializer.serialize_exec_result"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event.builder.StateSerializer.serialize_attribs"
+    )
+    @patch("volnux.execution.rehydrator.event.builder.get_obj_klass_import_str")
     async def test_no_retry_policy_uses_max_retries(
         self,
         mock_import_str: MagicMock,
@@ -148,13 +160,22 @@ class TestSnapshotBuilderBuild:
         snapshot = await builder.build(event)
 
         # Should use MAX_RETRIES default
-        assert snapshot.max_retry_attempts == 3  # MAX_RETRIES constant
+        assert snapshot.max_retry_attempts == MAX_RETRIES  # MAX_RETRIES constant
 
-    @patch("volnux.execution.checkpoint.builder.StateSerializer.serialize_init_args")
-    @patch("volnux.execution.checkpoint.builder.StateSerializer.serialize_call_args")
-    @patch("volnux.execution.checkpoint.builder.StateSerializer.serialize_exec_result")
-    @patch("volnux.execution.checkpoint.builder.StateSerializer.serialize_attribs")
-    @patch("volnux.execution.checkpoint.builder.get_obj_klass_import_str")
+    @pytest.mark.asyncio
+    @patch(
+        "volnux.execution.rehydrator.event.builder.StateSerializer.serialize_init_args"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event.builder.StateSerializer.serialize_call_args"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event.builder.StateSerializer.serialize_exec_result"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event.builder.StateSerializer.serialize_attribs"
+    )
+    @patch("volnux.execution.rehydrator.event.builder.get_obj_klass_import_str")
     async def test_attribs_called_on_event_instance(
         self,
         mock_import_str: MagicMock,
@@ -174,3 +195,23 @@ class TestSnapshotBuilderBuild:
         await builder.build(event)
 
         mock_serialize_attribs.assert_called_once_with(event)
+
+    @pytest.mark.asyncio
+    async def test_call_arguments_are_given_to_the_serializer_in_the_snapshot_shape(
+        self, builder: SnapshotBuilder
+    ) -> None:
+        # positional arguments are kept apart on the event; the snapshot has both
+        base = "volnux.execution.rehydrator.event.builder"
+        with patch(f"{base}.get_obj_klass_import_str", return_value="a.B"), patch(
+            f"{base}.StateSerializer.serialize_init_args", return_value={}
+        ), patch(
+            f"{base}.StateSerializer.serialize_exec_result", return_value=None
+        ), patch(
+            f"{base}.StateSerializer.serialize_attribs", return_value={}
+        ), patch(
+            f"{base}.StateSerializer.serialize_call_args",
+            return_value={"args": [1, 2], "kwargs": {"key": "val"}},
+        ) as serialize:
+            await builder.build(_make_mock_event())
+
+        serialize.assert_called_once_with({"args": [1, 2], "kwargs": {"key": "val"}})

@@ -380,7 +380,11 @@ async def test_a_function_can_run_on_the_shared_process_pool(run_meta):
     import math
 
     items, _, _ = await run_meta(
-        MapEvent, math.sqrt, collection=[4, 9, 16], concurrency_mode="process", max_workers=2
+        MapEvent,
+        math.sqrt,
+        collection=[4, 9, 16],
+        concurrency_mode="process",
+        max_workers=2,
     )
 
     assert items == [2.0, 3.0, 4.0]

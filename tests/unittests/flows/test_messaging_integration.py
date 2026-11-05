@@ -52,9 +52,12 @@ async def redis_env(redis_backend, tmp_path, monkeypatch):
     """Engine and spawned workers both use Redis; workers report to ``marker_dir``."""
     settings = tmp_path / "settings.py"
     settings.write_text(
-        "KEY_VALUE_STORE_CONFIG = {\n"
-        '    "ENGINE": "volnux.backends.stores.redis.RedisStoreBackend",\n'
-        f'    "CONNECTOR_CONFIG": {{"host": "{HOST}", "port": {PORT}}},\n'
+        "DATABASES = {\n"
+        '    "default": {\n'
+        '        "ENGINE": "volnux.backends.stores.redis.RedisStoreBackend",\n'
+        f'        "HOST": "{HOST}",\n'
+        f'        "PORT": {PORT},\n'
+        "    },\n"
         "}\n"
     )
     markers = tmp_path / "markers"
@@ -244,10 +247,13 @@ async def kafka_env(tmp_path, monkeypatch):
 
     settings = tmp_path / "settings.py"
     settings.write_text(
-        "KEY_VALUE_STORE_CONFIG = {\n"
-        '    "ENGINE": "volnux.backends.stores.kafka.KafkaStoreBackend",\n'
-        f'    "CONNECTOR_CONFIG": {{"host": "{KAFKA_HOST}", "port": {KAFKA_PORT}, '
-        '"request_timeout": 5.0},\n'
+        "DATABASES = {\n"
+        '    "default": {\n'
+        '        "ENGINE": "volnux.backends.stores.kafka.KafkaStoreBackend",\n'
+        f'        "HOST": "{KAFKA_HOST}",\n'
+        f'        "PORT": {KAFKA_PORT},\n'
+        '        "OPTIONS": {"request_timeout": 5.0},\n'
+        "    },\n"
         "}\n"
     )
     markers = tmp_path / "markers"

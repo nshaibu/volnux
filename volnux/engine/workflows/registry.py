@@ -252,9 +252,14 @@ class WorkflowRegistry:
         return batch_pipelines
 
 
-_workflow_registry = WorkflowRegistry(
-    cache_dir=os.environ.get("VOLNUX_WORKFLOWS_CACHE_DIR")
-)
+def _configured_cache_dir() -> Optional[Path]:
+    from volnux.config import setting
+
+    value = setting("WORKFLOWS_CACHE_DIR", None)
+    return Path(value).expanduser() if value else None
+
+
+_workflow_registry = WorkflowRegistry(cache_dir=_configured_cache_dir())
 
 
 def get_workflow_registry() -> WorkflowRegistry:

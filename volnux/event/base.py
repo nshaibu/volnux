@@ -15,7 +15,7 @@ from volnux.result_evaluators import (
 )
 from volnux.signal.signals import event_called
 from volnux.versioning.handler import VersionHandler
-from volnux.versioning import BaseVersioning, NoVersioning, DeprecationInfo, VersionInfo
+from volnux.versioning import DeprecationInfo, VersionInfo
 
 from volnux.config import VolnuxConfig
 from volnux.constants import EMPTY
@@ -184,7 +184,12 @@ class EventMeta(abc.ABCMeta):
             isinstance(base, EventMeta) for base in bases
         ):
             try:
-                # Get version info using the versioning scheme
+                if hasattr(cls, "versioning_class"):
+                    raise ImproperlyConfigured(
+                        f"'{name}.versioning_class' was removed: events use "
+                        'semantic versioning (version = "MAJOR.MINOR.PATCH").'
+                    )
+                # Get version info (the version must be a semantic version)
                 event_class = typing.cast(typing.Type[EventBase], cls)
                 versioning = event_class.get_version_handler()
                 version_info = versioning.get_info()
@@ -275,8 +280,6 @@ class EventBase(
     Subclasses must implement the `process` method to define the logic for
     processing pipeline data.
 
-    :ivar versioning_class: Versioning strategy used for this event.
-    :type versioning_class: typing.Type[BaseVersioning]
     :ivar version: Current version of the event class.
     :type version: str
     :ivar changelog: Optional changelog describing changes in this version.
@@ -285,8 +288,9 @@ class EventBase(
     :type deprecated: bool
     :ivar deprecation_info: Optional deprecation details if deprecated.
     :type deprecation_info: typing.Optional[DeprecationInfo]
-    :ivar namespace: Namespace associated with the event.
-    :type namespace: str
+    :ivar namespace: Namespace associated with the event (None: the
+        ``DEFAULT_EVENT_NAMESPACE`` setting).
+    :type namespace: typing.Optional[str]
     :ivar name: Custom name for the event.
     :type name: typing.Optional[str]
     :ivar event_type: Type of the event, categorized by usage.
@@ -298,8 +302,7 @@ class EventBase(
     :type INIT_PARAMS_SCHEMA: typing.Dict[str, "ExtraEventInitKwargs"]
     """
 
-    # Version configuration
-    versioning_class: typing.Type[BaseVersioning] = NoVersioning
+    # Version configuration (semantic versioning: "MAJOR.MINOR.PATCH")
     version: str = "1.0.0"
     changelog: typing.Optional[str] = None
     deprecated: bool = False
@@ -308,7 +311,8 @@ class EventBase(
     _version_handler: typing.Optional[VersionHandler] = None
 
     # Custom name and namespace
-    namespace: str = "local"
+    #: None: the ``DEFAULT_EVENT_NAMESPACE`` setting (``"local"``).
+    namespace: typing.Optional[str] = None
     name: typing.Optional[str] = None
 
     # The event types
@@ -417,9 +421,7 @@ class EventBase(
         # Look in cls.__dict__, not cls._version_handler: attribute lookup would
         # find the PARENT's cached handler and a subclass would reuse it.
         if cls.__dict__.get("_version_handler") is None:
-            cls._version_handler = VersionHandler.from_class(
-                cls, config_key="DEFAULT_EVENT_VERSIONING"
-            )
+            cls._version_handler = VersionHandler.from_class(cls)
         return cls._version_handler
 
     @classmethod

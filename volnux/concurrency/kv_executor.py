@@ -29,10 +29,19 @@ DEFAULT_KV_EXECUTOR_WORKERS = 128
 
 
 def _configured_workers() -> int:
-    raw = os.environ.get("VOLNUX_KV_EXECUTOR_WORKERS")
+    """Size of the KV pool: the KV_EXECUTOR_WORKERS setting (or its environment
+    variable), 128 by default; a value that is not a number counts as the default."""
     try:
-        workers = int(raw) if raw else DEFAULT_KV_EXECUTOR_WORKERS
-    except ValueError:
+        from volnux.config import setting
+
+        raw = setting("KV_EXECUTOR_WORKERS", DEFAULT_KV_EXECUTOR_WORKERS)
+    except ImportError:  # (the configuration is still being imported)
+        raw = os.environ.get("VOLNUX_KV_EXECUTOR_WORKERS")
+    try:
+        workers = (
+            int(raw) if raw is not None and raw != "" else DEFAULT_KV_EXECUTOR_WORKERS
+        )
+    except (TypeError, ValueError):
         workers = DEFAULT_KV_EXECUTOR_WORKERS
     return max(1, workers)
 

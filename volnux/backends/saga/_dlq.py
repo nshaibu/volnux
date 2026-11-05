@@ -36,13 +36,8 @@ class DeadLetterEntry(MessagingBackendIntegrationMixin, BaseModel):
             },
         )
 
+    #: ``DATABASES["saga"]``, else ``"default"``. (It used to be a Redis at
+    #: localhost whatever the configuration said, so a saga could not run without one.)
     @classmethod
-    def get_backend_config(cls) -> Dict[str, Any]:
-        return {
-            "ENGINE": "volnux.backends.stores.redis.RedisStoreBackend",
-            "CONNECTOR_CONFIG": {
-                "host": "localhost",
-                "port": 6379,
-                "database": 0,
-            },
-        }
+    def get_database_alias(cls) -> str:
+        return "saga"

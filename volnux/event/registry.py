@@ -6,10 +6,10 @@ import warnings
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from packaging.version import Version, parse as parse_version
 
 from volnux.result import ResultSet
-from volnux.versioning import DeprecationInfo, BaseVersioning
+from volnux.versioning import DeprecationInfo, SemVer, SemanticVersioning
+from volnux.versioning import parse_semver as parse_version
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class RegistryEntry:
     deprecated: bool = False
     deprecation_info: typing.Optional[DeprecationInfo] = None
     changelog: typing.Optional[str] = None
-    scheme_handler: typing.Optional[BaseVersioning] = None
+    scheme_handler: typing.Optional[SemanticVersioning] = None
     registered_at: datetime = field(default_factory=datetime.now)
     extra: typing.Dict[str, typing.Any] = field(default_factory=dict)
 
@@ -49,7 +49,7 @@ class RegistryEntry:
         )
 
     @property
-    def version_obj(self) -> Version:
+    def version_obj(self) -> SemVer:
         """Parse version string to Version object for comparison"""
         return parse_version(self.version)
 
@@ -69,7 +69,7 @@ class RegistryEntry:
         """
         if version_constraint.startswith("^"):
             # ^2.0.0 means >=2.0.0 <3.0.0 (same major version)
-            base_version = parse_version(version_constraint[1:])
+            base_version = parse_version(version_constraint[1:], partial=True)
             return (
                 self.version_obj.major == base_version.major
                 and self.version_obj >= base_version
@@ -77,7 +77,7 @@ class RegistryEntry:
 
         elif version_constraint.startswith("~"):
             # ~1.2.3 means >=1.2.3 <1.3.0 (same major.minor)
-            base_version = parse_version(version_constraint[1:])
+            base_version = parse_version(version_constraint[1:], partial=True)
             return (
                 self.version_obj.major == base_version.major
                 and self.version_obj.minor == base_version.minor
@@ -109,7 +109,7 @@ class Registry:
         changelog: typing.Optional[str] = None,
         deprecated: bool = False,
         deprecation_info: typing.Optional[DeprecationInfo] = None,
-        scheme_handler: typing.Optional[BaseVersioning] = None,
+        scheme_handler: typing.Optional[SemanticVersioning] = None,
         **extra: typing.Any,
     ) -> None:
         """

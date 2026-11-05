@@ -38,7 +38,10 @@ class TestConstruction:
 
     def test_class_defaults(self):
         event_class = make_event_class()
-        assert event_class.version == "1.0.0" and event_class.namespace == "local"
+        assert event_class.version == "1.0.0"
+        # no namespace of its own: the DEFAULT_EVENT_NAMESPACE setting applies
+        assert event_class.namespace is None
+        assert event_class.get_version_handler().namespace == "local"
         assert event_class.event_type is EventType.OTHER
         assert event_class.categories == frozenset({EventCategory.OTHER})
         assert event_class.executor == "default"
@@ -91,37 +94,44 @@ class TestConstruction:
 
 class TestVersioning:
     def test_version_info(self):
-        event_class = make_event_class(
-            versioning_class=SemanticVersioning, version="2.3.4", changelog="notes"
-        )
+        event_class = make_event_class(version="2.3.4", changelog="notes")
         info = event_class.get_version_info()
         assert info["version"] == "2.3.4" and info["changelog"] == "notes"
         assert info["namespace"] == "local" and info["deprecated"] is False
 
     def test_registry_backed_queries(self):
-        event_class = make_event_class(
-            versioning_class=SemanticVersioning, version="1.2.0"
-        )
+        event_class = make_event_class(version="1.2.0")
         assert event_class.get_all_versions() == ["1.2.0"]
         assert event_class.get_latest_version() == "1.2.0"
         assert event_class.is_deprecated() is False
 
-    def test_default_scheme_ignores_the_version_attribute(self):
+    def test_the_version_attribute_is_the_version(self):
         assert (
-            make_event_class(version="9.9.9").get_version_info()["version"] == "1.0.0"
+            make_event_class(version="9.9.9").get_version_info()["version"] == "9.9.9"
         )
 
-    def test_invalid_semantic_version_is_rejected(self):
-        with pytest.raises(ValueError, match="Invalid semantic version"):
-            make_event_class(
-                versioning_class=SemanticVersioning, version="not-a-version"
-            )
+    def test_the_default_version_is_1_0_0(self):
+        assert make_event_class().get_version_info()["version"] == "1.0.0"
+
+    @pytest.mark.parametrize("version", ["not-a-version", "1", "1.0", "v2", "1.0.0.0"])
+    def test_a_version_that_is_not_semantic_is_rejected_at_class_creation(
+        self, version
+    ):
+        with pytest.raises(ValueError, match="not a semantic version"):
+            make_event_class(version=version)
+
+    def test_versioning_class_was_removed(self):
+        from volnux.exceptions import ImproperlyConfigured as Improper
+        from volnux.event.base import ImproperlyConfigured
+
+        with pytest.raises((Improper, ImproperlyConfigured), match="versioning_class"):
+            make_event_class(versioning_class=SemanticVersioning)
 
     def test_deprecation_flag(self):
         assert make_event_class(deprecated=True).is_deprecated() is True
 
     def test_subclass_gets_its_own_version_handler(self):
-        parent = make_event_class(versioning_class=SemanticVersioning, version="1.0.0")
+        parent = make_event_class(version="1.0.0")
         child = type("Child%d" % id(parent), (parent,), {"version": "2.0.0"})
         assert parent.get_version_info()["version"] == "1.0.0"
         assert child.get_version_info()["version"] == "2.0.0"

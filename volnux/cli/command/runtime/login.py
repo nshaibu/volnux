@@ -1,4 +1,6 @@
 import os
+
+from volnux.config import setting
 import getpass
 import httpx
 
@@ -13,9 +15,7 @@ class LoginCommand(BaseCommand, OutputMixin):
     category = CommandCategory.AUTH
 
     def add_arguments(self, parser):
-        parser.add_argument(
-            "--host", default=os.environ.get("VOLNUX_HOST", "localhost:8080")
-        )
+        parser.add_argument("--host", default=setting("HOST", "localhost:8080"))
         parser.add_argument("--username", "-u")
         parser.add_argument("--password", "-p")
         parser.add_argument("--insecure", action="store_true")

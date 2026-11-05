@@ -326,9 +326,54 @@ Fetch[count = $workers, limit = $config["size"]] -> Process[region = $regions[0]
 
 - `$name[expr]` indexes a list or map variable.
 - `$env.NAME` reads an environment variable: `Connect[url = $env.DATABASE_URL]`.
-- Referencing a variable that has not been declared earlier in the text is a parse error.
+- Referencing a variable that no enclosing annotation or global declares is a parse error:
+  `Variable 'x' is not declared in any enclosing scope`. The environment is never read
+  implicitly; write `$env.NAME`.
 - Variables are scoped to the program being parsed; nothing carries over between parses.
 - A variable that is declared but never used is a semantic warning.
+
+### Scoping
+
+Annotations (`[a=1]`) on a `{}` block declare variables for what is inside it. Inner
+blocks see the variables of the blocks around them, and an inner declaration shadows an
+outer one. `$a` resolves to the nearest enclosing declaration, then to a global `@a`.
+
+```pointy
+{A -> B, {A, B -> {C, D}[a=$a]}[a=1]}[a=2]
+# A -> B see a=2; the middle block's A and B see a=1; {C, D}[a=$a] reads the
+# nearest enclosing a, which is 1, so C and D see a=1
+```
+
+- A node's own annotations are read in the scope *around* it, so the keys of one bracket
+  do not see each other, and a task's annotations apply to that task only.
+- Known options flow down to the tasks inside a block (`executor`, `executor_config`,
+  `stop_condition`, `bypass_event_checks`) and so do other keys (as `extras`); the
+  innermost declaration wins, and a task's own annotation wins over both.
+  `retry_attempts`, `max_concurrency` and `result_evaluation_strategy` configure the block
+  as a unit and do not flow down (a retried group would otherwise retry every task inside
+  each time). They are still variables: `A[retry_attempts=$retry_attempts]` opts in.
+- A global `@name` is evaluated outside every block.
+
+### Components
+
+`@component Name: chain` defines a named, reusable sub-chain. It runs as a single-chain
+group wherever it is used, in a new scope on top of the caller's: first its own defaults
+(`@component Name[timeout=30]: ...`), then the invocation's annotations, which win.
+
+```pointy
+@component Check[timeout=30]: Validate[limit=$timeout] -> Normalise
+
+Fetch -> Check -> Store
+Fetch -> Check[timeout=5] -> Store     # a fresh copy, with timeout=5
+```
+
+- A component is defined before the chain that uses it, and cannot call itself (or a
+  component defined after it).
+- A name the body reads but nothing declares is a *parameter*: each invocation must supply
+  it (annotation, default, enclosing block or global), or parsing fails.
+- A component cannot be a meta event template (`MAP<Check>`) yet.
+- A main chain that starts with `(` straight after a component body would be read as that
+  body's branch list; start it with a task or put it in a `{}` group.
 
 ## 10. Types and expressions
 

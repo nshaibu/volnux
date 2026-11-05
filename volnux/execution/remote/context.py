@@ -28,6 +28,7 @@ Changes from original
 from __future__ import annotations
 
 import logging
+import math
 import random
 import time
 import typing
@@ -254,7 +255,8 @@ class MiniExecutionContext:
             if self.mode == "batch":
                 self._flush_results_locked()
                 self._flush_errors_locked()
-            self.end_time = time.time()
+            if not self.end_time:  # (idempotent: the first call fixes the end time)
+                self.end_time = time.time()
 
     async def set_flush_callback(
         self, callback: typing.Callable[[typing.Dict], None]
@@ -332,60 +334,59 @@ class MiniExecutionContext:
             obj.sample_errors = ReservoirSample.from_dict(data["sample_errors"])
         return obj
 
+    def _advance_mode_locked(self) -> None:
+        """
+        Move to the mode that the number of items seen so far calls for.
+
+        The mode only ever moves forward (small -> batch -> aggregate), decided by
+        ``total_processed``: the number of items added in *all* modes. (It was decided
+        by how many items were still held in memory, which falls back to zero every
+        time a batch is flushed: after the switch to batch mode the next item went to
+        the small-mode list again, was never flushed, and was lost; and aggregate mode
+        could never be reached.) Caller must hold _lock.
+        """
+        seen = self.total_processed
+        if self.mode == "small" and seen >= self.SMALL_THRESHOLD:
+            self._switch_to_batch_mode_locked()
+        if self.mode == "batch" and seen >= self.BATCH_THRESHOLD:
+            self._switch_to_aggregate_mode_locked()
+
     def _add_result_locked(self, result_dict: typing.Dict) -> None:
-        total = self._get_total_count_locked()
+        self._advance_mode_locked()
+        failed = bool(result_dict.get("error", False))
 
-        if total < self.SMALL_THRESHOLD:
+        if self.mode == "small":
             self.results.append(result_dict)
-
-        elif total < self.BATCH_THRESHOLD:
-            if self.mode == "small":
-                self._switch_to_batch_mode_locked()
-
+        elif self.mode == "batch":
             self.result_buffer.append(result_dict)
-
             if len(self.result_buffer) >= self.BATCH_SIZE:
                 self._flush_results_locked()
-
         else:
-            if self.mode != "aggregate":
-                self._switch_to_aggregate_mode_locked()
-
             self._aggregate_result_locked(result_dict)
 
+        self.total_processed += 1
+        if failed:
+            self.total_failed += 1
+        else:
+            self.total_succeeded += 1
+
     def _add_error_locked(self, error_dict: typing.Dict) -> None:
-        total = self._get_total_count_locked()
+        self._advance_mode_locked()
 
-        if total < self.SMALL_THRESHOLD:
+        if self.mode == "small":
             self.errors.append(error_dict)
-
-        elif total < self.BATCH_THRESHOLD:
-            if self.mode == "small":
-                self._switch_to_batch_mode_locked()
-
+        elif self.mode == "batch":
             self.error_buffer.append(error_dict)
-
             if len(self.error_buffer) >= self.BATCH_SIZE:
                 self._flush_errors_locked()
-
         else:
-            if self.mode != "aggregate":
-                self._switch_to_aggregate_mode_locked()
-
             self._aggregate_error_locked(error_dict)
 
-    def _get_total_count_locked(self) -> int:
-        """Total items across all storage locations. Caller must hold _lock."""
-        return (
-            len(self.results)
-            + len(self.errors)
-            + len(self.result_buffer)
-            + len(self.error_buffer)
-            + self.total_processed
-        )
+        self.total_processed += 1
+        self.total_failed += 1
 
     def _switch_to_batch_mode_locked(self) -> None:
-        """Transition from small → batch. Caller must hold _lock."""
+        """Transition from small to batch. Caller must hold _lock."""
         self.mode = "batch"
 
         # Flush the accumulated small-mode data as the first batch
@@ -410,24 +411,13 @@ class MiniExecutionContext:
         self.errors = []
 
     def _switch_to_aggregate_mode_locked(self) -> None:
-        """Transition from batch → aggregate. Caller must hold _lock."""
+        """Transition from batch to aggregate. Caller must hold _lock."""
         self.mode = "aggregate"
 
-        # Snapshot counts BEFORE flushing so they're not lost.
-        # (Original bug: counts were read after flush, always yielding 0.)
-        prior_results = len(self.results) + len(self.result_buffer)
-        prior_errors = len(self.errors) + len(self.error_buffer)
-
-        if self.result_buffer:
-            self._flush_results_locked()
-        if self.error_buffer:
-            self._flush_errors_locked()
-
-        # total_processed may already be nonzero if we came from batch mode
-        # via a partial aggregate pass; add the newly-counted prior items.
-        self.total_processed += prior_results + prior_errors
-        self.total_succeeded += prior_results  # conservative: count as succeeded
-        self.total_failed += prior_errors  # conservative: count as failed
+        # What is still buffered goes out first; the counts need no adjusting any
+        # more, they are kept as every item is added.
+        self._flush_results_locked()
+        self._flush_errors_locked()
 
         self.results = []
         self.errors = []
@@ -435,7 +425,7 @@ class MiniExecutionContext:
         self.error_buffer = []
 
     def _flush_results_locked(self) -> None:
-        """Drain result_buffer → callback. Caller must hold _lock."""
+        """Drain result_buffer to the callback. Caller must hold _lock."""
         if self.result_buffer:
             self._invoke_callback_locked(
                 {
@@ -447,7 +437,7 @@ class MiniExecutionContext:
             self.result_buffer = []
 
     def _flush_errors_locked(self) -> None:
-        """Drain error_buffer → callback. Caller must hold _lock."""
+        """Drain error_buffer to the callback. Caller must hold _lock."""
         if self.error_buffer:
             self._invoke_callback_locked(
                 {
@@ -497,31 +487,42 @@ class MiniExecutionContext:
             raise
 
     def _aggregate_result_locked(self, result_dict: typing.Dict) -> None:
-        """Update running statistics for one result. Caller must hold _lock."""
-        self.total_processed += 1
+        """Update the running statistics for one result. Caller must hold _lock.
 
-        if not result_dict.get("error", False):
-            self.total_succeeded += 1
+        (Counting processed / succeeded / failed is done by the caller, in every mode.)
+        """
+        content = result_dict.get("content", {})
 
-            content = result_dict.get("content", {})
-            if isinstance(content, dict) and "value" in content:
+        if result_dict.get("error", False):
+            # An error-flagged result is a failure: it used to be counted as neither
+            # succeeded nor failed and left out of the samples.
+            self.sample_errors.add(
+                {
+                    "timestamp": time.time(),
+                    "error": str(content)[:100],
+                }
+            )
+            return
+
+        if isinstance(content, dict) and "value" in content:
+            try:
                 value = float(content["value"])
+            except (TypeError, ValueError):
+                value = None  # a non-numeric "value" is not part of the statistics
+            if value is not None and math.isfinite(value):
                 self.sum_values += value
                 self.min_value = min(self.min_value, value)
                 self.max_value = max(self.max_value, value)
 
-            self.sample_results.add(
-                {
-                    "timestamp": time.time(),
-                    "summary": str(content)[:100],
-                }
-            )
+        self.sample_results.add(
+            {
+                "timestamp": time.time(),
+                "summary": str(content)[:100],
+            }
+        )
 
     def _aggregate_error_locked(self, error_dict: typing.Dict) -> None:
-        """Update running statistics for one error. Caller must hold _lock."""
-        self.total_processed += 1
-        self.total_failed += 1
-
+        """Update the running statistics for one error. Caller must hold _lock."""
         self.sample_errors.add(
             {
                 "timestamp": time.time(),

@@ -1,5 +1,6 @@
 import jwt
 import logging
+import secrets
 import dataclasses
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Union
@@ -11,17 +12,60 @@ from .enums import ClientType
 from .permission import Permission, ROLE_PERMISSIONS
 from volnux.models import User, AuditEntry, Organization
 from volnux.models.enums import AuditEventType
-from volnux.exceptions import ObjectDoesNotExist
+from volnux.config import setting
+from volnux.exceptions import ImproperlyConfigured, ObjectDoesNotExist
 
-
-# JWT Configuration
-JWT_SECRET = "volnux-jwt-secret"  # Override from environment in production
-JWT_ALGORITHM = "HS256"
-JWT_EXPIRATION_HOURS = 24
 
 security = HTTPBearer()
 
 logger = logging.getLogger(__name__)
+
+# The SECRET_KEY / JWT_ALGORITHM / JWT_EXPIRATION_HOURS settings. (The secret used
+# to be written here, readable by anyone with the source, so anyone could forge a
+# token.)
+_ALLOWED_ALGORITHMS = ("HS256", "HS384", "HS512")
+_development_secret: Optional[str] = None
+
+
+def get_jwt_secret() -> str:
+    """The key that signs tokens: the ``SECRET_KEY`` setting.
+
+    It is required unless ``DEBUG`` is on. With ``DEBUG`` a random one is made for
+    the process (tokens stop working on restart, which is acceptable there).
+
+    :raises ImproperlyConfigured: no secret key and ``DEBUG`` is off.
+    """
+    global _development_secret
+    secret = setting("SECRET_KEY", None)
+    if secret:
+        return str(secret)
+    if not setting("DEBUG", False):
+        raise ImproperlyConfigured(
+            "SECRET_KEY is not set. Set it in the environment, for example "
+            '`export VOLNUX_SECRET_KEY="$(openssl rand -hex 32)"`, or run with '
+            "VOLNUX_DEBUG=true (development only)."
+        )
+    if _development_secret is None:
+        _development_secret = secrets.token_hex(32)
+        logger.warning(
+            "SECRET_KEY is not set: using a random key for this process "
+            "(development only; tokens stop working when it restarts)"
+        )
+    return _development_secret
+
+
+def get_jwt_algorithm() -> str:
+    algorithm = str(setting("JWT_ALGORITHM", "HS256")).upper()
+    if algorithm not in _ALLOWED_ALGORITHMS:
+        raise ImproperlyConfigured(
+            f"JWT_ALGORITHM {algorithm!r} is not allowed; use one of "
+            f"{', '.join(_ALLOWED_ALGORITHMS)} (the key is a shared secret)"
+        )
+    return algorithm
+
+
+def get_jwt_expiration_hours() -> float:
+    return float(setting("JWT_EXPIRATION_HOURS", 24))
 
 
 @dataclasses.dataclass
@@ -40,15 +84,15 @@ def create_jwt_token(user_id: str, org_id: str, roles: List[str]) -> str:
         "org": org_id,
         "roles": roles,
         "iat": datetime.now(timezone.utc),
-        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS),
+        "exp": datetime.now(timezone.utc) + timedelta(hours=get_jwt_expiration_hours()),
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, get_jwt_secret(), algorithm=get_jwt_algorithm())
 
 
 def decode_jwt_token(token: str) -> dict:
     """Decode and validate a JWT token."""
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, get_jwt_secret(), algorithms=[get_jwt_algorithm()])
         return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token has expired")

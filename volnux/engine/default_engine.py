@@ -70,7 +70,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         Args:
             enable_checkpointing: If True, enables checkpoint persistence
             checkpoint_config: Optional checkpoint configuration; defaults
-                to CheckPointConfig() when enable_checkpointing is True
+                to the CHECKPOINT_CONFIG setting when enable_checkpointing is True
             enable_debug_logging: If True, enables detailed flow logging
             strict_mode: If True, stops execution on first error; if False,
                 attempts to continue

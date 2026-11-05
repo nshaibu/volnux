@@ -23,6 +23,10 @@ class SagaRecoveryState(KeyValueStoreIntegrationMixin, BaseModel):
     Persisted snapshot for crash-recovery of active sagas.
     """
 
+    @classmethod
+    def get_database_alias(cls) -> str:
+        return "saga"
+
     saga_id: str
     saga_name: str
     current_step_index: int

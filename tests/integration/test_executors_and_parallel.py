@@ -44,7 +44,7 @@ async def test_the_default_executor_runs_on_the_engines_loop():
 
 @pytest.mark.asyncio
 async def test_a_process_executor_runs_the_event_in_another_process():
-    pipeline, error = await run(events.ProcessEcho.__name__)
+    pipeline, error = await run(events.IntegrationProcessEcho.__name__)
 
     assert error is None
     assert contents(pipeline)[0] != os.getpid()

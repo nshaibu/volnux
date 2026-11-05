@@ -33,6 +33,7 @@ from typing import (
     Optional,
 )
 
+from volnux.config import setting
 from .state import TriggerStateRecord
 from volnux.engine.workflows.workflow import WorkflowExecutionError, WorkflowNotFound
 
@@ -128,10 +129,10 @@ class TriggerEngine:
     def __init__(
         self,
         workflow_executor: Optional[BaseWorkflowConfigExecutor] = None,
-        consumer_concurrency: int = 5,
-        max_queue_size: int = 1000,
-        drain_timeout: int = 30,
-        state_sync_interval: int = 10,
+        consumer_concurrency: Optional[int] = None,
+        max_queue_size: Optional[int] = None,
+        drain_timeout: Optional[int] = None,
+        state_sync_interval: Optional[int] = None,
     ):
         """
         Initialize the class with configurations related to the consumer concurrency,
@@ -142,15 +143,30 @@ class TriggerEngine:
         :param workflow_executor: An instance of BaseWorkflowConfigExecutor to handle
             workflow execution. Defaults to None.
         :param consumer_concurrency: The number of concurrent consumers allowed for
-            processing the task queue. Must be at least 1. Defaults to 5.
+            processing the task queue. Must be at least 1. Defaults to the
+            ``TRIGGER_ENGINE_CONSUMER_CONCURRENCY`` setting (5).
         :param max_queue_size: The maximum size of the task queue. Once the queue
             reaches this size, additional tasks will be blocked from being added until
-            space is available. Defaults to 1000.
+            space is available. Defaults to the ``TRIGGER_ENGINE_MAX_QUEUE_SIZE``
+            setting (1000).
         :param drain_timeout: Specifies the timeout (in seconds) for draining the task
-            queue when shutting down. Must be a positive number. Defaults to 30.
+            queue when shutting down. Must be a positive number. Defaults to the
+            ``TRIGGER_ENGINE_DRAIN_TIMEOUT`` setting (30).
         :param state_sync_interval: The interval (in seconds) for synchronizing trigger
-            states. Must be a positive number. Defaults to 10.
+            states. Must be a positive number. Defaults to the
+            ``TRIGGER_ENGINE_STATE_SYNC_INTERVAL`` setting (10).
         """
+        if consumer_concurrency is None:
+            consumer_concurrency = int(
+                setting("TRIGGER_ENGINE_CONSUMER_CONCURRENCY", 5)
+            )
+        if max_queue_size is None:
+            max_queue_size = int(setting("TRIGGER_ENGINE_MAX_QUEUE_SIZE", 1000))
+        if drain_timeout is None:
+            drain_timeout = int(setting("TRIGGER_ENGINE_DRAIN_TIMEOUT", 30))
+        if state_sync_interval is None:
+            state_sync_interval = int(setting("TRIGGER_ENGINE_STATE_SYNC_INTERVAL", 10))
+
         if consumer_concurrency < 1:
             raise ValueError("consumer_concurrency must be at least 1")
 

@@ -77,10 +77,14 @@ class EventSampler:
     def __init__(
         self,
         *,
-        capacity: int = 32,
+        capacity: Optional[int] = None,
         critical: frozenset = DEFAULT_CRITICAL,
         rng: Optional[random.Random] = None,
     ) -> None:
+        if capacity is None:
+            from volnux.config import setting
+
+            capacity = int(setting("GOVERNANCE_SAMPLING_CAPACITY", 32))
         if capacity < 1:
             raise ValueError("reservoir capacity must be >= 1")
         self._capacity = capacity

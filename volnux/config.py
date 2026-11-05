@@ -1,3 +1,5 @@
+import contextlib
+import importlib
 import importlib.util
 import logging
 import os
@@ -12,7 +14,12 @@ from types import ModuleType
 from typing import Any, Optional, Union
 from cryptography.exceptions import InvalidSignature
 
-from volnux import settings as default_settings
+from volnux.conf import (
+    ENVIRONMENT_VARIABLE as ENV_SETTINGS_MODULE,
+    REMOVED_SETTINGS,
+    global_settings as default_settings,
+)
+from volnux.exceptions import ImproperlyConfigured
 from volnux.concurrency.async_utils import to_thread
 from volnux.constants import UNKNOWN
 from volnux.crypto.signer import Signer, KeyLoader
@@ -20,7 +27,7 @@ from volnux.crypto.signer import Signer, KeyLoader
 if typing.TYPE_CHECKING:
     from volnux.result.result import ResultSet
 
-__all__ = ["VolnuxConfig", "ConfigEntry"]
+__all__ = ["VolnuxConfig", "ConfigEntry", "setting", "is_sensitive_setting"]
 
 ENV_CONFIG = "VOLNUX_CONFIG"
 ENV_CONFIG_DIR = "VOLNUX_CONFIG_DIR"
@@ -36,11 +43,80 @@ logger = logging.getLogger(__name__)
 _MISSING = UNKNOWN
 
 
+#: Settings that hold secrets. They are never put in the carriers (``to_dict`` ...)
+#: that are sent to workers: a worker has its own environment.
+SENSITIVE_SETTINGS = frozenset({"SECRET_KEY", "MESH_PRIVATE_KEY"})
+_SENSITIVE_SUFFIXES = ("_SECRET", "_PASSWORD", "_TOKEN", "_KEY", "_PRIVATE_KEY")
+
+
+def is_sensitive_setting(name: str) -> bool:
+    """Whether a setting holds a secret (by its name)."""
+    name = name.upper()
+    return name in SENSITIVE_SETTINGS or name.endswith(_SENSITIVE_SUFFIXES)
+
+
 def _generate_node_id() -> str:
     """
     Generates a unique node ID for the mesh network.
     """
     return f"node_{os.urandom(8).hex()}"
+
+
+_TRUE = frozenset({"1", "true", "yes", "on"})
+_FALSE = frozenset({"0", "false", "no", "off", ""})
+
+
+def _coerce_env(name: str, raw: str, current: Any) -> Any:
+    """``raw`` (text from the environment) as the type of the setting it overrides.
+
+    With nothing to go by (a setting that has no value yet) the text is kept. A
+    value that does not fit the type is kept as text too, and reported: failing to
+    start because of one variable is worse than a setting with the wrong type that
+    the code using it will complain about by name.
+    """
+    if current is _MISSING or current is None:
+        # No type to go by. A JSON object or array is still recognised, so a
+        # setting that is None until configured (a backend config) can be given
+        # as JSON in the environment.
+        text = raw.strip()
+        if text[:1] in ("{", "["):
+            try:
+                return json.loads(text)
+            except ValueError:
+                pass
+        return raw
+    if isinstance(current, str):
+        return raw
+    try:
+        if isinstance(current, bool):  # (before int: bool is an int)
+            text = raw.strip().lower()
+            if text in _TRUE:
+                return True
+            if text in _FALSE:
+                return False
+            raise ValueError(f"not a boolean: {raw!r}")
+        if isinstance(current, int):
+            return int(raw.strip())
+        if isinstance(current, float):
+            return float(raw.strip())
+        if isinstance(current, Path):
+            return Path(raw)
+        if isinstance(current, (list, dict, tuple)):
+            value = json.loads(raw)
+            if isinstance(current, tuple) and isinstance(value, list):
+                return tuple(value)
+            if not isinstance(value, type(current)):
+                raise ValueError(f"expected JSON {type(current).__name__}")
+            return value
+    except (ValueError, TypeError) as exc:
+        logger.warning(
+            "VOLNUX_%s=%r does not fit the setting's type (%s): %s; keeping the text",
+            name,
+            raw,
+            type(current).__name__,
+            exc,
+        )
+    return raw
 
 
 @dataclass
@@ -57,6 +133,12 @@ class ConfigEntry:
 
     # Ed25519 signature for security
     signature: Optional[bytes] = None
+
+    def __post_init__(self) -> None:
+        # Keys are case-insensitive (get() upper-cases the key it is given), so an
+        # entry named "lower" was stored but could never be found.
+        if isinstance(self.name, str):
+            self.name = self.name.upper()
 
     @property
     def key(self) -> Optional[str]:
@@ -129,7 +211,54 @@ class ConfigEntry:
             "origin_mesh_node": self.origin_mesh_node,
             "timestamp": self.timestamp,
         }
-        return json.dumps(payload, option=json.OPT_SORT_KEYS)
+        # default=str: a Path (or other value JSON does not know) signs as its text,
+        # which is what the receiver sees after the entry crossed the wire as JSON
+        return json.dumps(payload, option=json.OPT_SORT_KEYS, default=str)
+
+    def to_gossip(self) -> typing.Dict[str, Any]:
+        """The wire form of an entry sent to the other nodes of the mesh."""
+        return {
+            "key": self.name,
+            "value": self.value,
+            "timestamp": self.timestamp,
+            "origin_mesh_node": self.origin_mesh_node,
+            "signature": self.signature.hex() if self.signature else None,
+        }
+
+    @classmethod
+    def from_gossip(cls, payload: typing.Dict[str, Any]) -> "ConfigEntry":
+        """Rebuild an entry from :meth:`to_gossip` (what arrives from a peer).
+
+        :raises ValueError: the payload is malformed. It comes from the network,
+            so every field is checked.
+        """
+        if not isinstance(payload, dict):
+            raise ValueError("config gossip must be a mapping")
+        name = payload.get("key") or payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("config gossip has no key")
+        if "value" not in payload:
+            raise ValueError(f"config gossip for '{name}' has no value")
+        timestamp = payload.get("timestamp")
+        if isinstance(timestamp, bool) or not isinstance(timestamp, int):
+            raise ValueError(f"config gossip for '{name}' has no integer timestamp")
+        if timestamp < 0:
+            raise ValueError(f"config gossip for '{name}' has a negative timestamp")
+        origin = payload.get("origin_mesh_node") or payload.get("origin_node")
+        if not isinstance(origin, str) or not origin:
+            raise ValueError(f"config gossip for '{name}' names no origin node")
+        raw_signature = payload.get("signature")
+        try:
+            signature = bytes.fromhex(raw_signature) if raw_signature else None
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"config gossip for '{name}': bad signature") from exc
+        return cls(
+            name=name,
+            value=payload["value"],
+            timestamp=timestamp,
+            origin_mesh_node=origin,
+            signature=signature,
+        )
 
     def _create_signer(self, key_pem: Union[bytes, str]) -> Signer:
         """
@@ -187,7 +316,16 @@ class ConfigEntry:
         """
         if self.is_local():
             return True
+        return self.verify_signature(signer)
 
+    def verify_signature(self, signer: Optional[Signer] = None) -> bool:
+        """
+        Check the signature against the entry, whoever claims to have made it.
+
+        Unlike :meth:`validate` there is no shortcut for "local" entries: an entry
+        that arrives from the network can name any origin, including this node, so
+        it must not be trusted for what it says about itself.
+        """
         if not self.signature or not self.name:
             return False
 
@@ -198,7 +336,7 @@ class ConfigEntry:
                     return False
                 signer = self._create_signer(key_pem=public_key_data)
 
-            return signer.verify(self._signing_payload(), self.signature)
+            return bool(signer.verify(self._signing_payload(), self.signature))
         except (ValueError, TypeError, InvalidSignature):
             return False
 
@@ -227,6 +365,8 @@ class VolnuxConfig:
         """
         from volnux.result.result import ResultSet
 
+        self._lock = threading.RLock()
+        self._overrides: typing.List[typing.Dict[str, Any]] = []
         self._store: ResultSet[ConfigEntry] = ResultSet[ConfigEntry]()
         self._namespace_store: typing.DefaultDict[str, ResultSet[ConfigEntry]] = (
             defaultdict(ResultSet)
@@ -239,25 +379,30 @@ class VolnuxConfig:
             self._node_id = _generate_node_id()
             os.environ[ENV_MESH_NODE_ID] = self._node_id
 
-        self.load_from_environ()
+        # Later sources win: the defaults (volnux.conf.global_settings), the
+        # project's settings module (VOLNUX_SETTINGS_MODULE), the config files, then
+        # the environment (the way to override one value for one deployment).
+        self._load_module(default_settings, source="volnux.conf.global_settings")
 
-        self._load_module(default_settings)
+        settings_module = os.environ.get(ENV_SETTINGS_MODULE)
+        if settings_module:
+            self.load_settings_module(settings_module)
 
-        last_exception: Optional[Exception] = None
-        for file_path in self._get_config_files(config_file):
+        # (a named settings module replaces the search for a `settings.py`)
+        for file_path in self._get_config_files(
+            config_file, search=not settings_module
+        ):
             try:
                 self.load_from_file(file_path)
-                last_exception = None
-            except (FileNotFoundError, ImportError, SyntaxError) as exc:
-                last_exception = exc
-                continue
+            except ImproperlyConfigured:
+                raise  # a renamed setting must not be skipped like a missing file
+            except Exception as exc:
+                # one bad file must not hide another's failure, or stop the rest
+                logger.error(
+                    "Failed to load config file %s: %s", file_path, exc, exc_info=exc
+                )
 
-        if last_exception:
-            logger.error(
-                "Failed to load config files: %s",
-                last_exception,
-                exc_info=last_exception,
-            )
+        self.load_from_environ()
 
     @classmethod
     def get_instance(cls) -> "VolnuxConfig":
@@ -275,10 +420,18 @@ class VolnuxConfig:
         for transportation across context carriers (Celery, K8s, Ray).
         """
         with self._lock:
-            main_store_entries = [entry.to_dict() for entry in self._store]
+            main_store_entries = [
+                entry.to_dict()
+                for entry in self._store
+                if not is_sensitive_setting(entry.name or "")
+            ]
 
             namespace_entries = {
-                ns: [entry.to_dict() for entry in store]
+                ns: [
+                    entry.to_dict()
+                    for entry in store
+                    if not is_sensitive_setting(entry.name or "")
+                ]
                 for ns, store in self._namespace_store.items()
             }
 
@@ -294,8 +447,11 @@ class VolnuxConfig:
         """
         Reconstructs a VolnuxConfig instance from a serialized dictionary carrier.
         """
+        from volnux.result.result import ResultSet
+
         instance = cls.__new__(cls)
         instance._lock = threading.RLock()
+        instance._overrides = []
         instance._store = ResultSet[ConfigEntry]()
         instance._namespace_store = defaultdict(ResultSet[ConfigEntry])
         instance._signer = None
@@ -317,8 +473,12 @@ class VolnuxConfig:
         return instance
 
     def to_json(self) -> str:
-        """Serializes the active configuration state to a JSON string."""
-        return json.dumps(self.to_dict()).decode("utf-8")
+        """Serializes the active configuration state to a JSON string.
+
+        A value JSON does not know (the ``Path`` settings such as
+        ``BASE_DIR``) is written as its text; it used to make this raise.
+        """
+        return json.dumps(self.to_dict(), default=str).decode("utf-8")
 
     @classmethod
     def from_json(cls, json_str: str) -> "VolnuxConfig":
@@ -336,15 +496,16 @@ class VolnuxConfig:
         return cls.from_json(json_str)
 
     def _get_config_files(
-        self, config_file: typing.Optional[str] = None
+        self, config_file: typing.Optional[str] = None, search: bool = True
     ) -> typing.Iterator[str]:
         """
         Load order:
-        1. File discovered in ENV_CONFIG_DIR/current directory
+        1. File discovered in ENV_CONFIG_DIR/current directory (unless ``search``
+           is False, because a settings module was named)
         2. File from ENV_CONFIG
         3. Explicit config_file argument
         """
-        file_path = self._search_for_config_file_in_dir()
+        file_path = self._search_for_config_file_in_dir() if search else None
         if file_path:
             yield file_path
 
@@ -375,15 +536,35 @@ class VolnuxConfig:
 
         return None
 
-    def _load_module(self, config_module: ModuleType) -> None:
+    @staticmethod
+    def _check_not_removed(name: str, source: str) -> None:
+        replacement = REMOVED_SETTINGS.get(name.upper())
+        if replacement:
+            raise ImproperlyConfigured(
+                f"The setting {name.upper()} (set in {source}) was renamed or "
+                f"removed. Use {replacement} instead."
+            )
+
+    def _load_module(self, config_module: ModuleType, source: str = "") -> None:
+        """Load the settings of a module: its UPPER_CASE names, as in Django.
+
+        :raises ImproperlyConfigured: the module sets a setting that was renamed
+            or removed.
+        """
         if not isinstance(config_module, ModuleType):
             raise TypeError("config_module must be of type ModuleType")
 
+        source = (
+            source or getattr(config_module, "__file__", None) or "a settings module"
+        )
         valid_types = (int, float, str, bool, list, dict, tuple, Path)
         for field_name, value in vars(config_module).items():
-            if field_name.startswith("__"):
+            if field_name.startswith("__") or not field_name.isupper():
                 continue
-            if isinstance(value, valid_types):
+            self._check_not_removed(field_name, source)
+            # (A setting set to None is deliberately unset, such as PROJECT_ID;
+            # without it `get("PROJECT_ID")` raised.)
+            if isinstance(value, valid_types) or value is None:
                 self.add_entry_config(
                     ConfigEntry(
                         value=value,
@@ -410,21 +591,59 @@ class VolnuxConfig:
 
             config_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(config_module)
-            self._load_module(config_module)
+            self._load_module(config_module, source=str(config_file))
 
         except ModuleNotFoundError as exc:
             logger.error("Config file %s could not be loaded.", config_file)
             raise ImportError(str(exc)) from exc
 
-    def load_from_environ(self):
-        """
-        Load configurations from environment variables starting with a specific prefix.
+    #: Environment variables with the prefix that are not settings: the private key
+    #: must never become one (settings are serialised for workers), and the others
+    #: only say where the settings are.
+    _ENV_NOT_CONFIG = frozenset(
+        {"MESH_PRIVATE_KEY", "SETTINGS_MODULE", "CONFIG", "CONFIG_DIR"}
+    )
 
-        :return: None
+    def load_settings_module(self, name: str) -> None:
+        """Import the project's settings module (``myproject.settings``) and load
+        its settings on top of what is loaded.
+
+        :raises ImproperlyConfigured: it cannot be imported, or sets a renamed
+            setting.
         """
-        for key, value in os.environ.items():
-            if key.startswith("VOLNUX_"):
-                self.add(key[7:], value)
+        try:
+            module = importlib.import_module(name)
+        except ImproperlyConfigured:
+            raise
+        except Exception as exc:
+            raise ImproperlyConfigured(
+                f"{ENV_SETTINGS_MODULE}={name!r} could not be imported: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        self._load_module(module, source=name)
+
+    def load_from_environ(self) -> None:
+        """
+        Load configurations from environment variables starting with ``VOLNUX_``.
+
+        A value is converted to the type of the setting it overrides (``"9"`` for
+        an integer setting is 9); for a setting nothing defines it stays text.
+        """
+        for key, raw in os.environ.items():
+            if not key.startswith("VOLNUX_"):
+                continue
+            name = key[7:]
+            if not name or name in self._ENV_NOT_CONFIG:
+                continue
+            self._check_not_removed(name, f"the environment variable {key}")
+            existing = self.get_config_entry(name)
+            # (timestamp 0 like the defaults and files: reading the environment is
+            # not a mesh event and must not advance the Lamport clock)
+            self.add(
+                name,
+                _coerce_env(name, raw, existing.value if existing else _MISSING),
+                timestamp=0,
+            )
 
     async def load_from_file_async(
         self, config_file: typing.Union[str, os.PathLike]
@@ -451,20 +670,24 @@ class VolnuxConfig:
         """
         key = key.upper()
 
-        def get_store(ne: Optional[str] = None) -> "ResultSet[ConfigEntry]":
-            if ne is not None:
-                return self._namespace_store[ne]
-            return self._store
+        with self._lock:
+            if namespace is not None:
+                # (looking must not create the namespace)
+                store = self._namespace_store.get(namespace)
+                if store is None:
+                    return None
+            else:
+                store = self._store
 
-        try:
-            return get_store(namespace).get_entry_by_identity(f"hash:{hash(key)}")
-        except KeyError:
-            pass
+            try:
+                return store.get_entry_by_identity(f"hash:{hash(key)}")
+            except KeyError:
+                pass
 
-        try:
-            return get_store(namespace).get(name=key)
-        except KeyError:
-            return None
+            try:
+                return store.get(name=key)
+            except KeyError:
+                return None
 
     def get(
         self, key: str, default: Any = _MISSING, namespace: Optional[str] = None
@@ -482,6 +705,10 @@ class VolnuxConfig:
         :type namespace: Optional[str]
         :raises AttributeError: If the key is missing and no default value is provided.
         """
+        if namespace is None:
+            found, value = self._overridden(key)
+            if found:
+                return value
         entry = self.get_config_entry(key, namespace)
         if entry is not None:
             return entry.value
@@ -490,25 +717,87 @@ class VolnuxConfig:
             raise AttributeError(f"Missing configuration key '{key}'")
         return default
 
+    def _overridden(self, key: str) -> typing.Tuple[bool, Any]:
+        """(found, value) of a setting changed by :meth:`override`, innermost first."""
+        key = key.upper()
+        for options in reversed(self._overrides):
+            if key in options:
+                return True, options[key]
+        return False, None
+
+    @contextlib.contextmanager
+    def override(self, **options: Any) -> typing.Iterator[None]:
+        """Change settings for a block (``volnux.conf.override_settings``). Changes
+        nest and are undone on exit, whatever happens inside."""
+        names = {}
+        for name, value in options.items():
+            self._check_not_removed(name, "override_settings")
+            names[name.upper()] = value
+        with self._lock:
+            self._overrides.append(names)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._overrides.remove(names)
+
+    def set_setting(self, name: str, value: Any) -> None:
+        """Set a setting from code (``settings.configure``), as a settings module would."""
+        self._check_not_removed(name, "settings.configure()")
+        self.add(name, value, timestamp=0)
+
+    def resolve(self, name: str, default: Any = _MISSING) -> Any:
+        """
+        The current value of a setting: the environment variable ``VOLNUX_<NAME>``
+        (read now, not when this object was built), else the loaded value (a config
+        file, else ``settings.py``), else ``default``.
+
+        Use it for values read when something starts (a server, a pool) rather than
+        ``get``, which only sees the environment as it was when the configuration
+        was built: ``volnux dev`` sets variables after that. An environment value is
+        converted to the type of the setting it overrides.
+
+        :raises AttributeError: nothing defines the setting and there is no default.
+        """
+        key = name.upper()
+        found, value = self._overridden(key)
+        if found:
+            return value
+        entry = self.get_config_entry(key)
+        current = entry.value if entry is not None else _MISSING
+
+        raw = None if key in self._ENV_NOT_CONFIG else os.environ.get(f"VOLNUX_{key}")
+        if raw is not None:
+            model = current if current is not _MISSING else default
+            return _coerce_env(key, raw, model)
+
+        if entry is not None:
+            return current
+        if default is _MISSING:
+            raise AttributeError(f"Missing configuration key '{name}'")
+        return default
+
     def add_entry_config(
         self, config_entry: ConfigEntry, namespace: Optional[str] = None
     ) -> None:
         with self._lock:
-            if self._signer and config_entry.is_local() and not config_entry.signature:
-                config_entry.sign(self._signer)
-
-            if config_entry.is_remote() and config_entry in self._store:
-                status = self.update_from_mesh(config_entry)
+            if config_entry.is_remote():
+                # What another node says goes through the mesh rules (signature,
+                # Lamport order), never straight into the store.
+                status = self.update_from_mesh(config_entry, namespace)
                 logger.info("Update from mesh: %s", status)
                 return
 
-            if namespace is not None:
-                qs = self._namespace_store.get(namespace)
-                qs.add(config_entry)
-                self._namespace_store[namespace] = qs
-                return
+            if self._signer and config_entry.is_local() and not config_entry.signature:
+                config_entry.sign(self._signer)
 
-            self._store.add(config_entry)
+            self._store_for(namespace).add(config_entry)
+
+    def _store_for(self, namespace: Optional[str]) -> "ResultSet[ConfigEntry]":
+        """The store of a namespace (created on first write), or the main one."""
+        if namespace is None:
+            return self._store
+        return self._namespace_store[namespace]
 
     def add(
         self,
@@ -526,59 +815,101 @@ class VolnuxConfig:
         :param node_id: Optional. Specifies the origin mesh node identifier. If not
             provided, the current node identifier is used.
         :param timestamp: Optional. Sets the time for the entry. If not provided,
-            uses the current Lamport clock value.
+            the Lamport clock is advanced and its new value used, so a local change
+            is newer than everything this node has seen (it used the clock without
+            advancing it, and a peer's write at the same time could replace it).
         :param namespace: Optional. Specifies the namespace for the configuration entry.
         :return: None
         """
-        entry = ConfigEntry(
-            value=value,
-            origin_mesh_node=node_id or self.get_node_id(),
-            timestamp=int(timestamp or self._lamport_clock),
-            name=key.upper(),
-        )
-
-        self.add_entry_config(entry, namespace)
-
-    def update_from_mesh(self, incoming_entry: ConfigEntry) -> bool:
-        """
-        Update the local store with a new entry from the mesh network if certain conditions
-        are met. This method ensures that only newer or higher-priority entries are used
-        to replace existing entries in the local store. It also updates the Lamport clock
-        to maintain consistency in the distributed system.
-
-        :param incoming_entry: The new entry to be considered for update, represented as a
-            `ConfigEntry`. This entry is compared with local entries in the store.
-
-        :return: A boolean value indicating whether the local store was updated
-            (True if updated, False otherwise).
-        """
         with self._lock:
-            # local_entry = self._store.get_entry_by_identity(hash(incoming_entry))
-            local_entry = self.get_config_entry(key=incoming_entry.name)
-
-            if not local_entry:
-                self._store.add(incoming_entry)
-                self._lamport_clock = (
-                    max(self._lamport_clock, incoming_entry.timestamp) + 1
-                )
-                return True
-
-            incoming_node = incoming_entry.origin_mesh_node or ""
-            local_node = local_entry.origin_mesh_node or ""
-
-            should_update = incoming_entry.timestamp > local_entry.timestamp or (
-                incoming_entry.timestamp == local_entry.timestamp
-                and incoming_node > local_node
+            if timestamp is None:
+                self._lamport_clock += 1
+                timestamp = self._lamport_clock
+            entry = ConfigEntry(
+                value=value,
+                origin_mesh_node=node_id or self.get_node_id(),
+                timestamp=int(timestamp),
+                name=key.upper(),
             )
 
-            if not should_update:
-                return False
+            self.add_entry_config(entry, namespace)
 
-            self._store.add(incoming_entry)
+    def make_mesh_entry(self, key: str, value: Any) -> ConfigEntry:
+        """A new local entry, with the next Lamport timestamp, ready to send to the
+        other nodes: signed if this node has a signer or a private key."""
+        with self._lock:
+            self._lamport_clock += 1
+            entry = ConfigEntry(
+                value=value,
+                name=key.upper(),
+                timestamp=self._lamport_clock,
+                origin_mesh_node=self.get_node_id(),
+            )
+        if self._signer is not None or os.environ.get(ENV_MESH_PRIVATE_KEY):
+            entry.sign(self._signer)
+        return entry
+
+    def _signatures_required(self) -> bool:
+        """Whether entries from other nodes must be signed: they must as soon as
+        this node can verify (a signer, or the mesh public key, is configured)."""
+        return self._signer is not None or bool(os.environ.get(ENV_MESH_PUBLIC_KEY))
+
+    def verify_mesh_entry(self, entry: ConfigEntry) -> bool:
+        """Whether an entry received from the mesh may be applied (and relayed):
+        well formed and, when verification is configured, correctly signed. The
+        origin it claims is not trusted, not even "local" or this node's own id."""
+        if not isinstance(entry.name, str) or not entry.name.strip():
+            return False
+        if isinstance(entry.timestamp, bool) or not isinstance(entry.timestamp, int):
+            return False
+        if self._signatures_required():
+            return entry.verify_signature(self._signer)
+        return True
+
+    def update_from_mesh(
+        self, incoming_entry: ConfigEntry, namespace: Optional[str] = None
+    ) -> bool:
+        """
+        Apply an entry received from the mesh if it is valid and newer than ours.
+
+        The entry must pass :meth:`verify_mesh_entry`. It replaces the local one
+        when its Lamport timestamp is higher, or equal with a greater origin node id
+        (a total order, so every node ends with the same value). The clock moves
+        past the timestamp of every valid entry received, applied or not.
+
+        :param incoming_entry: The entry received.
+        :param namespace: The namespace the entry belongs to, if any.
+        :return: True if the local store was updated.
+        """
+        if not self.verify_mesh_entry(incoming_entry):
+            logger.warning(
+                "Rejected config update '%s' from '%s': malformed or not correctly "
+                "signed",
+                incoming_entry.name,
+                incoming_entry.origin_mesh_node,
+            )
+            return False
+
+        with self._lock:
             self._lamport_clock = max(self._lamport_clock, incoming_entry.timestamp) + 1
+            local_entry = self.get_config_entry(incoming_entry.name, namespace)
+
+            if local_entry is not None:
+                incoming_node = incoming_entry.origin_mesh_node or ""
+                local_node = local_entry.origin_mesh_node or ""
+                should_update = incoming_entry.timestamp > local_entry.timestamp or (
+                    incoming_entry.timestamp == local_entry.timestamp
+                    and incoming_node > local_node
+                )
+                if not should_update:
+                    return False
+
+            self._store_for(namespace).add(incoming_entry)
             return True
 
-    async def update_from_mesh_async(self, incoming_entry: ConfigEntry) -> bool:
+    async def update_from_mesh_async(
+        self, incoming_entry: ConfigEntry, namespace: Optional[str] = None
+    ) -> bool:
         """
         Updates the current configuration entry using data from the mesh network asynchronously.
 
@@ -588,10 +919,14 @@ class VolnuxConfig:
         :return: Indicates whether the update operation was successful.
         :rtype: bool
         """
-        return await to_thread(self.update_from_mesh, incoming_entry)
+        return await to_thread(self.update_from_mesh, incoming_entry, namespace)
 
-    async def get_async(self, key: str, default: Any = _MISSING) -> Any:
-        return await to_thread(self.get, key, default)
+    async def get_async(
+        self, key: str, default: Any = _MISSING, namespace: Optional[str] = None
+    ) -> Any:
+        if namespace is None:
+            return await to_thread(self.get, key, default)
+        return await to_thread(self.get, key, default, namespace)
 
     async def add_async(
         self,
@@ -612,3 +947,9 @@ class VolnuxConfig:
 
     def __repr__(self) -> str:
         return f"VolnuxConfig <len={len(self._store)}>"
+
+
+def setting(name: str, default: Any = _MISSING) -> Any:
+    """``VolnuxConfig.get_instance().resolve(name, default)``: the current value of a
+    setting (environment, then config file, then ``settings.py``, then ``default``)."""
+    return VolnuxConfig.get_instance().resolve(name, default)

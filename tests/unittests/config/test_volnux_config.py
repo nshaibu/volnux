@@ -58,6 +58,10 @@ class DummySigner:
 
 @pytest.fixture
 def cfg(monkeypatch):
+    # no VOLNUX_* variable of the machine, or set by another test (the governance
+    # conftest sets VOLNUX_PROJECT_ID for the whole session), becomes a setting
+    for var in [v for v in os.environ if v.startswith("VOLNUX_")]:
+        monkeypatch.delenv(var)
     # monkeypatch.setattr(config_module, "ResultSet", lambda: DummyStore())
     monkeypatch.setattr(
         config_module, "default_settings", ModuleType("default_settings")
@@ -162,8 +166,10 @@ def test_load_module_adds_supported_values(monkeypatch):
     module.A = 1
     module.B = "x"
     module.C = [1, 2]
-    module._private = "not-skipped"
-    module.__hidden__ = "skip"
+    module.lowercase = "skipped: not a setting"
+    module._private = "skipped: not upper case"
+    module._INTERNAL = "kept: upper case"
+    module.__HIDDEN__ = "skip"
 
     inst._load_module(module)
 
@@ -171,7 +177,8 @@ def test_load_module_adds_supported_values(monkeypatch):
     assert "A" in names
     assert "B" in names
     assert "C" in names
-    assert "_PRIVATE" in names
+    assert "LOWERCASE" not in names and "_PRIVATE" not in names
+    assert "_INTERNAL" in names
     assert "__HIDDEN__" not in names
 
 

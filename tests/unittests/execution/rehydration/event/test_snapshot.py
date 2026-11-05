@@ -134,9 +134,23 @@ class TestEventCheckpointSnapshot:
         )
 
     def test_uses_the_configured_store_not_a_hardcoded_redis(self) -> None:
-        from volnux.config import VolnuxConfig
+        from volnux.backends.databases import get_database_config
 
-        assert (
-            EventCheckpointSnapshot.get_backend_config()
-            == VolnuxConfig.get_instance().KEY_VALUE_STORE_CONFIG
+        # checkpoints live in DATABASES["checkpoints"], else DATABASES["default"]
+        assert EventCheckpointSnapshot.get_database_alias() == "checkpoints"
+        assert EventCheckpointSnapshot.get_backend_config() == get_database_config(
+            "checkpoints"
         )
+
+    def test_it_follows_a_checkpoints_database(self) -> None:
+        from volnux.conf import override_settings
+
+        databases = {
+            "default": {"ENGINE": "a.Default"},
+            "checkpoints": {"ENGINE": "a.Checkpoints", "HOST": "h", "PORT": 1},
+        }
+        with override_settings(DATABASES=databases):
+            assert EventCheckpointSnapshot.get_backend_config() == {
+                "ENGINE": "a.Checkpoints",
+                "CONNECTOR_CONFIG": {"host": "h", "port": 1},
+            }

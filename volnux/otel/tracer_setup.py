@@ -37,10 +37,14 @@ class VolnuxTracerConfig:
         # Grafana specific (Tempo)
         tempo_endpoint: Optional[str] = None,
         # Sampling
-        sample_rate: float = 1.0,
+        sample_rate: Optional[float] = None,
         # Additional attributes
         custom_attributes: Optional[dict[str, Any]] = None,
     ):
+        if sample_rate is None:
+            from volnux.config import setting
+
+            sample_rate = float(setting("OTEL_SAMPLE_RATE", 1.0))
         if not 0.0 <= sample_rate <= 1.0:
             raise ValueError("sample_rate must be between 0.0 and 1.0")
 

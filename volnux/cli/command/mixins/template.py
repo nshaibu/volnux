@@ -32,7 +32,7 @@ class TemplateMixin:
 
         # Construct a template path
         current_dir = Path(__file__).parent
-        templates_dir = current_dir / "builtins" / "templates"
+        templates_dir = current_dir.parent / "builtins" / "templates"
         template_file_path = templates_dir / template_name
 
         try:

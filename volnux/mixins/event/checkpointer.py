@@ -60,7 +60,8 @@ conf = VolnuxConfig.get_instance()
 # Dedicated executor for sync sub_phase init_funcs with timeouts.
 # NEVER use the default asyncio.to_thread pool.
 _SUB_PHASE_EXECUTOR = ThreadPoolExecutor(
-    max_workers=64, thread_name_prefix="volnux-subphase"
+    max_workers=max(1, int(conf.resolve("SUBPHASE_EXECUTOR_WORKERS", 64))),
+    thread_name_prefix="volnux-subphase",
 )
 
 

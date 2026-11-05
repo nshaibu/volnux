@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+
+from volnux.config import setting
 import uvicorn
 import importlib
 from pathlib import Path
@@ -117,8 +119,7 @@ async def start_api_server(
         port=port,
         log_level=log_level.lower(),
         # Access log: always on in dev, configurable in production
-        access_log=dev_mode
-        or os.environ.get("VOLNUX_ACCESS_LOG", "false").lower() == "true",
+        access_log=dev_mode or bool(setting("ACCESS_LOG", False)),
         # Let uvicorn use the existing asyncio loop (we are already inside one)
         loop="none",
         # Graceful shutdown timeout — how long Uvicorn waits for in-flight

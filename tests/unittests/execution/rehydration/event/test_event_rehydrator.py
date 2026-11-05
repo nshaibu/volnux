@@ -13,11 +13,13 @@ Covers:
 from __future__ import annotations
 
 from typing import Any, Dict
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from volnux.event.base import EventBase
 from volnux.execution.rehydrator.event.rehydrator import EventRehydrator
+from volnux.mixins.event import RetryPolicy
 from volnux.execution.rehydrator.event.snapshot import (
     EventCheckpointSnapshot,
     EventPhase,
@@ -66,246 +68,159 @@ def rehydrator() -> EventRehydrator:
 
 
 # ===========================================================================
+# Real events, not mocks: the rehydrator is tested on what it does to an event.
+
+_REHYDRATOR = "volnux.execution.rehydrator.event.rehydrator"
+
+
+class RehydratorTargetEvent(EventBase):
+    """An event whose class-level retry policy differs from the snapshot's."""
+
+    retry_policy = RetryPolicy(max_attempts=9)
+
+    def process(self, *args, **kwargs):
+        return True, "done"
+
+
+class NoPolicyRehydratorEvent(EventBase):
+    retry_policy = None
+
+    def process(self, *args, **kwargs):
+        return True, "done"
+
+
+async def rehydrate(rehydrator, snapshot, event_class=RehydratorTargetEvent):
+    """Rehydrate ``snapshot`` as ``event_class``: class resolution and the
+    (database-backed) init and exec-result deserialization are stood in for."""
+    with patch(f"{_REHYDRATOR}.import_class", return_value=event_class), patch.object(
+        StateDeserializer,
+        "deserialize_init_args",
+        return_value={"task_id": "task-001", "execution_context": None},
+    ), patch.object(
+        StateDeserializer, "deserialize_exec_result", side_effect=lambda value: value
+    ):
+        return await rehydrator.rehydrate(snapshot)
+
+
 class TestEventRehydratorRehydrate:
 
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args"
-    )
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_exec_result"
-    )
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_external_resources"
-    )
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args"
-    )
-    @patch("volnux.execution.rehydrator.event_rehydrator.import_class")
+    @pytest.mark.asyncio
     async def test_rehydrate_restores_all_fields(
-        self,
-        mock_import_class: MagicMock,
-        mock_deserialize_init: MagicMock,
-        mock_deserialize_ext_res: MagicMock,
-        mock_deserialize_exec: MagicMock,
-        mock_deserialize_call: MagicMock,
-        rehydrator: EventRehydrator,
+        self, rehydrator: EventRehydrator
     ) -> None:
-        mock_event_class = MagicMock(return_value=MagicMock())
-        mock_event_class.return_value.retry_policy = MagicMock()
-        mock_import_class.return_value = mock_event_class
-
-        mock_deserialize_init.return_value = {
-            "task_id": "task-001",
-            "execution_context": None,
-        }
-        mock_deserialize_call.return_value = {
-            "args": ["input_data"],
-            "kwargs": {"mode": "fast"},
-        }
-        mock_deserialize_ext_res.return_value = {
-            "db_cursor": "restored_cursor",
-        }
-        mock_deserialize_exec.return_value = {"output": 99}
-
         snapshot = _make_snapshot()
-        event = await rehydrator.rehydrate(snapshot)
+        with patch(
+            f"{_REHYDRATOR}.import_class", return_value=RehydratorTargetEvent
+        ) as import_class, patch.object(
+            StateDeserializer,
+            "deserialize_init_args",
+            return_value={"task_id": "task-001", "execution_context": None},
+        ), patch.object(
+            StateDeserializer, "deserialize_exec_result", side_effect=lambda v: v
+        ):
+            event = await rehydrator.rehydrate(snapshot)
 
-        # Class instantiation
-        mock_import_class.assert_called_once_with("test.events.ProcessDataTask")
-        mock_event_class.assert_called_once()
+        import_class.assert_called_once_with("test.events.ProcessDataTask")
+        assert isinstance(event, RehydratorTargetEvent)
 
-        # Phase
+        # phase and retry state
         assert event._phase == EventPhase.PROCESSING
-
-        # Retry
         assert event._retry_count == 2
         assert event.retry_policy.max_attempts == 5
 
-        # Exec state
-        assert event._exec_status is True
-        assert event._exec_result == {"output": 99}
+        # execution state
+        assert event.exec_status is True
+        assert event.exec_result == {"output": 99}
 
-        # Call args
-        mock_deserialize_call.assert_called_once()
-        assert event._call_args == {"args": ["input_data"], "kwargs": {"mode": "fast"}}
+        # call arguments: positional apart from keyword
+        assert event._call_positional == ("input_data",)
+        assert event._call_args == {"mode": "fast"}
 
-        # External resources
-        mock_deserialize_ext_res.assert_called_once_with(snapshot.external_resources)
-        assert event._external_resources == {"db_cursor": "restored_cursor"}
+        # external resources stay as saved states, restored on demand
+        assert event._external_resources == snapshot.external_resources
 
-        # Attribs injected via setattr
+        # user-bound attributes
         assert event._page == 3
         assert event._buffer == ["item1", "item2"]
 
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args"
-    )
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_external_resources"
-    )
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args"
-    )
-    @patch("volnux.execution.rehydrator.event_rehydrator.import_class")
+    @pytest.mark.asyncio
+    async def test_the_snapshots_retry_limit_does_not_leak_to_the_class(
+        self, rehydrator: EventRehydrator
+    ) -> None:
+        # the class-level policy is shared by every instance of the event
+        event = await rehydrate(rehydrator, _make_snapshot(max_retry_attempts=5))
+        assert event.retry_policy.max_attempts == 5
+        assert RehydratorTargetEvent.retry_policy.max_attempts == 9
+        other = RehydratorTargetEvent(None, "other")
+        assert other.retry_policy.max_attempts == 9
+
+    @pytest.mark.asyncio
     async def test_none_exec_result_skips_deserialization(
-        self,
-        mock_import_class: MagicMock,
-        mock_deserialize_init: MagicMock,
-        mock_deserialize_ext_res: MagicMock,
-        mock_deserialize_call: MagicMock,
-        rehydrator: EventRehydrator,
+        self, rehydrator: EventRehydrator
     ) -> None:
-        mock_event_class = MagicMock()
-        mock_event_class.return_value.retry_policy = None
-        mock_import_class.return_value = mock_event_class
+        snapshot = _make_snapshot(exec_result=None)
+        with patch(
+            f"{_REHYDRATOR}.import_class", return_value=RehydratorTargetEvent
+        ), patch.object(
+            StateDeserializer,
+            "deserialize_init_args",
+            return_value={"task_id": "task-001", "execution_context": None},
+        ), patch.object(
+            StateDeserializer, "deserialize_exec_result", side_effect=lambda v: v
+        ) as deserialize:
+            event = await rehydrator.rehydrate(snapshot)
 
-        mock_deserialize_init.return_value = {}
-        mock_deserialize_call.return_value = {"args": [], "kwargs": {}}
+        # (it is also what the call arguments go through, so look at what it got)
+        seen = [c.args[0] for c in deserialize.call_args_list]
+        assert None not in seen and seen == ["input_data", "fast"]
+        assert event.exec_result is None
 
-        snapshot = _make_snapshot(exec_result=None, external_resources={})
-        event = await rehydrator.rehydrate(snapshot)
-
-        # exec_result is None — no deserialize_exec_result call expected
-        # (We don't patch it here, so it would fail if called)
-        assert event._exec_result is None
-
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args"
-    )
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args"
-    )
-    @patch("volnux.execution.rehydrator.event_rehydrator.import_class")
-    async def test_empty_external_resources_skips_deserialization(
-        self,
-        mock_import_class: MagicMock,
-        mock_deserialize_init: MagicMock,
-        mock_deserialize_call: MagicMock,
-        rehydrator: EventRehydrator,
+    @pytest.mark.asyncio
+    async def test_empty_external_resources_are_not_set(
+        self, rehydrator: EventRehydrator
     ) -> None:
-        mock_event_class = MagicMock()
-        mock_event_class.return_value.retry_policy = None
-        mock_import_class.return_value = mock_event_class
-
-        mock_deserialize_init.return_value = {}
-        mock_deserialize_call.return_value = {}
-
-        snapshot = _make_snapshot(external_resources={})
-        event = await rehydrator.rehydrate(snapshot)
-
-        # external_resources should NOT have been set on the event
-        # (since snapshot.external_resources is falsy, the if-block is skipped)
-        # We verify by checking no external_resources assignment
+        event = await rehydrate(rehydrator, _make_snapshot(external_resources={}))
         assert (
-            not hasattr(event, "_external_resources")
-            or event._external_resources is None
+            event._external_resources
+            == RehydratorTargetEvent(None, "x")._external_resources
         )
 
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args"
-    )
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args"
-    )
-    @patch("volnux.execution.rehydrator.event_rehydrator.import_class")
-    async def test_empty_attribs_no_setattr(
-        self,
-        mock_import_class: MagicMock,
-        mock_deserialize_init: MagicMock,
-        mock_deserialize_call: MagicMock,
-        rehydrator: EventRehydrator,
-    ) -> None:
-        mock_event_class = MagicMock()
-        mock_event_class.return_value.retry_policy = None
-        mock_import_class.return_value = mock_event_class
-
-        mock_deserialize_init.return_value = {}
-        mock_deserialize_call.return_value = {}
-
-        snapshot = _make_snapshot(attribs={})
-        event = await rehydrator.rehydrate(snapshot)
-
-        # Verify no user attributes were set
-        # (The mock should only have framework-assigned attributes)
+    @pytest.mark.asyncio
+    async def test_empty_attribs_set_nothing(self, rehydrator: EventRehydrator) -> None:
+        event = await rehydrate(rehydrator, _make_snapshot(attribs={}))
+        fresh = RehydratorTargetEvent(None, "x")
+        # the only difference from a new event is its own copy of the retry policy
+        assert set(vars(event)) - set(vars(fresh)) == {"retry_policy"}
         assert event._phase == EventPhase.PROCESSING
 
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args"
-    )
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_exec_result"
-    )
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args"
-    )
-    @patch("volnux.execution.rehydrator.event_rehydrator.import_class")
-    async def test_no_retry_policy_safe(
-        self,
-        mock_import_class: MagicMock,
-        mock_deserialize_init: MagicMock,
-        mock_deserialize_exec: MagicMock,
-        mock_deserialize_call: MagicMock,
-        rehydrator: EventRehydrator,
-    ) -> None:
-        mock_event = MagicMock()
-        mock_event.retry_policy = None
-        mock_event_class = MagicMock(return_value=mock_event)
-        mock_import_class.return_value = mock_event_class
-
-        mock_deserialize_init.return_value = {}
-        mock_deserialize_call.return_value = {}
-        mock_deserialize_exec.return_value = {"data": 1}
-
-        snapshot = _make_snapshot()
-        event = await rehydrator.rehydrate(snapshot)
-
-        # Should not raise — hasattr check protects against None retry_policy
+    @pytest.mark.asyncio
+    async def test_no_retry_policy_is_safe(self, rehydrator: EventRehydrator) -> None:
+        event = await rehydrate(
+            rehydrator, _make_snapshot(), event_class=NoPolicyRehydratorEvent
+        )
+        # (nothing to replace the limit on, and nothing raised)
+        assert event.retry_policy is None
         assert event._retry_count == 2
 
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args"
-    )
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_exec_result"
-    )
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_external_resources"
-    )
-    @patch(
-        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args"
-    )
-    @patch("volnux.execution.rehydrator.event_rehydrator.import_class")
-    async def test_attribs_restored_before_execution(
-        self,
-        mock_import_class: MagicMock,
-        mock_deserialize_init: MagicMock,
-        mock_deserialize_ext_res: MagicMock,
-        mock_deserialize_exec: MagicMock,
-        mock_deserialize_call: MagicMock,
-        rehydrator: EventRehydrator,
+    @pytest.mark.asyncio
+    async def test_attribs_are_restored_on_the_instance(
+        self, rehydrator: EventRehydrator
     ) -> None:
-        """Verify attribs are set on the instance so they're available
-        when the runtime pushes execution forward."""
-        mock_event_class = MagicMock()
-        mock_event = mock_event_class.return_value
-        mock_event.retry_policy = MagicMock()
-        mock_import_class.return_value = mock_event_class
-
-        mock_deserialize_init.return_value = {}
-        mock_deserialize_call.return_value = {}
-        mock_deserialize_ext_res.return_value = {}
-        mock_deserialize_exec.return_value = None
-
+        """They are there when the runtime pushes execution forward."""
         snapshot = _make_snapshot(
             attribs={"_accumulated": [1, 2, 3], "_mode": "batch"},
             phase=EventPhase.PROCESSING,
         )
+        event = await rehydrate(rehydrator, snapshot)
 
-        event = await rehydrator.rehydrate(snapshot)
-
-        # The event instance should have user attrs bound
         assert event._accumulated == [1, 2, 3]
         assert event._mode == "batch"
-
-        # The phase should be set for the runtime to pick up
         assert event._phase == EventPhase.PROCESSING
+
+    @pytest.mark.asyncio
+    async def test_a_later_attribute_does_not_survive_a_second_rehydration(
+        self, rehydrator: EventRehydrator
+    ) -> None:
+        first = await rehydrate(rehydrator, _make_snapshot(attribs={"_only_here": 1}))
+        second = await rehydrate(rehydrator, _make_snapshot(attribs={}))
+        assert first._only_here == 1 and not hasattr(second, "_only_here")

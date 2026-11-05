@@ -1,14 +1,7 @@
-from typing import Optional, Dict, Type, Any, cast
 from dataclasses import dataclass
+from typing import Any, Optional, Type
 
-from .semantic import SemanticVersioning
-from .base import BaseVersioning, VersionInfo, DeprecationInfo
-from volnux.import_utils import import_string
-from volnux.config import VolnuxConfig
-from volnux.exceptions import ImproperlyConfigured
-
-
-conf = VolnuxConfig.get_instance()
+from .semantic import DeprecationInfo, SemanticVersioning, VersionInfo
 
 
 @dataclass
@@ -17,7 +10,7 @@ class VersionHandler:
     Handles version metadata for any class.
     """
 
-    scheme: BaseVersioning
+    scheme: SemanticVersioning
     version: str
     changelog: Optional[str] = None
     deprecated: bool = False
@@ -28,36 +21,17 @@ class VersionHandler:
     klass: Optional[Type[Any]] = None
 
     @classmethod
-    def from_class(cls, klass: Type[Any], config_key: str) -> "VersionHandler":
-        scheme_class = getattr(klass, "versioning_class", None)
-        if scheme_class is None:
-            scheme_class = conf.get(config_key, {}).get(
-                "VERSIONING_CLASS", SemanticVersioning
-            )
-            if isinstance(scheme_class, str):
-                try:
-                    scheme_class = import_string(scheme_class)
-                except ImportError as e:
-                    raise ImproperlyConfigured(
-                        f"Could not import versioning class '{scheme_class}'"
-                    ) from e
-
-            if not issubclass(scheme_class, BaseVersioning):
-                raise ImproperlyConfigured(
-                    f"Scheme '{scheme_class}' is not a subclass of BaseVersioning"
-                )
-
-        scheme_class = cast(Type[BaseVersioning], scheme_class)
-        scheme_handler = scheme_class(config_key)
+    def from_class(cls, klass: Type[Any]) -> "VersionHandler":
+        scheme = SemanticVersioning()
 
         return cls(
-            scheme=scheme_handler,
-            version=getattr(klass, "version", scheme_handler.default_version),
+            scheme=scheme,
+            version=getattr(klass, "version", scheme.default_version),
             changelog=getattr(klass, "changelog", None),
             deprecated=getattr(klass, "deprecated", False),
             deprecation_info=getattr(klass, "deprecation_info", None),
-            namespace=scheme_handler.get_namespace(klass),
-            class_name=scheme_handler.get_event_name(klass),
+            namespace=scheme.get_namespace(klass),
+            class_name=scheme.get_event_name(klass),
             klass=klass,
         )
 

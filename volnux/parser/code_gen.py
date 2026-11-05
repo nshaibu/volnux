@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import operator
 import typing
@@ -8,6 +9,7 @@ from .exceptions import PointyParseError
 from .operator import PipeType
 from .options import Options
 from .protocols import TaskGroupingProtocol, TaskProtocol, TaskType
+from .scope import Scope, unresolved_message
 from .visitor import ASTVisitorInterface
 
 logger = logging.getLogger(__name__)
@@ -79,6 +81,8 @@ class ExecutableASTGenerator(ASTVisitorInterface):
         self.program: typing.Optional[ast.ProgramNode] = None
         # custom descriptor label -> integer value (from ``@descriptor``)
         self.descriptors: typing.Dict[str, int] = {}
+        # variables declared by the blocks around the node being visited
+        self._scope: typing.Optional[Scope] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -115,15 +119,48 @@ class ExecutableASTGenerator(ASTVisitorInterface):
         task.descriptors = dict(self.descriptors)
         return task
 
-    def _build_options(self, attributes: typing.List[ast.AttributeNode]) -> Options:
+    def _evaluate(
+        self, attributes: typing.Optional[typing.List[ast.AttributeNode]]
+    ) -> typing.Dict[str, typing.Any]:
+        """Values of an annotation list, in the scope around the node: the keys of
+        one bracket do not see each other."""
         values: typing.Dict[str, typing.Any] = {}
         for attribute in attributes or []:
             name, value = self.visit_attribute(attribute)
             values[name] = value
+        return values
+
+    def _cascaded(self) -> typing.Dict[str, typing.Any]:
+        """What the enclosing blocks pass down to a task as options."""
+        return self._scope.cascaded() if self._scope is not None else {}
+
+    def _options_from(
+        self, values: typing.Dict[str, typing.Any]
+    ) -> typing.Optional[Options]:
+        """Options for a task or block: what the enclosing blocks pass down, then
+        its own values (which win). None if there is nothing to set."""
+        merged = {**self._cascaded(), **values}
+        if not merged:
+            return None
         try:
-            return Options.from_dict(values)
+            return Options.from_dict(merged)
         except Exception as exc:
-            raise self._error(f"Invalid task options {sorted(values)}: {exc}") from exc
+            raise self._error(f"Invalid task options {sorted(merged)}: {exc}") from exc
+
+    def _build_options(self, attributes: typing.List[ast.AttributeNode]) -> Options:
+        options = self._options_from(self._evaluate(attributes))
+        assert options is not None
+        return options
+
+    @contextlib.contextmanager
+    def _scoped(self, variables: typing.Dict[str, typing.Any]):
+        """Run with ``variables`` declared on top of the current scope."""
+        saved = self._scope
+        self._scope = Scope(dict(variables), parent=saved)
+        try:
+            yield
+        finally:
+            self._scope = saved
 
     def _connect(
         self, left: Fragment, head: TaskType, pipe: typing.Optional[PipeType]
@@ -154,6 +191,7 @@ class ExecutableASTGenerator(ASTVisitorInterface):
         self._root = None
         self.program = node
         self.descriptors = dict(node.descriptors)
+        self._scope = None
 
         for name, value in node.directives.items():
             self.apply_directive(name, self._value(value))
@@ -177,25 +215,61 @@ class ExecutableASTGenerator(ASTVisitorInterface):
     def visit_task(self, node: ast.TaskNode) -> Fragment:
         task = self._register(self.task_template(event=node.task))
         task.namespace = node.namespace
-        if node.options:
-            task.options = self._build_options(node.options)
+        options = self._options_from(self._evaluate(node.options))
+        if options is not None:
+            task.options = options
         return Fragment(task, task)
 
     def visit_meta_task(self, node: ast.MetaTaskNode) -> Fragment:
         # A meta event is a task named after its mode; the template it applies
         # is carried in the options for the runtime to resolve.
         task = self._register(self.task_template(event=node.mode))
-        options = self._build_options(node.options)
+        options = self._options_from(self._evaluate(node.options)) or Options.from_dict(
+            {}
+        )
         options.extras["template_class"] = node.template_task
         options.extras["template_namespace"] = node.template_event_namespace
         task.options = options
         return Fragment(task, task)
 
     def visit_pipeline_grouping(self, node: ast.PipelineGroupingNode) -> Fragment:
-        chains = [self._fragment(expression).head for expression in node.expressions]
+        # The block's annotations are read in the scope around it, then declared
+        # for what is inside.
+        own = self._evaluate(node.options)
+        options = self._options_from(own)
+        with self._scoped(own):
+            chains = [self._fragment(e).head for e in node.expressions]
         group = self._register(self.grouping_template(chains))
-        if node.options:
-            group.options = self._build_options(node.options)
+        if options is not None:
+            group.options = options
+        return Fragment(group, group)
+
+    # ------------------------------------------------------------------
+    # Components
+    # ------------------------------------------------------------------
+
+    def visit_component(self, node: ast.ComponentNode) -> None:
+        """A definition builds nothing; each invocation builds its own tasks."""
+        return None
+
+    def visit_component_ref(self, node: ast.ComponentRefNode) -> Fragment:
+        components = self.program.components if self.program is not None else {}
+        component = components.get(node.name)
+        if component is None:
+            raise self._error(f"Component '{node.name}' is not defined")
+
+        # The body runs in a scope on top of the caller's: the component's
+        # defaults, overridden by this invocation's annotations.
+        variables = {
+            **self._evaluate(component.options),
+            **self._evaluate(node.options),
+        }
+        options = self._options_from(variables)
+        with self._scoped(variables):
+            body = self._fragment(component.body)
+        group = self._register(self.grouping_template([body.head]))
+        if options is not None:
+            group.options = options
         return Fragment(group, group)
 
     # ------------------------------------------------------------------
@@ -326,7 +400,19 @@ class ExecutableASTGenerator(ASTVisitorInterface):
         return {key: self._value(value) for key, value in node.value.items()}
 
     def visit_variable_access(self, node: ast.VariableAccessNode) -> typing.Any:
-        return self._value(node.value)
+        # The nearest enclosing declaration wins over a global ``@name``.
+        if self._scope is not None:
+            found, value = self._scope.lookup(node.name)
+            if found:
+                return value
+        if node.value is None:
+            raise self._error(unresolved_message(node.name))
+        # A global is evaluated where it was declared, outside every block.
+        saved, self._scope = self._scope, None
+        try:
+            return self._value(node.value)
+        finally:
+            self._scope = saved
 
     def visit_access_environment_variable(
         self, node: ast.EnvironmentVariableAccessNode

@@ -95,7 +95,9 @@ class WorkflowEngine(ABC):
 
         if enable_checkpointing:
             self.checkpoint_config = (
-                checkpoint_config if checkpoint_config else CheckPointConfig()
+                checkpoint_config
+                if checkpoint_config
+                else CheckPointConfig.from_settings()
             )
             self._checkpoint_frequency = self.checkpoint_config.policy.frequency
 

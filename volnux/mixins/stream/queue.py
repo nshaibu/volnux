@@ -8,8 +8,8 @@ streams, Kafka). There is one stream per *producing task*: the route carries a
 
 Backend
 -------
-``STREAM_BACKEND_CONFIG`` selects the backend for streams. When it is not set the
-project's ``KEY_VALUE_STORE_CONFIG`` is used, so a project that runs on Redis gets
+``DATABASES["streams"]`` selects the backend for streams. When it is not set the
+project's ``DATABASES["default"]`` is used, so a project that runs on Redis gets
 streams on Redis without more configuration. A backend without stream support
 (SQLite, PostgreSQL) fails with a clear ``TypeError`` the first time it is used.
 """
@@ -76,12 +76,10 @@ class StreamChunk(MessagingBackendIntegrationMixin, BaseModel):
             routing_keys=lambda: {**_scope(), "stream_id": "default"},
         )
 
+    #: ``DATABASES["streams"]``, else ``"default"``.
     @classmethod
-    def get_backend_config(cls) -> typing.Dict[str, typing.Any]:
-        config = cls.get_volnux_config()
-        return (
-            config.get("STREAM_BACKEND_CONFIG", None) or config.KEY_VALUE_STORE_CONFIG
-        )
+    def get_database_alias(cls) -> str:
+        return "streams"
 
     @staticmethod
     def route(stream_id: str) -> typing.Dict[str, str]:

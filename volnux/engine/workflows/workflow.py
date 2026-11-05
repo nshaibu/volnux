@@ -503,6 +503,79 @@ class WorkflowConfig(ABC):
         engine = get_trigger_engine()
         engine.register(trigger)
 
+    def register_declared_triggers(
+        self,
+        *,
+        celery_app: Any = None,
+        web_app: Any = None,
+        poll_interval: float = 60.0,
+    ) -> List["TriggerBase"]:
+        """
+        Register the triggers the workflow declares with ``@trigger:`` in its
+        Pointy source (``schedule(...)``, ``webhook(...)``, ``when ...``).
+
+        Call it once, where the infrastructure the triggers need is at hand
+        (typically from ``ready()`` or the application bootstrap). Triggers
+        registered in Python keep working next to the declared ones.
+
+        Args:
+            celery_app: Required when the workflow declares a ``schedule``.
+            web_app: Handed to ``webhook`` triggers that register their own route.
+            poll_interval: Seconds between evaluations of ``when`` conditions.
+
+        Returns:
+            The registered triggers, in declaration order.
+
+        Raises:
+            TriggerDeclarationError: A declaration cannot be built (a ``schedule``
+                without ``celery_app``, an invalid value ...). Nothing is registered
+                in that case.
+        """
+        from volnux.engine.workflows.trigger.declarative import build_triggers
+
+        program = self.get_pointy_ast()
+        built = build_triggers(
+            program,
+            self.name,
+            celery_app=celery_app,
+            web_app=web_app,
+            poll_interval=poll_interval,
+        )
+        for trigger in built:
+            self.register_trigger(trigger)
+        return built
+
+    def register_declared_sources(self) -> List["WorkflowSource"]:
+        """
+        Register the event sources the workflow declares with ``@source:`` in its
+        Pointy script (``hub(...)``, ``git(...)``, ``pypi(...)``, ``local(...)``).
+
+        Each declaration becomes the ``WorkflowSource`` that ``ready()`` would
+        otherwise build by hand; its name is the namespace the script uses
+        (``namespace::Event``). Loading still happens when the registry loads its
+        sources.
+
+        Returns:
+            The registered sources, in declaration order.
+
+        Raises:
+            SourceDeclarationError: A declaration is invalid.
+            ValueError: A namespace is already registered. In both cases nothing
+                is registered.
+        """
+        from volnux.engine.workflows.declarative_sources import build_sources
+
+        sources = build_sources(self.get_pointy_ast(), self.path)
+        registry = self.get_registry()
+        taken = [s.name for s in sources if registry.get_workflow_source(s.name)]
+        if taken:
+            raise ValueError(
+                f"Workflow source(s) already registered: {', '.join(taken)}"
+            )
+        for source in sources:
+            self.register_registry_source(source)
+        return sources
+
     # Registry and sources
     def get_registry(self) -> "WorkflowRegistry":
         """Return the workflow registry singleton."""

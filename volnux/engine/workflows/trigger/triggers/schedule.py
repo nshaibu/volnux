@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import threading
+from functools import partial
+from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -137,6 +139,7 @@ class SchedulerTrigger(EventSubscriptionMixin, TriggerBase):
         day_of_week: str = "*",
         day_of_month: str = "*",
         month_of_year: str = "*",
+        timezone: Optional[str] = None,
         workflow_params: Optional[Dict[str, Any]] = None,
         enabled: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
@@ -148,6 +151,18 @@ class SchedulerTrigger(EventSubscriptionMixin, TriggerBase):
                 f"'schedule' must be a celery.schedules.crontab, got "
                 f"{type(schedule).__name__}."
             )
+
+        if timezone is not None and schedule is not None:
+            raise ValueError(
+                "'timezone' applies to the cron field arguments; build the "
+                "'schedule' crontab with its own 'nowfun' instead."
+            )
+        tzinfo = None
+        if timezone is not None:
+            try:
+                tzinfo = ZoneInfo(timezone)
+            except Exception as exc:  # ZoneInfoNotFoundError is a KeyError
+                raise ValueError(f"Unknown time zone {timezone!r}.") from exc
 
         _using_schedule = schedule is not None
         _using_fields = any(
@@ -174,7 +189,10 @@ class SchedulerTrigger(EventSubscriptionMixin, TriggerBase):
             day_of_week=day_of_week,
             day_of_month=day_of_month,
             month_of_year=month_of_year,
+            # evaluated in that zone (default: the Celery app's timezone)
+            **({"nowfun": partial(datetime.now, tzinfo)} if tzinfo else {}),
         )
+        self.timezone = timezone
         register_schedule_task(celery_app)
 
         # Key of this trigger's beat entry (set by start(), cleared by stop()).

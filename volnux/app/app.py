@@ -1,5 +1,8 @@
 import time
 from contextlib import asynccontextmanager
+
+from volnux.config import setting
+from volnux.app.utils import get_jwt_secret
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -41,7 +44,22 @@ from volnux.app.formax_utils import register_formax_model_constraints
 async def lifespan(app: FastAPI):
     # Record start time on startup
     app.state.start_time = time.time()
+    # Fail now, not at the first login, if production has no SECRET_KEY
+    get_jwt_secret()
     yield
+
+
+# The interactive documentation is served only with the API_DOCS setting.
+_docs = bool(setting("API_DOCS", False))
+
+
+def _cors_origins() -> list:
+    """The CORS_ALLOWED_ORIGINS setting; an environment value may also be a plain
+    comma-separated list (``https://a.example,https://b.example``)."""
+    origins = setting("CORS_ALLOWED_ORIGINS", ["*"])
+    if isinstance(origins, str):
+        origins = [o.strip() for o in origins.split(",") if o.strip()]
+    return list(origins)
 
 
 _app = FastAPI(
@@ -49,6 +67,8 @@ _app = FastAPI(
     description="REST API for the Volnux governed workflow platform",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if _docs else None,
+    redoc_url="/redoc" if _docs else None,
 )
 
 # Register all Formax model constraints in the OpenAPI schema
@@ -91,7 +111,7 @@ register_formax_model_constraints(
 # Middleware (last added = first executed)
 _app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

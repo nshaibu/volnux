@@ -16,7 +16,10 @@ class ProjectMixin:
         """Walk up from cwd to find the project root."""
         cwd = Path.cwd()
         for directory in [cwd, *cwd.parents]:
-            if (directory / "init.py").exists() and (directory / "config.py").exists():
+            if (directory / "init.py").exists() and (
+                (directory / "settings.py").exists()
+                or (directory / "config.py").exists()  # (before settings.py)
+            ):
                 return directory
         raise CommandError(
             "No Volnux project found in the current directory or any parent.\n"
@@ -59,7 +62,8 @@ class ProjectMixin:
 
     def load_project_config(self) -> Optional[types.ModuleType]:
         """
-        Load the config.py file from the current directory.
+        Load the project's settings.py from the current directory (or the config.py
+        projects had before they had a settings file).
 
         Returns:
             Dictionary containing the configuration attributes, or None if not found.
@@ -67,14 +71,22 @@ class ProjectMixin:
         Raises:
             CommandError: If a config file exists but cannot be loaded or is invalid.
         """
-        config_path = Path.cwd() / "config.py"
+        config_path = Path.cwd() / "settings.py"
+        if not config_path.exists() and (Path.cwd() / "config.py").exists():
+            config_path = Path.cwd() / "config.py"
+            self.warning(
+                "This project has a config.py: rename it settings.py (Volnux "
+                "settings are read from settings.py)"
+            )
 
         if not config_path.exists():
-            self.warning("No config.py found in current directory")
+            self.warning("No settings.py found in current directory")
             return None
 
         if not config_path.is_file():
-            raise CommandError(f"config.py exists but is not a file: {config_path}")
+            raise CommandError(
+                f"{config_path.name} exists but is not a file: {config_path}"
+            )
 
         try:
             config = load_module_from_path("project_config", config_path)
@@ -83,9 +95,11 @@ class ProjectMixin:
             return config
 
         except SyntaxError as e:
-            raise CommandError(f"Syntax error in config.py at line {e.lineno}: {e.msg}")
+            raise CommandError(
+                f"Syntax error in {config_path.name} at line {e.lineno}: {e.msg}"
+            )
         except Exception as e:
-            raise CommandError(f"Failed to load config.py: {str(e)}")
+            raise CommandError(f"Failed to load {config_path.name}: {str(e)}")
 
     def get_project_root_and_config_module(
         self,

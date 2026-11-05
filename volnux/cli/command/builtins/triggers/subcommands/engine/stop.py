@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from volnux.cli.command.base import SubCommand, CommandCategory, CommandError
+from volnux.config import setting
 
 __all__ = ["StopTriggerEngineSubCommand"]
 
@@ -21,10 +22,10 @@ class StopTriggerEngineSubCommand(SubCommand):
         parser.add_argument(
             "--pid-file",
             type=str,
-            default=".volnux_triggers.pid",
+            default=setting("TRIGGERS_PID_FILE", ".volnux_triggers.pid"),
             help=(
                 "Path to the PID file written by the trigger engine daemon "
-                "(default: .volnux_triggers.pid)"
+                "(default: the TRIGGERS_PID_FILE setting, .volnux_triggers.pid)"
             ),
         )
         parser.add_argument(

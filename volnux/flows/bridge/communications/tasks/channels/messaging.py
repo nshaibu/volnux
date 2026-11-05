@@ -100,7 +100,7 @@ class MessagingCommandChannel(CommandChannelBase):
 
     The channel carries only names, so it pickles to a few hundred bytes and
     can be shipped to a pool worker or a Celery worker; the backend is resolved
-    from ``KEY_VALUE_STORE_CONFIG`` in whichever process uses the channel.
+    from ``DATABASES["messaging"]`` (else ``"default"``) in whichever process uses the channel.
 
     :param task_id: Identifies the task; its command queue is derived from it.
     :param inbox: Names the shared queue tasks report on. All tasks of one flow

@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from volnux.config import setting
+
 from ..base import BaseCommand, CommandCategory, CommandError
 
 logger = logging.getLogger(__name__)
@@ -53,32 +55,32 @@ class ServeCommand(BaseCommand):
         )
         parser.add_argument(
             "--host",
-            default=os.environ.get("VOLNUX_API_HOST", "0.0.0.0"),
-            help="Bind address (default: 0.0.0.0)",
+            default=setting("API_HOST", "0.0.0.0"),
+            help="Bind address (default: the API_HOST setting, 0.0.0.0)",
         )
         parser.add_argument(
             "--port",
             type=int,
-            default=int(os.environ.get("VOLNUX_API_PORT", "8080")),
+            default=int(setting("API_PORT", 8080)),
             help="Bind port for API role (default: 8080)",
         )
         parser.add_argument(
             "--worker-port",
             type=int,
-            default=int(os.environ.get("VOLNUX_WORKER_PORT", "9090")),
+            default=int(setting("WORKER_PORT", 9090)),
             dest="worker_port",
             help="Bind port for worker health endpoint (default: 9090)",
         )
         parser.add_argument(
             "--metrics-port",
             type=int,
-            default=int(os.environ.get("VOLNUX_PROMETHEUS_PORT", "9464")),
+            default=int(setting("PROMETHEUS_PORT", 9464)),
             dest="metrics_port",
             help="Prometheus metrics port (default: 9464)",
         )
         parser.add_argument(
             "--log-level",
-            default=os.environ.get("VOLNUX_LOG_LEVEL", "INFO"),
+            default=str(setting("LOG_LEVEL", "INFO")).upper(),
             choices=["DEBUG", "INFO", "WARNING", "ERROR"],
             dest="log_level",
             help="Log level (default: INFO)",
@@ -92,7 +94,7 @@ class ServeCommand(BaseCommand):
         parser.add_argument(
             "--drain-timeout",
             type=float,
-            default=float(os.environ.get("VOLNUX_CHECKPOINT_DRAIN_TIMEOUT", "120")),
+            default=float(setting("CHECKPOINT_DRAIN_TIMEOUT", 120.0)),
             dest="drain_timeout",
             help=(
                 "Seconds to wait for checkpoint queue to drain on shutdown "
@@ -113,8 +115,7 @@ class ServeCommand(BaseCommand):
         )
 
         # ── Validate environment ───────────────────────────────────────────
-        env = os.environ.get("VOLNUX_ENV", "production")
-        if env == "development":
+        if setting("DEBUG", False):
             self.warning(
                 "Running 'volnux serve' in development mode. "
                 "Consider using 'volnux dev' instead."
@@ -129,7 +130,7 @@ class ServeCommand(BaseCommand):
                 return None
 
         # ── Configure logging ──────────────────────────────────────────────
-        log_format = os.environ.get("VOLNUX_LOG_FORMAT", "json")
+        log_format = setting("LOG_FORMAT", "json")
         if log_format == "json":
             self._configure_json_logging(log_level)
         else:
@@ -210,7 +211,7 @@ class ServeCommand(BaseCommand):
         project_name: str,
         log_level: str,
     ) -> None:
-        node_id = os.environ.get("VOLNUX_NODE_ID", "local")
+        node_id = setting("NODE_ID", "local")
         self.stdout.write(
             f"\n{self.style.BOLD('  Volnux')}  "
             f"{self.style.NOTICE(role.upper())}  "
@@ -228,7 +229,7 @@ class ServeCommand(BaseCommand):
             self.stdout.write(
                 f"  {self.style.SUCCESS('→')} "
                 f"metrics={metrics_port}  "
-                f"grpc=45545  "
+                f"grpc={setting('GRPC_PORT', 45545)}  "
                 f"drain={drain_timeout:.0f}s"
             )
         self.stdout.write("")
@@ -255,9 +256,7 @@ class ServeCommand(BaseCommand):
             logger.info("Pre-flight: PostgreSQL OK — %s", pg_msg)
 
         # Redis checkpoints — required for both roles
-        ckpt_url = os.environ.get(
-            "VOLNUX_REDIS_CHECKPOINT_URL", "redis://localhost:6379/0"
-        )
+        ckpt_url = setting("REDIS_CHECKPOINT_URL", "redis://localhost:6379/0")
         ck_ok, ck_msg = await _check_redis(ckpt_url)
         if not ck_ok:
             errors.append(
@@ -268,9 +267,7 @@ class ServeCommand(BaseCommand):
             logger.info("Pre-flight: Redis checkpoints OK — %s", ck_msg)
 
         # Redis broker — required for both roles (Celery ScheduleTrigger)
-        broker_url = os.environ.get(
-            "VOLNUX_REDIS_BROKER_URL", "redis://localhost:6380/0"
-        )
+        broker_url = setting("REDIS_BROKER_URL", "redis://localhost:6380/0")
         br_ok, br_msg = await _check_redis(broker_url)
         if not br_ok:
             # Broker failure is a warning for worker, error for API

@@ -23,6 +23,7 @@ Parser-level constraints (retry >= 2, descriptor labels being declared) are
 intentionally left in the parser and are NOT duplicated here.
 """
 
+import dataclasses
 import typing
 
 from .ast import (
@@ -47,12 +48,31 @@ from .ast import (
     RetryNode,
     TaskNode,
     TernaryExprNode,
+    TriggerNode,
+    CallNode,
+    SourceNode,
+    ComponentNode,
+    ComponentRefNode,
     UnaryOpNode,
     VariableAccessNode,
     VariableDeclNode,
 )
 from .options import ResultEvaluationStrategy, StopCondition
 from .parser_mode import ParserMode
+from .sources import (
+    LOOKS_LIKE_VERSION,
+    RESERVED_NAMESPACES,
+    SOURCE_KEYWORDS,
+    SOURCE_KINDS,
+    VERSION_REQUIRED,
+    canonical_kind,
+)
+from .triggers import (
+    CONDITION_FUNCTIONS,
+    TRIGGER_SPECS,
+    check_cron,
+    check_timezone,
+)
 from .sema_errors import SemanticDiagnostic, SemanticLevel, SemanticResult
 from .visitor import ASTVisitorInterface
 
@@ -62,7 +82,7 @@ from .visitor import ASTVisitorInterface
 
 # Known directive names accepted by the Pointy runtime.
 _KNOWN_DIRECTIVES: typing.FrozenSet[str] = frozenset(
-    {"mode", "author", "description", "descriptor"}
+    {"mode", "author", "description", "descriptor", "version"}
 )
 
 # Mapping of known Options field names to their acceptable raw Python types.
@@ -157,6 +177,22 @@ def _operands(node: typing.Any) -> typing.List[typing.Any]:
 # ---------------------------------------------------------------------------
 
 
+def _variable_names(node: typing.Any, found: typing.Set[str]) -> typing.Set[str]:
+    """Every ``$name`` read anywhere under ``node``."""
+    if isinstance(node, VariableAccessNode):
+        found.add(node.name)
+    elif isinstance(node, dict):
+        for item in node.values():
+            _variable_names(item, found)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            _variable_names(item, found)
+    elif dataclasses.is_dataclass(node) and not isinstance(node, type):
+        for f in dataclasses.fields(node):
+            _variable_names(getattr(node, f.name, None), found)
+    return found
+
+
 class Sema(ASTVisitorInterface):
     """Semantic analyser — visitor over a Pointy AST."""
 
@@ -166,6 +202,14 @@ class Sema(ASTVisitorInterface):
         self._declared_vars: typing.Set[str] = set()
         # Names actually referenced via $var inside the chain
         self._referenced_vars: typing.Set[str] = set()
+        # Namespaces (``ns::Task``) used by the chain, and those @source declares
+        self._used_namespaces: typing.Dict[str, ASTNode] = {}
+        self._declared_namespaces: typing.Set[str] = set()
+        # ``$name`` reads anywhere; an annotation key that is read is a variable
+        # (``[timeout=30]`` ... ``$timeout``), not an unknown option
+        self._read_names: typing.Set[str] = set()
+        # components invoked by the chain (or by another component)
+        self._invoked_components: typing.Set[str] = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -176,6 +220,10 @@ class Sema(ASTVisitorInterface):
         self._result = SemanticResult()
         self._declared_vars = set()
         self._referenced_vars = set()
+        self._used_namespaces = {}
+        self._declared_namespaces = set()
+        self._read_names = set()
+        self._invoked_components = set()
         self._visit(node)
         return self._result
 
@@ -222,6 +270,8 @@ class Sema(ASTVisitorInterface):
 
             # 2. Unknown option key
             if name not in _OPTIONS_KNOWN_FIELDS:
+                if name in self._read_names:
+                    continue  # a scoped variable
                 self._warn(
                     f"Unknown option '{name}' on '{context}'. "
                     f"It will be placed in extras.",
@@ -354,9 +404,51 @@ class Sema(ASTVisitorInterface):
             # Visit the value so variable references inside it are tracked.
             self._visit(directive_value)
 
+        self._read_names = _variable_names(node, set())
+
+        # Source declarations
+        for source in node.sources:
+            self._visit(source)
+
+        # Components
+        for component in node.components.values():
+            if component.name in self._declared_namespaces:
+                self._err(
+                    f"Component '{component.name}' has the name of a @source "
+                    f"namespace",
+                    component,
+                )
+            self._visit(component)
+
+        # Trigger declarations
+        seen_kinds: typing.Dict[str, TriggerNode] = {}
+        for trigger in node.triggers:
+            if trigger.kind in seen_kinds:
+                self._err(
+                    f"Duplicate '@trigger: {trigger.kind}': a workflow can declare "
+                    f"one trigger of each kind",
+                    trigger,
+                )
+            seen_kinds.setdefault(trigger.kind, trigger)
+            self._visit(trigger)
+
         # Walk the workflow chain
         if node.chain is not None:
             self._visit(node.chain)
+
+        # Only a script that declares sources is held to them: one without any
+        # registers its namespaces in the workflow configuration (Python).
+        for name, component in node.components.items():
+            if name not in self._invoked_components:
+                self._warn(f"Component '{name}' is defined but never used", component)
+
+        for namespace, where in self._used_namespaces.items():
+            if node.sources and namespace not in self._declared_namespaces:
+                self._warn(
+                    f"Namespace '{namespace}' has no '@source: ...' declaration; "
+                    f"it must be registered in the workflow configuration",
+                    where,
+                )
 
         # Unused variable warnings — emitted after the full walk so that all
         # references have been collected
@@ -395,6 +487,24 @@ class Sema(ASTVisitorInterface):
                     node,
                 )
 
+        elif name == "version":
+            if not isinstance(value, LiteralNode) or value.type not in (
+                LiteralType.STRING,
+                LiteralType.IMPORT_STRING,
+            ):
+                self._err(
+                    "Directive '@version' must be a string literal (e.g. \"2.1.0\")",
+                    node,
+                )
+            elif not value.value.strip():
+                self._err("Directive '@version' must not be empty", node)
+            elif not LOOKS_LIKE_VERSION.match(value.value.strip()):
+                self._warn(
+                    f"Directive '@version': {value.value!r} does not look like a "
+                    f'version (e.g. "2.1.0")',
+                    node,
+                )
+
         elif name in ("author", "description"):
             if isinstance(value, LiteralNode):
                 if value.type not in (LiteralType.STRING, LiteralType.IMPORT_STRING):
@@ -406,7 +516,12 @@ class Sema(ASTVisitorInterface):
             elif value is not None:
                 self._err(f"Directive '@{name}' must be a string literal", node)
 
+    def _use_namespace(self, namespace: typing.Optional[str], node: ASTNode) -> None:
+        if namespace and namespace not in RESERVED_NAMESPACES:
+            self._used_namespaces.setdefault(namespace, node)
+
     def visit_task(self, node: "TaskNode") -> None:
+        self._use_namespace(node.namespace, node)
         # PascalCase recommendation
         if not _is_pascal_case(node.task):
             self._warn(
@@ -419,6 +534,7 @@ class Sema(ASTVisitorInterface):
             self._check_options(node.options, node.fully_qualified_name)
 
     def visit_meta_task(self, node: "MetaTaskNode") -> None:
+        self._use_namespace(node.template_event_namespace, node)
         ns = node.template_event_namespace
         template = node.template_task
         label = (
@@ -699,6 +815,295 @@ class Sema(ASTVisitorInterface):
         self, node: "EnvironmentVariableAccessNode"
     ) -> None:
         pass  # env vars are not user-declared, skip tracking
+
+    def visit_trigger(self, node: "TriggerNode") -> None:
+        where = f"line {node.line}" if node.line else "a trigger"
+        spec = TRIGGER_SPECS.get(node.kind)
+        if spec is None:
+            self._err(
+                f"Unknown trigger '{node.kind}' ({where}). Known triggers: "
+                f"{', '.join(sorted(TRIGGER_SPECS))}",
+                node,
+            )
+            return
+
+        # Track $var references inside the declaration.
+        for value in [*node.args, *node.kwargs.values(), node.condition]:
+            self._visit(value)
+
+        if node.kind == "when":
+            self._check_when(node, where)
+            return
+
+        label = f"@trigger: {node.kind}"
+        names = [name for name, _ in spec.positional]
+        if spec.variadic:
+            names.append(f"{spec.variadic[0]}, ...")
+            enough = len(node.args) > len(spec.positional)
+        else:
+            enough = len(node.args) == len(spec.positional)
+        if not enough:
+            self._err(
+                f"{label}({', '.join(names)}) takes "
+                f"{'at least ' if spec.variadic else ''}{len(spec.positional) + bool(spec.variadic)} "
+                f"positional argument(s), got {len(node.args)} ({where})",
+                node,
+            )
+        expected_types = [(n, t) for n, t in spec.positional]
+        for index, arg in enumerate(node.args):
+            if index < len(expected_types):
+                name, expected = expected_types[index]
+            elif spec.variadic:
+                name, expected = spec.variadic
+            else:
+                break
+            self._check_trigger_value(node, label, name, (expected,), arg)
+        for key, value in node.kwargs.items():
+            if key not in spec.keywords:
+                self._err(
+                    f"{label}: unknown argument '{key}' ({where}). Accepted: "
+                    f"{', '.join(sorted(spec.keywords)) or 'none'}",
+                    node,
+                )
+            else:
+                self._check_trigger_value(node, label, key, spec.keywords[key], value)
+
+    def _check_trigger_value(
+        self,
+        node: "TriggerNode",
+        label: str,
+        name: str,
+        types: typing.Tuple[type, ...],
+        value: typing.Optional[ASTNode],
+    ) -> None:
+        """Check one argument; only literals can be checked before run time."""
+        literal = value
+        while isinstance(literal, VariableAccessNode):
+            literal = literal.value
+        if isinstance(literal, MapNode):
+            if dict not in types:
+                self._err(f"{label}: '{name}' must not be a map", node)
+            return
+        if not isinstance(literal, LiteralNode):
+            return  # $env, an expression ...: known only at run time
+        raw = literal.value
+        if isinstance(raw, bool) or not isinstance(raw, types):
+            expected = " or ".join(t.__name__ for t in types)
+            if dict in types:
+                expected = 'map such as {"key": "value"}'
+            self._err(
+                f"{label}: '{name}' must be a {expected}, got {literal.type.value}",
+                node,
+            )
+            return
+        problem = None
+        if node.kind == "schedule" and name == "cron":
+            problem = check_cron(raw)
+        elif node.kind == "schedule" and name == "timezone":
+            problem = check_timezone(raw)
+        elif node.kind == "webhook" and name == "path" and not raw.startswith("/"):
+            problem = f"a path must start with '/', got {raw!r}"
+        elif (
+            node.kind == "event" and name in ("event_type", "name") and not raw.strip()
+        ):
+            problem = "must not be empty"
+        elif node.kind == "webhook" and name == "tolerance_seconds" and raw <= 0:
+            problem = "must be positive"
+        elif (
+            node.kind == "webhook"
+            and name in ("secret", "token_header", "timestamp_header")
+            and not raw.strip()
+        ):
+            problem = "must not be empty"
+        if problem:
+            self._err(f"{label}: {name}: {problem}", node)
+
+    def _check_when(self, node: "TriggerNode", where: str) -> None:
+        condition = node.condition
+        if condition is None:
+            self._err(f"@trigger: when needs a condition ({where})", node)
+        elif isinstance(condition, CallNode):
+            arity = CONDITION_FUNCTIONS.get(condition.name)
+            if arity is None:
+                self._err(
+                    f"@trigger: when: unknown condition function "
+                    f"'{condition.name}' ({where}). Known: "
+                    f"{', '.join(sorted(CONDITION_FUNCTIONS))}",
+                    node,
+                )
+            elif len(condition.args) != arity or condition.kwargs:
+                self._err(
+                    f"@trigger: when: {condition.name}() takes {arity} positional "
+                    f"argument(s) ({where})",
+                    node,
+                )
+
+    def visit_source(self, node: "SourceNode") -> None:
+        where = f"line {node.line}" if node.line else "a source"
+        label = f"@source: {node.kind}"
+        keywords = SOURCE_KEYWORDS.get(canonical_kind(node.kind))
+        if node.kind not in SOURCE_KINDS or keywords is None:
+            self._err(
+                f"Unknown source '{node.kind}' ({where}). Known sources: "
+                f"{', '.join(sorted(SOURCE_KINDS))}",
+                node,
+            )
+            return
+
+        for value in [*node.args, *node.kwargs.values()]:
+            self._visit(value)
+
+        positional = ["namespace", "location"]
+        if "location" in node.kwargs:
+            positional = ["namespace"]
+        if "location" in node.kwargs and len(node.args) > 1:
+            self._err(f"{label}: location given twice ({where})", node)
+        elif len(node.args) != len(positional):
+            self._err(
+                f"{label}({', '.join(positional)}, ...) takes {len(positional)} "
+                f"positional argument(s), got {len(node.args)} ({where})",
+                node,
+            )
+
+        # namespace
+        if node.args:
+            namespace = self._literal(node.args[0])
+            if isinstance(namespace, str):
+                self._check_namespace(node, label, namespace)
+            elif namespace is not None:
+                self._err(f"{label}: the namespace must be a string", node)
+            else:
+                self._err(
+                    f"{label}: the namespace must be a literal, it is used "
+                    f"while parsing the chain",
+                    node,
+                )
+
+        # location (second positional or keyword)
+        location_node = node.args[1] if len(node.args) > 1 else None
+        if location_node is not None:
+            self._check_source_value(node, label, "location", (str,), location_node)
+
+        for key, value in node.kwargs.items():
+            if key not in keywords:
+                self._err(
+                    f"{label}: unknown argument '{key}' ({where}). Accepted: "
+                    f"{', '.join(sorted(keywords))}",
+                    node,
+                )
+            else:
+                self._check_source_value(node, label, key, keywords[key], value)
+
+        if (
+            canonical_kind(node.kind) in VERSION_REQUIRED
+            and "version" not in node.kwargs
+        ):
+            self._err(
+                f'{label}: a version is required (version="1.2.3"); an unpinned '
+                f"install is refused so loading stays reproducible ({where})",
+                node,
+            )
+
+    @staticmethod
+    def _literal(value: typing.Optional[ASTNode]) -> typing.Any:
+        """The Python value of a literal (through declared variables), or None."""
+        while isinstance(value, VariableAccessNode):
+            value = value.value
+        return value.value if isinstance(value, LiteralNode) else None
+
+    def _check_namespace(self, node: "SourceNode", label: str, namespace: str) -> None:
+        if not namespace.isidentifier():
+            hint = (
+                " (hyphens are not allowed in a namespace: use "
+                f"'{namespace.replace('-', '_')}' and put the package name "
+                "in the location)"
+                if "-" in namespace
+                else ""
+            )
+            self._err(
+                f"{label}: '{namespace}' is not a valid namespace, it must be a "
+                f"plain identifier{hint}",
+                node,
+            )
+        elif namespace in RESERVED_NAMESPACES:
+            self._err(f"{label}: '{namespace}' is reserved", node)
+        elif namespace in self._declared_namespaces:
+            self._err(
+                f"{label}: duplicate namespace '{namespace}'; namespaces must be "
+                f"unique across all @source declarations",
+                node,
+            )
+        self._declared_namespaces.add(namespace)
+
+    def _check_source_value(
+        self,
+        node: "SourceNode",
+        label: str,
+        name: str,
+        types: typing.Tuple[type, ...],
+        value: ASTNode,
+    ) -> None:
+        literal = value
+        while isinstance(literal, VariableAccessNode):
+            literal = literal.value
+        if (
+            isinstance(literal, UnaryOpNode)
+            and literal.op == "-"
+            and isinstance(literal.right, LiteralNode)
+            and isinstance(literal.right.value, (int, float))
+            and not isinstance(literal.right.value, bool)
+        ):
+            # a negative number is a literal (``retries=-1``)
+            literal = LiteralNode(-literal.right.value, type=LiteralType.NUMBER)
+        if isinstance(literal, ListNode):
+            if list not in types:
+                self._err(f"{label}: '{name}' must not be a list", node)
+            elif not all(
+                isinstance(self._literal(item), str)
+                for item in literal.value
+                if isinstance(item, (LiteralNode, VariableAccessNode))
+            ):
+                self._err(f"{label}: '{name}' must be a list of strings", node)
+            return
+        if not isinstance(literal, LiteralNode):
+            return  # $env, an expression ...: known only at run time
+        raw = literal.value
+        if isinstance(raw, bool) != (bool in types) or not isinstance(raw, types):
+            expected = " or ".join(t.__name__ for t in types)
+            self._err(
+                f"{label}: '{name}' must be a {expected}, got {literal.type.value}",
+                node,
+            )
+            return
+        if (
+            name in ("location", "version", "branch", "workflow_name")
+            and not str(raw).strip()
+        ):
+            self._err(f"{label}: {name}: must not be empty", node)
+        elif name == "timeout" and raw <= 0:
+            self._err(f"{label}: timeout is milliseconds and must be positive", node)
+        elif name == "retries" and raw < 0:
+            self._err(f"{label}: retries must be 0 or more", node)
+        elif name == "token":
+            self._warn(
+                f"{label}: a token written in the script is visible to everyone "
+                f"who can read it; use token=$env.NAME",
+                node,
+            )
+
+    def visit_component(self, node: "ComponentNode") -> None:
+        if node.options:
+            self._check_options(node.options, f"component '{node.name}'")
+        self._visit(node.body)
+
+    def visit_component_ref(self, node: "ComponentRefNode") -> None:
+        self._invoked_components.add(node.name)
+        if node.options:
+            self._check_options(node.options, f"component '{node.name}'")
+
+    def visit_call(self, node: "CallNode") -> None:
+        for value in [*node.args, *node.kwargs.values()]:
+            self._visit(value)
 
     def visit_variable_declaration(self, node: "VariableDeclNode") -> None:
         # Value expressions are visited via visit_program's global_variables walk.

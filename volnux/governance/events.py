@@ -24,9 +24,28 @@ from formax import BaseModel, Attrib, MiniAnnotated
 from volnux.backends.storage_route import StorageRoute
 from volnux.mixins.messaging import MessagingBackendIntegrationMixin
 from volnux.config import VolnuxConfig
+from volnux.exceptions import ImproperlyConfigured
 
 
 volnux_config = VolnuxConfig.get_instance()
+
+
+def required_project_id() -> str:
+    """The ``PROJECT_ID`` setting, which governance events cannot do without.
+
+    Every key of the event feed is scoped by it, so an unset one (``None`` in the
+    default settings) would put the text ``"None"`` into the route and the events.
+
+    :raises ImproperlyConfigured: ``PROJECT_ID`` is not set.
+    """
+    # (resolve, not get: the variable may be set after the configuration was built)
+    project_id = volnux_config.resolve("PROJECT_ID", None)
+    if not project_id:
+        raise ImproperlyConfigured(
+            "PROJECT_ID is not set: governance events are scoped by project. Set "
+            "PROJECT_ID in your settings or export VOLNUX_PROJECT_ID."
+        )
+    return str(project_id)
 
 
 class EventType:
@@ -91,7 +110,7 @@ class GovernanceEvent(MessagingBackendIntegrationMixin, BaseModel):
         str, Attrib(default_factory=lambda: volnux_config.get_node_id())
     ]
     project_id: MiniAnnotated[
-        str, Attrib(default_factory=lambda: volnux_config.get("PROJECT_ID"))
+        str, Attrib(default_factory=lambda: required_project_id())
     ]
 
     @classmethod
@@ -108,7 +127,7 @@ class GovernanceEvent(MessagingBackendIntegrationMixin, BaseModel):
         return StorageRoute(
             components=["volnux", "{project_id}", "{node_id}", "governance", "events"],
             routing_keys=lambda: {
-                "project_id": config.get("PROJECT_ID"),
+                "project_id": required_project_id(),
                 # Via the canonical accessor, not a "NODE_ID" config key: that
                 # key is not seeded from VOLNUX_MESH_NODE_ID, while this is the
                 # same accessor the event's own node_id field defaults to.

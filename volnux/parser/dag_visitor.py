@@ -4,6 +4,7 @@ from ply.yacc import YaccError
 from .ast import (
     ASTNode,
     BinOpNode,
+    ComponentRefNode,
     ConditionalNode,
     PipelineGroupingNode,
     RetryNode,
@@ -55,8 +56,13 @@ class CycleDetectionVisitor:
 
     def build_graph(self, node: ASTNode, parent: Optional[str] = None):
         """Build adjacency list representation of the workflow graph"""
-        if isinstance(node, TaskNode):
-            task_name = node.fully_qualified_name
+        if isinstance(node, (TaskNode, ComponentRefNode)):
+            # (a component is one node of the graph, named by its name)
+            task_name = (
+                node.fully_qualified_name
+                if isinstance(node, TaskNode)
+                else f"component {node.name}"
+            )
 
             if task_name not in self.graph:
                 self.graph[task_name] = []

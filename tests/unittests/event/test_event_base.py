@@ -17,7 +17,7 @@ from volnux.result_evaluators import (
 )
 
 
-class TestEventBase(unittest.TestCase):
+class TestEventBase(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
         class WithoutParamEvent(EventBase):
@@ -98,14 +98,15 @@ class TestEventBase(unittest.TestCase):
             await event1()
             f.assert_called()
 
-        response = await event1()
+        # (an event caches its hooks on its first call, so ask a fresh one)
+        response = await self.WithoutParamEvent(None, "1")()
         self.assertIsInstance(response, EventResult)
 
         with patch("volnux.EventBase.on_failure") as e:
             await event2()
             e.assert_called()
 
-        response = await event2()
+        response = await self.RaiseErrorEvent(None, "1")()
         self.assertIsInstance(response, EventResult)
 
     def test_instantiate_events_without_process_implementation_throws_exception(self):
@@ -125,7 +126,7 @@ class TestEventBase(unittest.TestCase):
             f.assert_called()
 
 
-class TestEventBaseAdditional(unittest.TestCase):
+class TestEventBaseAdditional(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
         class SimpleEvent(EventBase):
@@ -275,7 +276,8 @@ class TestEventBaseAdditional(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             asyncio.run(event.bypass())
 
-    async def test_call_bypasses_process_when_bypass_flag_enabled(self):
+    async def test_call_bypasses_process_when_the_bypass_hook_answers(self):
+        # The hook is always consulted; what it returns is the result's content.
         event = self.BypassEvent(None, "task-1", run_bypass_event_checks=True)
 
         with patch.object(event, "process") as process_mock:
@@ -284,8 +286,7 @@ class TestEventBaseAdditional(unittest.TestCase):
         process_mock.assert_not_called()
         self.assertIsInstance(result, EventResult)
         self.assertFalse(result.error)
-        self.assertTrue(result.content["skip_event_execution"])
-        self.assertEqual(result.content["data"], {"reason": "skip"})
+        self.assertEqual(result.content, {"reason": "skip"})
 
     async def test_call_routes_false_status_to_on_failure(self):
         event = self.FailureEvent(None, "task-1")
@@ -309,9 +310,7 @@ class TestEventBaseAdditional(unittest.TestCase):
 
         self.assertIs(first, fake_handler)
         self.assertIs(second, fake_handler)
-        mocked.assert_called_once_with(
-            self.SimpleEvent, config_key="DEFAULT_EVENT_VERSIONING"
-        )
+        mocked.assert_called_once_with(self.SimpleEvent)
 
     def test_get_version_info_delegates_to_handler(self):
         fake_handler = MagicMock()

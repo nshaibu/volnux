@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from volnux.config import setting
 from volnux.exceptions import CommandError
 
 
@@ -16,7 +17,12 @@ class APIClientMixin:
     Volnux engine via REST API with JWT authentication.
     """
 
-    CREDENTIALS_FILE = Path.home() / ".volnux" / "credentials"
+    @property
+    def CREDENTIALS_FILE(self) -> Path:
+        """File the API token is kept in: the CREDENTIALS_FILE setting."""
+        return Path(
+            setting("CREDENTIALS_FILE", Path.home() / ".volnux" / "credentials")
+        ).expanduser()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -25,7 +31,7 @@ class APIClientMixin:
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
             "--host",
-            default=os.environ.get("VOLNUX_HOST", "localhost:8080"),
+            default=setting("HOST", "localhost:8080"),
             help="Volnux engine host:port",
         )
         parser.add_argument(

@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+
+from volnux.config import setting
 import uvicorn
 import importlib
 from pathlib import Path
@@ -314,7 +316,7 @@ def _setup_otel(engine: "TriggerEngine", dev_mode: bool):
             Shutdown function. Call during a graceful shutdown to flush pending
             spans before the process exits.
     """
-    otel_enabled = os.environ.get("VOLNUX_OTEL_ENABLED", "true").lower() == "true"
+    otel_enabled = bool(setting("OTEL_ENABLED", False))
     if not otel_enabled:
         logger.debug("OTel disabled by VOLNUX_OTEL_ENABLED=false")
         return lambda: None
@@ -347,18 +349,16 @@ def _setup_otel(engine: "TriggerEngine", dev_mode: bool):
         #   2. VOLNUX_OTEL_TEMPO_URL (Tempo / Grafana Agent)
         #   3. VOLNUX_OTEL_ENDPOINT (generic OTLP — OTel Collector default)
 
-        backend = os.environ.get("VOLNUX_OTEL_BACKEND", "grafana").lower()
-        endpoint = os.environ.get("VOLNUX_OTEL_ENDPOINT", "http://localhost:4317")
-        service_name = os.environ.get(
-            "VOLNUX_OTEL_SERVICE_NAME", getattr(engine, "project_name", "volnux")
+        backend = str(setting("OTEL_BACKEND", "grafana")).lower()
+        endpoint = setting("OTEL_ENDPOINT", "http://localhost:4317")
+        service_name = setting("OTEL_SERVICE_NAME", None) or getattr(
+            engine, "project_name", "volnux"
         )
-        service_ver = getattr(
-            engine, "version", os.environ.get("VOLNUX_VERSION", "unknown")
-        )
+        service_ver = getattr(engine, "version", setting("VERSION", "unknown"))
         environment = (
-            "development" if dev_mode else os.environ.get("VOLNUX_ENV", "production")
+            "development" if dev_mode or setting("DEBUG", False) else "production"
         )
-        node_id = os.environ.get("VOLNUX_NODE_ID", "local")
+        node_id = setting("NODE_ID", "local")
 
         config_kwargs: dict = {
             "service_name": service_name,
@@ -371,12 +371,12 @@ def _setup_otel(engine: "TriggerEngine", dev_mode: bool):
         }
 
         if backend == "datadog":
-            datadog_url = os.environ.get("VOLNUX_OTEL_DATADOG_URL", endpoint)
+            datadog_url = setting("OTEL_DATADOG_URL", None) or endpoint
             config_kwargs["datadog_agent_url"] = datadog_url
             logger.info("OTel backend: Datadog Agent at %s", datadog_url)
 
         elif backend == "grafana":
-            tempo_url = os.environ.get("VOLNUX_OTEL_TEMPO_URL", endpoint)
+            tempo_url = setting("OTEL_TEMPO_URL", None) or endpoint
             config_kwargs["tempo_endpoint"] = tempo_url
             logger.info("OTel backend: Grafana/Tempo at %s", tempo_url)
 
@@ -521,10 +521,10 @@ async def _start_heartbeat():
     try:
         from volnux.adapters.redis_channel import NodeHeartbeat
 
-        node_id = os.environ.get("VOLNUX_NODE_ID", "local")
+        node_id = setting("NODE_ID", "local")
         metadata = {
             "role": "api",
-            "version": os.environ.get("VOLNUX_VERSION", "unknown"),
+            "version": setting("VERSION", "unknown"),
         }
         heartbeat = NodeHeartbeat(node_id=node_id, metadata=metadata)
         await heartbeat.start()

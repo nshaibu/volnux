@@ -5,7 +5,7 @@ import os
 from volnux import EventBase
 
 
-class ProcessEcho(EventBase):
+class IntegrationProcessEcho(EventBase):
     executor = "process"
 
     async def process(self, *args, **kwargs):

@@ -17,18 +17,24 @@ conf = VolnuxConfig.get_instance()
 
 # Number of peers each node forwards a gossip message to.
 # Log-base-FANOUT(N) hops reaches the whole cluster.
-_GOSSIP_FANOUT: int = 3
+_GOSSIP_FANOUT: int = int(conf.resolve("MESH_GOSSIP_FANOUT", 3))
 
 # Maximum time to wait for capacity responses before electing from whoever
 # replied within the window.
-_CAPACITY_GATHER_TIMEOUT: float = 0.5  # seconds
+_CAPACITY_GATHER_TIMEOUT: float = float(
+    conf.resolve("MESH_CAPACITY_GATHER_TIMEOUT", 0.5)
+)  # seconds
 
 # Heuristic weights for node election (must sum to 1.0).
 # Tune these to match your workload's sensitivity to each dimension.
-_W_LATENCY: float = 0.4  # round-trip time to peer
-_W_QUEUE: float = 0.3  # manager's internal queue depth
-_W_CPU: float = 0.2  # remote CPU utilisation
-_W_MEMORY: float = 0.1  # remote memory utilisation
+# (the MESH_SCORE_WEIGHTS setting)
+_WEIGHTS = conf.resolve(
+    "MESH_SCORE_WEIGHTS", {"latency": 0.4, "queue": 0.3, "cpu": 0.2, "memory": 0.1}
+)
+_W_LATENCY: float = float(_WEIGHTS.get("latency", 0.4))  # round-trip time to peer
+_W_QUEUE: float = float(_WEIGHTS.get("queue", 0.3))  # manager's internal queue depth
+_W_CPU: float = float(_WEIGHTS.get("cpu", 0.2))  # remote CPU utilisation
+_W_MEMORY: float = float(_WEIGHTS.get("memory", 0.1))  # remote memory utilisation
 
 
 @dataclass
@@ -157,7 +163,7 @@ class MeshClient:
 
     _instance: Optional["MeshClient"] = None
 
-    def __init__(self, heartbeat_interval: float = 5.0):
+    def __init__(self, heartbeat_interval: Optional[float] = None):
         self.node_id = conf.get_node_id()
         self.config: VolnuxConfig = conf
 
@@ -185,7 +191,11 @@ class MeshClient:
         self._is_running = False
 
         # Cluster health check
-        self.heartbeat_interval: float = heartbeat_interval
+        self.heartbeat_interval: float = float(
+            heartbeat_interval
+            if heartbeat_interval is not None
+            else conf.resolve("MESH_HEARTBEAT_INTERVAL", 5.0)
+        )
         self._watcher_task: Optional[asyncio.Task] = None
 
     @classmethod
@@ -205,12 +215,17 @@ class MeshClient:
             await cls._instance.stop()
             cls._instance = None
 
-    async def start(self, host: str = "0.0.0.0", port: int = 50051) -> None:
+    async def start(
+        self, host: Optional[str] = None, port: Optional[int] = None
+    ) -> None:
         """Start the inbound Manager and the background health-watcher."""
         if self._is_running:
             logger.warning("MeshClient.start() called on an already-running instance.")
             return
 
+        # (None: the MESH_HOST / MESH_PORT settings)
+        host = host or conf.resolve("MESH_HOST", "0.0.0.0")
+        port = int(port if port is not None else conf.resolve("MESH_PORT", 50051))
         await self._start_manager(host, port)
         self._is_running = True
         self._watcher_task = asyncio.create_task(
@@ -450,17 +465,11 @@ class MeshClient:
         Each recipient node forwards to _GOSSIP_FANOUT of its own peers until
         the gossip_id has been seen by every node.
         """
-        self.config._lamport_clock += 1
-        clock_value = self.config._lamport_clock
+        # (the config advances its clock and signs the entry when it can)
+        entry = self.config.make_mesh_entry(key, value)
         gossip_id = uuid.uuid4().hex
 
-        payload = {
-            "gossip_id": gossip_id,
-            "key": key,
-            "value": value,
-            "timestamp": clock_value,
-            "origin_node": self.node_id,
-        }
+        payload = {"gossip_id": gossip_id, **entry.to_gossip()}
 
         async with self._seen_gossip_lock:
             self._seen_gossip[gossip_id] = time.time()
@@ -474,7 +483,7 @@ class MeshClient:
         ManagerService callback stays non-blocking.
         """
         gossip_id = payload.get("gossip_id")
-        if gossip_id:
+        if isinstance(gossip_id, str) and gossip_id:
             asyncio.create_task(
                 self._relay_config_gossip(gossip_id, payload),
                 name=f"relay-config-{gossip_id[:8]}",
@@ -486,12 +495,24 @@ class MeshClient:
                 return  # already processed - stop propagation
             self._seen_gossip[gossip_id] = time.time()
 
-        entry = ConfigEntry(
-            value=payload["value"],
-            timestamp=payload["timestamp"],
-            origin_mesh_node=payload["origin_mesh_node"],
-        )
-        entry.key = payload["key"]
+        try:
+            entry = ConfigEntry.from_gossip(payload)
+        except ValueError as exc:
+            # (this used to read payload["origin_mesh_node"], which the sender never
+            # wrote: every config update raised KeyError in this fire-and-forget task)
+            logger.warning("Dropping malformed config gossip %s: %s", gossip_id, exc)
+            return
+
+        if not self.config.verify_mesh_entry(entry):
+            # forged or unsigned: neither applied nor passed on
+            logger.warning(
+                "Dropping config gossip %s for '%s' from '%s': not correctly signed",
+                gossip_id,
+                entry.name,
+                entry.origin_mesh_node,
+            )
+            return
+
         self.config.update_from_mesh(entry)
 
         # Continue the epidemic to our own random subset

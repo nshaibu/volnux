@@ -25,6 +25,10 @@ class QueueTaskTemplate(typing.TypedDict, total=True):
 
 
 class TaskSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
+    @classmethod
+    def get_database_alias(cls) -> str:
+        return "checkpoints"
+
     # The context in which the task was created (None when not tied to one)
     context_id: typing.Optional[str]
 
@@ -97,6 +101,10 @@ class EngineStateSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
     needed to resume. Queued tasks are stored as ``TaskSnapshot`` records and
     referenced by id.
     """
+
+    @classmethod
+    def get_database_alias(cls) -> str:
+        return "checkpoints"
 
     # The context the engine was working on
     context_id: str

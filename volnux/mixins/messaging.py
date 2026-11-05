@@ -71,7 +71,15 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     - @ensure_streaming: Persistent, replayable, append-only log operations
 
     Callers never pass ``backend`` themselves, e.g. ``await Model.push(instance)``.
+
+    These models are stored in the ``"messaging"`` entry of ``DATABASES`` (``"default"``
+    if there is none): publish/subscribe needs a store that supports it, which a
+    SQL ``default`` does not.
     """
+
+    @classmethod
+    def get_database_alias(cls) -> str:
+        return "messaging"
 
     # Pub/Sub
 

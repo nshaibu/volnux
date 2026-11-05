@@ -3,10 +3,11 @@ Wrapper for executing tasks on remote workers with mini-context.
 """
 
 import os
+import platform
 import time
 import typing
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 from .delta import ContextDelta
 from .context import MiniExecutionContext
@@ -97,12 +98,20 @@ class RemoteTaskResult:
 
     @classmethod
     def from_dict(cls, data: typing.Dict[str, typing.Any]) -> "RemoteTaskResult":
-        return cls(**data)
+        # tolerant of unknown / missing keys (workers and requesters are deployed
+        # separately), like ContextDelta.from_dict
+        known = {f.name for f in fields(cls)}
+        values = {k: v for k, v in data.items() if k in known}
+        values.setdefault("worker_hostname", "")
+        values.setdefault("worker_pid", 0)
+        values.setdefault("execution_duration", 0.0)
+        return cls(**values)
 
 
 async def execute_remote_task(
     payload: RemoteTaskPayload,
     flush_callback: typing.Optional[typing.Callable[[typing.Dict], None]] = None,
+    batch_key: typing.Optional[str] = None,
 ) -> RemoteTaskResult:
     """
     Execute a task on the current worker process and return the result.
@@ -125,35 +134,39 @@ async def execute_remote_task(
         Must be provided when the event is expected to produce more than
         ``MiniExecutionContext.SMALL_THRESHOLD`` items; omitting it for
         high-volume tasks will raise ``RuntimeError`` on the first flush.
-    :raises TypeError: If the event returns a value that is not an
-        ``EventResult`` instance.
+    :param batch_key: Where the batches were streamed; recorded on the delta so the
+        requester knows where to read the bulk data.
+
+    A failure to import or instantiate the event is reported like any other event
+    failure (an error result) instead of raising out of the worker.
     :return: Execution result, context delta, and worker metadata.
     """
-    start_time = time.time()
+    start_time = time.monotonic()
 
-    hostname: str = os.uname().nodename
+    hostname: str = platform.node()  # os.uname() does not exist on Windows
     pid: int = os.getpid()
 
     mini_context = MiniExecutionContext.from_dict(payload.mini_context)
     if flush_callback is not None:
         await mini_context.set_flush_callback(flush_callback)
 
-    EventClass = import_string(payload.event_class_path)
-
-    event_init_kwargs = payload.event_init_kwargs.copy()
-    event_init_kwargs["execution_context"] = mini_context
-    event = EventClass(**event_init_kwargs)
-
+    event_name = payload.event_class_path.rpartition(".")[2]
     event_result: EventResult
 
     try:
+        EventClass = import_string(payload.event_class_path)
+        event_name = EventClass.__name__
+
+        event_init_kwargs = payload.event_init_kwargs.copy()
+        event_init_kwargs["execution_context"] = mini_context
+        event = EventClass(**event_init_kwargs)
 
         raw_result = await event(*payload.event_call_args, **payload.event_call_kwargs)
 
         if not isinstance(raw_result, EventResult):
-            logger.error(f"Event {EventClass.__name__} returned {raw_result}")
+            logger.error(f"Event {event_name} returned {raw_result}")
             raise TypeError(
-                f"{EventClass.__name__} returned {type(raw_result).__name__}, "
+                f"{event_name} returned {type(raw_result).__name__}, "
                 f"expected EventResult. Ensure every event coroutine returns "
                 f"an EventResult instance."
             )
@@ -161,29 +174,32 @@ async def execute_remote_task(
         event_result = raw_result
 
     except Exception as exc:
-        logger.error(f"Error executing event {EventClass.__name__}: {exc}")
+        logger.error(f"Error executing event {event_name}: {exc}")
         event_result = EventResult(
             error=True,
             content=str(exc),
             task_id=payload.task_id,
-            event_name=EventClass.__name__,
+            event_name=event_name,
         )
         await mini_context.add_error(
             {
                 "error": True,
                 "content": str(exc),
                 "type": type(exc).__name__,
+                "task_id": payload.task_id,
+                "event_name": event_name,
             }
         )
 
     await mini_context.finalize()
 
-    execution_duration = time.time() - start_time
+    execution_duration = time.monotonic() - start_time
 
     context_delta = ContextDelta.compute(
         mini_context,
         execution_duration=execution_duration,
         worker_info={"hostname": hostname, "pid": pid},
+        batch_key=batch_key,
     )
 
     return RemoteTaskResult(

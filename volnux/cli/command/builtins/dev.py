@@ -99,7 +99,7 @@ class DevCommand(ProjectMixin, CheckMixin, BaseCommand):
         )
 
         # Set environment for development mode
-        os.environ.setdefault("VOLNUX_ENV", "development")
+        os.environ.setdefault("VOLNUX_DEBUG", "true")
         os.environ.setdefault("VOLNUX_LOG_LEVEL", log_level)
         os.environ.setdefault("VOLNUX_LOG_FORMAT", "text")
         os.environ.setdefault("VOLNUX_API_DOCS", "true")

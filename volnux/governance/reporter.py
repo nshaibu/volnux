@@ -43,7 +43,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from volnux.config import VolnuxConfig
 
-from .events import EventType, GovernanceEvent
+from .events import EventType, GovernanceEvent, required_project_id
 from .publisher import GovernanceEventPublisher
 from .sampling import EventSampler
 
@@ -156,7 +156,7 @@ def _event(
         sequence=None,
         payload=payload or {},
         node_id=volnux_config.get_node_id(),
-        project_id=volnux_config.get("PROJECT_ID"),
+        project_id=required_project_id(),
     )
 
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from volnux.cli.command.base import SubCommand, CommandCategory, CommandError
+from volnux.config import setting
 
 _COL_NAME = 22
 _COL_STATE = 10
@@ -37,7 +38,7 @@ class StatusTriggerEngineSubCommand(SubCommand):
             "--pid-file",
             dest="pid_file",
             type=str,
-            default=".volnux_triggers.pid",
+            default=setting("TRIGGERS_PID_FILE", ".volnux_triggers.pid"),
             help="Path to the PID file written by the trigger engine daemon.",
         )
         parser.add_argument(

@@ -54,14 +54,11 @@ class TriggerStateRecord(KeyValueStoreIntegrationMixin, BaseModel):
     dirty: MiniAnnotated[bool, Attrib(default=False, metadata=_BOOL_CODEC)]
     updated_at: DateTimeField[DTConfig(auto_now=True)]
 
+    #: The engine and the CLI share these records, so they live in their own
+    #: database (a SQLite file unless ``DATABASES["triggers"]`` says otherwise).
     @classmethod
-    def get_backend_config(cls) -> Dict[str, Any]:
-        return {
-            "ENGINE": "volnux.backends.stores.sqlite.SqliteStoreBackend",
-            "CONNECTOR_CONFIG": {
-                "database": "volnux.db",
-            },
-        }
+    def get_database_alias(cls) -> str:
+        return "triggers"
 
     @classmethod
     async def get_dirty(cls):

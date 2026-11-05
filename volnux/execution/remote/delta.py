@@ -86,9 +86,9 @@ class ContextDelta:
             new_errors = []
 
         # Infer status: failed if any errors were recorded.
-        if mini_context.total_failed > 0 or mini_context.errors:
+        if mini_context.total_failed > 0:
             final_status = "FAILED"
-        elif mini_context.total_processed > 0 or mini_context.results:
+        elif mini_context.total_processed > 0:
             final_status = "COMPLETED"
         else:
             final_status = None

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, TYPE_CHECKING
 
 from volnux import EventBase
+from volnux.config import setting
 from volnux.signal.signals import get_signal
 from volnux.event.agent.providers.base import LLMProviderAdapterBase
 from volnux.event.agent.providers import LLMProviderRegistry
@@ -121,31 +122,32 @@ class AgentEventBase(EventBase):
 
     llm_provider: str = "openai"
     llm_model: str = "gpt-4o"
-    temperature: float = 0.0
-    max_tokens: int = 4096
+    #: The AGENT_* settings give these defaults; a subclass sets its own value.
+    temperature: float = float(setting("AGENT_TEMPERATURE", 0.0))
+    max_tokens: int = int(setting("AGENT_MAX_TOKENS", 4096))
     prompt_version: str = "1.0.0"
     system_prompt: str = ""
 
     tools: List[Type[Any]] = []
     permitted_handoffs: List[str] = []
 
-    max_reasoning_steps: int = 20
-    tool_timeout_seconds: float = 30.0
-    llm_max_retries: int = 3
-    llm_retry_delay_s: float = 1.0
+    max_reasoning_steps: int = int(setting("AGENT_MAX_REASONING_STEPS", 20))
+    tool_timeout_seconds: float = float(setting("AGENT_TOOL_TIMEOUT_SECONDS", 30.0))
+    llm_max_retries: int = int(setting("AGENT_LLM_MAX_RETRIES", 3))
+    llm_retry_delay_s: float = float(setting("AGENT_LLM_RETRY_DELAY_SECONDS", 1.0))
     enable_hallucination_detection: bool = False
     include_trace_in_result: bool = False
 
     #: Token budget over the whole run; 0 disables the cap.
-    max_total_tokens: int = 0
+    max_total_tokens: int = int(setting("AGENT_MAX_TOTAL_TOKENS", 0))
     #: Messages kept in the conversation sent to the model (see ``trim_messages``).
-    max_context_messages: int = 50
+    max_context_messages: int = int(setting("AGENT_MAX_CONTEXT_MESSAGES", 50))
     #: Options for the provider adapter (``api_key``, ``base_url``, ``timeout`` ...).
     llm_options: Dict[str, Any] = {}
     #: True: a response without a directive is a protocol violation. False: it is
     #: taken as a THINK.
     strict_protocol: bool = True
-    max_protocol_violations: int = 3
+    max_protocol_violations: int = int(setting("AGENT_MAX_PROTOCOL_VIOLATIONS", 3))
     #: ReAct-style agents write ``Thought:`` lines before the directive.
     directive_preamble: bool = False
 

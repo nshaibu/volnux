@@ -27,6 +27,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+
+from volnux.config import setting
 import time
 from pathlib import Path
 from typing import Optional
@@ -123,8 +125,7 @@ async def start_api_server(
         port=port,
         log_level=log_level.lower(),
         # Access log: always on in dev, configurable in production
-        access_log=dev_mode
-        or os.environ.get("VOLNUX_ACCESS_LOG", "false").lower() == "true",
+        access_log=dev_mode or bool(setting("ACCESS_LOG", False)),
         # Let uvicorn use the existing asyncio loop (we are already inside one)
         loop="none",
         # Graceful shutdown timeout — how long Uvicorn waits for in-flight
@@ -440,7 +441,7 @@ def _setup_otel(engine, dev_mode: bool):
         Shutdown function. Call during graceful shutdown to flush pending
         spans before the process exits.
     """
-    otel_enabled = os.environ.get("VOLNUX_OTEL_ENABLED", "true").lower() == "true"
+    otel_enabled = bool(setting("OTEL_ENABLED", False))
     if not otel_enabled:
         logger.debug("OTel disabled by VOLNUX_OTEL_ENABLED=false")
         return lambda: None
@@ -473,18 +474,16 @@ def _setup_otel(engine, dev_mode: bool):
         #   2. VOLNUX_OTEL_TEMPO_URL     (Tempo / Grafana Agent)
         #   3. VOLNUX_OTEL_ENDPOINT      (generic OTLP — OTel Collector default)
 
-        backend = os.environ.get("VOLNUX_OTEL_BACKEND", "grafana").lower()
-        endpoint = os.environ.get("VOLNUX_OTEL_ENDPOINT", "http://localhost:4317")
-        service_name = os.environ.get(
-            "VOLNUX_OTEL_SERVICE_NAME", getattr(engine, "project_name", "volnux")
+        backend = str(setting("OTEL_BACKEND", "grafana")).lower()
+        endpoint = setting("OTEL_ENDPOINT", "http://localhost:4317")
+        service_name = setting("OTEL_SERVICE_NAME", None) or getattr(
+            engine, "project_name", "volnux"
         )
-        service_ver = getattr(
-            engine, "version", os.environ.get("VOLNUX_VERSION", "unknown")
-        )
+        service_ver = getattr(engine, "version", setting("VERSION", "unknown"))
         environment = (
-            "development" if dev_mode else os.environ.get("VOLNUX_ENV", "production")
+            "development" if dev_mode or setting("DEBUG", False) else "production"
         )
-        node_id = os.environ.get("VOLNUX_NODE_ID", "local")
+        node_id = setting("NODE_ID", "local")
 
         config_kwargs: dict = {
             "service_name": service_name,
@@ -497,12 +496,12 @@ def _setup_otel(engine, dev_mode: bool):
         }
 
         if backend == "datadog":
-            datadog_url = os.environ.get("VOLNUX_OTEL_DATADOG_URL", endpoint)
+            datadog_url = setting("OTEL_DATADOG_URL", None) or endpoint
             config_kwargs["datadog_agent_url"] = datadog_url
             logger.info("OTel backend: Datadog Agent at %s", datadog_url)
 
         elif backend == "grafana":
-            tempo_url = os.environ.get("VOLNUX_OTEL_TEMPO_URL", endpoint)
+            tempo_url = setting("OTEL_TEMPO_URL", None) or endpoint
             config_kwargs["tempo_endpoint"] = tempo_url
             logger.info("OTel backend: Grafana/Tempo at %s", tempo_url)
 
@@ -651,10 +650,10 @@ async def _start_heartbeat():
     try:
         from volnux.distribution.channels.redis_channel import NodeHeartbeat
 
-        node_id = os.environ.get("VOLNUX_NODE_ID", "local")
+        node_id = setting("NODE_ID", "local")
         metadata = {
             "role": "api",
-            "version": os.environ.get("VOLNUX_VERSION", "unknown"),
+            "version": setting("VERSION", "unknown"),
         }
         heartbeat = NodeHeartbeat(node_id=node_id, metadata=metadata)
         await heartbeat.start()
@@ -704,7 +703,7 @@ async def _shutdown(
             logger.warning("TriggerEngine stop error: %s", exc)
 
     # ── 2. Drain checkpoint queue ─────────────────────────────────────────
-    drain_timeout = float(os.environ.get("VOLNUX_CHECKPOINT_DRAIN_TIMEOUT", "120"))
+    drain_timeout = float(setting("CHECKPOINT_DRAIN_TIMEOUT", 120.0))
     checkpoint_manager = getattr(engine, "checkpoint_manager", None)
     if checkpoint_manager is not None and hasattr(checkpoint_manager, "drain"):
         logger.info("Draining checkpoint queue (timeout=%.0fs)...", drain_timeout)
@@ -871,7 +870,7 @@ async def start_worker_server(
     # The gRPC port (45545) is separate from the metrics port. It is exposed
     # by the K8s headless service so individual pods are addressable by name.
     remote_manager = getattr(engine, "remote_manager", None)
-    grpc_port = int(os.environ.get("VOLNUX_GRPC_PORT", "45545"))
+    grpc_port = int(setting("GRPC_PORT", 45545))
 
     if remote_manager is not None and hasattr(remote_manager, "start"):
         try:
@@ -887,7 +886,7 @@ async def start_worker_server(
             # Non-fatal — worker can still execute local events
 
     # ── 7. Log startup summary ────────────────────────────────────────────────
-    node_id = os.environ.get("VOLNUX_NODE_ID", "local")
+    node_id = setting("NODE_ID", "local")
     logger.info(
         "Worker node ready — node_id=%s grpc=%s:%d " "health=%s:%d metrics=%s:%d",
         node_id,
@@ -1107,11 +1106,11 @@ async def _start_heartbeat_worker():
     try:
         from volnux.distribution.channels.redis_channel import NodeHeartbeat
 
-        node_id = os.environ.get("VOLNUX_NODE_ID", "local")
+        node_id = setting("NODE_ID", "local")
         metadata = {
             "role": "worker",
-            "version": os.environ.get("VOLNUX_VERSION", "unknown"),
-            "grpc_port": os.environ.get("VOLNUX_GRPC_PORT", "45545"),
+            "version": setting("VERSION", "unknown"),
+            "grpc_port": str(setting("GRPC_PORT", 45545)),
         }
         heartbeat = NodeHeartbeat(node_id=node_id, metadata=metadata)
         await heartbeat.start()
@@ -1175,7 +1174,7 @@ async def _worker_shutdown(
             logger.warning("RemoteManager stop error: %s", exc)
 
     # ── 2. Drain checkpoint queue ─────────────────────────────────────────────
-    drain_timeout = float(os.environ.get("VOLNUX_CHECKPOINT_DRAIN_TIMEOUT", "120"))
+    drain_timeout = float(setting("CHECKPOINT_DRAIN_TIMEOUT", 120.0))
     if checkpoint_manager is not None and hasattr(checkpoint_manager, "drain"):
         logger.info("Draining checkpoint queue (timeout=%.0fs)...", drain_timeout)
         try:

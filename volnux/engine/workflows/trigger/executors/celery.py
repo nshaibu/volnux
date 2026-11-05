@@ -68,6 +68,8 @@ D7. `revoke()` is implemented.
 import asyncio
 import logging
 import os
+
+from volnux.config import setting
 import warnings
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, TYPE_CHECKING
@@ -176,10 +178,10 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
         celery_app: Any = None,  # Celery instance or None
         broker_url: Optional[str] = None,
         result_backend: Optional[str] = None,
-        queue: str = "volnux_workflows",
+        queue: Optional[str] = None,
         task_soft_time_limit: Optional[int] = None,
         task_time_limit: Optional[int] = None,
-        poll_interval: float = 0.5,
+        poll_interval: Optional[float] = None,
         **celery_kwargs,
     ):
         """
@@ -240,10 +242,15 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
         if celery_app is not None and broker_url is not None:
             raise ValueError("Provide either 'celery_app' or 'broker_url', not both.")
 
-        self._queue = queue
+        # (None: the CELERY_EXECUTOR_QUEUE / CELERY_EXECUTOR_POLL_INTERVAL settings)
+        self._queue = queue or setting("CELERY_EXECUTOR_QUEUE", "volnux_workflows")
         self._task_soft_time_limit = task_soft_time_limit
         self._task_time_limit = task_time_limit
-        self._poll_interval = poll_interval
+        self._poll_interval = float(
+            poll_interval
+            if poll_interval is not None
+            else setting("CELERY_EXECUTOR_POLL_INTERVAL", 0.5)
+        )
 
         # Resolve or create the Celery app
         if celery_app is not None:
@@ -633,7 +640,7 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
         the engine is already initialised at worker startup. It is included
         in the task arguments for error messages and audit trail context.
         """
-        env_dir = os.environ.get("VOLNUX_PROJECT_DIR")
+        env_dir = setting("PROJECT_DIR", None)
         if env_dir:
             return Path(env_dir)
         # Fall back to the directory that contains init.py

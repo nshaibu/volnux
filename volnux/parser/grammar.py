@@ -32,7 +32,13 @@ from .ast import (
     BUILTIN_DESCRIPTORS,
     IndexExprNode,
     RetryNode,
+    CallNode,
+    TriggerNode,
+    SourceNode,
+    ComponentNode,
+    ComponentRefNode,
 )
+from .scope import check_scopes
 from .parser_mode import ParserMode
 from .dag_visitor import CycleDetectionVisitor, DAGValidationError, format_cycle_error
 
@@ -50,6 +56,9 @@ variables: typing.Dict[str, typing.Any] = {}
 # Descriptors written as labels (``A(out_of_balance -> B)``); their values are
 # only known once every ``@descriptor`` directive has been seen.
 _pending_descriptors: typing.List[typing.Tuple[DescriptorNode, int, int]] = []
+# ``@component`` definitions seen so far in the program being parsed. A name is
+# registered after its body, so a component cannot (even indirectly) call itself.
+_components: typing.Dict[str, ComponentNode] = {}
 _parse_lock = threading.RLock()
 
 # Chain operators are layered in the grammar (``->``/``|->`` bind looser than
@@ -73,11 +82,20 @@ def p_program(p):
 
     variable_declarations = {}
     directives = {}
+    triggers: typing.List[TriggerNode] = []
+    sources: typing.List[SourceNode] = []
+    components: typing.Dict[str, ComponentNode] = {}
     descriptors: typing.Dict[str, int] = {}
 
     for statement in statements:
         if isinstance(statement, VariableDeclNode):
             variable_declarations[statement.name] = statement.value
+        elif isinstance(statement, TriggerNode):
+            triggers.append(statement)
+        elif isinstance(statement, SourceNode):
+            sources.append(statement)
+        elif isinstance(statement, ComponentNode):
+            components[statement.name] = statement
         elif statement.name == "descriptor":
             # Several @descriptor directives accumulate; values are assigned
             # sequentially starting after the built-ins.
@@ -114,6 +132,10 @@ def p_program(p):
         descriptors=descriptors,
         author=_string_directive(directives.get("author")),
         description=_string_directive(directives.get("description")),
+        triggers=triggers,
+        sources=sources,
+        components=components,
+        script_version=_string_directive(directives.get("version")),
     )
 
 
@@ -159,6 +181,9 @@ def p_declaration(p):
     """
     declaration : variable_declaration
                 | directive
+                | trigger_declaration
+                | source_declaration
+                | component_declaration
     """
     p[0] = p[1]
 
@@ -276,7 +301,10 @@ def p_task(p):
          | IDENTIFIER DOUBLE_COLON IDENTIFIER attribute_list
     """
     if len(p) == 3:
-        p[0] = TaskNode(task=p[1], options=p[2])
+        if p[1] in _components:
+            p[0] = ComponentRefNode(name=p[1], options=p[2])
+        else:
+            p[0] = TaskNode(task=p[1], options=p[2])
     else:
         p[0] = TaskNode(task=p[3], namespace=p[1], options=p[4])
 
@@ -317,6 +345,11 @@ def p_meta_task(p):
 
     """
     mode = p[1]
+
+    if len(p) == 6 and p[3] in _components:
+        raise YaccError(
+            f"{mode}<{p[3]}>: a component cannot be used as a meta event template yet"
+        )
 
     if len(p) == 6:
         template_event = p[3]
@@ -380,6 +413,91 @@ def p_directive(p):
     elif isinstance(value, ListNode) and getattr(value, "_identifiers", False):
         raise YaccError(f"Directive '@{name}' expects an expression, not bare names")
     p[0] = DirectiveNode(name=name, value=value)
+
+
+def p_trigger_declaration(p):
+    """
+    trigger_declaration : TRIGGER_DECL COLON trigger_spec
+    """
+    node = p[3]
+    node.line, node.column = _position(p, 1)
+    p[0] = node
+
+
+def p_component_declaration(p):
+    """
+    component_declaration : COMPONENT_DECL IDENTIFIER attribute_list COLON chain
+    """
+    name = p[2]
+    line, column = _position(p, 1)
+    if name in _components:
+        raise YaccError(f"Duplicate component '{name}'. Line: {line}, Column: {column}")
+    node = ComponentNode(name=name, body=p[5], options=p[3], line=line, column=column)
+    _components[name] = node  # (after the body: no recursion)
+    p[0] = node
+
+
+def p_source_declaration(p):
+    """
+    source_declaration : SOURCE_DECL COLON IDENTIFIER LPAREN trigger_arguments RPAREN
+    """
+    args, kwargs = p[5]
+    node = SourceNode(kind=p[3], args=args, kwargs=kwargs)
+    node.line, node.column = _position(p, 1)
+    p[0] = node
+
+
+def p_trigger_spec(p):
+    """
+    trigger_spec : IDENTIFIER LPAREN trigger_arguments RPAREN
+                 | WHEN expression
+                 | WHEN IDENTIFIER LPAREN trigger_arguments RPAREN
+    """
+    if p.slice[1].type == "WHEN":
+        if len(p) == 3:
+            p[0] = TriggerNode(kind="when", condition=p[2])
+        else:
+            args, kwargs = p[4]
+            p[0] = TriggerNode(
+                kind="when", condition=CallNode(name=p[2], args=args, kwargs=kwargs)
+            )
+    else:
+        args, kwargs = p[3]
+        p[0] = TriggerNode(kind=p[1], args=args, kwargs=kwargs)
+
+
+def p_trigger_arguments(p):
+    """
+    trigger_arguments : empty
+                      | trigger_argument_list
+    """
+    p[0] = ([], {}) if p[1] is None else p[1]
+
+
+def p_trigger_argument_list(p):
+    """
+    trigger_argument_list : trigger_argument
+                          | trigger_argument_list SEPARATOR trigger_argument
+    """
+    args, kwargs = ([], {}) if len(p) == 2 else p[1]
+    name, value = p[len(p) - 1]
+    if name is None:
+        if kwargs:
+            raise YaccError("A positional trigger argument cannot follow a keyword one")
+        args = args + [value]
+    else:
+        if name in kwargs:
+            raise YaccError(f"Duplicate trigger argument '{name}'")
+        kwargs = {**kwargs, name: value}
+    p[0] = (args, kwargs)
+
+
+def p_trigger_argument(p):
+    """
+    trigger_argument : expression
+                     | IDENTIFIER ASSIGN expression
+    """
+    p[0] = (None, p[1]) if len(p) == 2 else (p[1], p[3])
 
 
 class _IdentifierList(ListNode):
@@ -525,24 +643,17 @@ def p_variable_reference(p):
             raise YaccError(f"Unknown variable accessor '{accessor}'")
         p[0] = EnvironmentVariableAccessNode(name=p[3])
     elif len(p) == 5:
-        var_name = p[1]
-        index_expr = p[3]
-
-        try:
-            value = variables[var_name]
-        except KeyError:
-            raise YaccError(f"Undefined variable '${var_name}'")
-
-        p[0] = IndexExprNode(collection=value, index=index_expr)
+        # (The collection is an access node, so a scope can supply it.)
+        p[0] = IndexExprNode(
+            collection=VariableAccessNode(name=p[1], value=variables.get(p[1])),
+            index=p[3],
+        )
     else:
-        var_name = p[1]
-
-        try:
-            value = variables[var_name]
-        except KeyError:
-            raise YaccError(f"Undefined variable '${var_name}'")
-
-        p[0] = VariableAccessNode(name=var_name, value=value)
+        # Bound to the global ``@name`` if there is one. A name that only an
+        # enclosing annotation declares (``{...}[name=1]``) is left unbound here
+        # and resolved through the scopes; ``check_scopes`` reports the names
+        # that nothing declares.
+        p[0] = VariableAccessNode(name=p[1], value=variables.get(p[1]))
 
 
 def p_descriptor(p):
@@ -811,8 +922,11 @@ def pointy_parser(code: str) -> ProgramNode:
     with _parse_lock:
         variables.clear()
         _pending_descriptors.clear()
-        pointy_lexer.lexer.lineno = 1
+        _components.clear()
+        pointy_lexer.reset()
         try:
-            return parser.parse(code, lexer=pointy_lexer.lexer)
+            program = parser.parse(code, lexer=pointy_lexer.lexer)
+            check_scopes(program)
+            return program
         except YaccError as e:
             raise SyntaxError(f"Parsing error: {str(e)}")

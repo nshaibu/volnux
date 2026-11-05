@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 
 from volnux.exceptions import LLMProviderError
 from .base import LLMProviderAdapterBase
+from volnux.config import setting
 
 __all__ = ["HTTPProviderAdapter", "json_arguments"]
 
@@ -42,7 +43,7 @@ class HTTPProviderAdapter(LLMProviderAdapterBase):
     api_key_env: str = ""
     #: Local servers (Ollama, vLLM) work without a key.
     api_key_required: bool = True
-    default_timeout: float = 120.0
+    default_timeout: float = float(setting("AGENT_HTTP_TIMEOUT_SECONDS", 120.0))
 
     def _base_url(self) -> str:
         url = (

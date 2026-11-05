@@ -75,6 +75,10 @@ class PointyLexer(object):
             "ASSIGN",
             "IDENTIFIER",
             "VAR_DECL",  # @ prefix for declaration
+            "TRIGGER_DECL",  # @trigger (declares when the workflow starts)
+            "SOURCE_DECL",  # @source (where a namespace's events come from)
+            "COMPONENT_DECL",  # @component (a named, reusable sub-chain)
+            "WHEN",  # ``when`` right after ``@trigger:``
             "VAR_ACCESS",  # $ prefix for variable value access
             "LPAREN",
             "RPAREN",
@@ -184,6 +188,18 @@ class PointyLexer(object):
     def t_VAR_DECL(self, t):
         r"@[a-zA-Z_][a-zA-Z0-9_]*"
         t.value = t.value[1:]  # Remove @ prefix
+        self._trigger_head = t.value == "trigger"
+        if t.value == "component":
+            t.type = "COMPONENT_DECL"
+        if t.value == "source":
+            # Own token for the same reason as ``@trigger``: ``name(...)`` after
+            # a plain directive is ambiguous with a parenthesised chain.
+            t.type = "SOURCE_DECL"
+        if t.value == "trigger":
+            # Its own token: the value of a trigger (``schedule(...)``,
+            # ``when ...``) is not an expression, and sharing VAR_DECL's rules
+            # made ``name(`` ambiguous with a parenthesised chain that follows.
+            t.type = "TRIGGER_DECL"
         return t
 
     def t_VAR_ACCESS(self, t):
@@ -195,6 +211,12 @@ class PointyLexer(object):
         r"[a-zA-Z_][a-zA-Z0-9_]*"
         # Check for reserved keywords
         t.type = self.reserved.get(t.value, "IDENTIFIER")  # type: ignore
+        if self._trigger_head:
+            # ``when`` is only a keyword as the first word of a trigger, so it
+            # stays usable as a task or descriptor name everywhere else.
+            self._trigger_head = False
+            if t.value == "when":
+                t.type = "WHEN"
         if t.type == "BOOLEAN":
             t.value = t.value == "true"
         return t
@@ -214,4 +236,10 @@ class PointyLexer(object):
         )
 
     def __init__(self, **kwargs):
+        self._trigger_head = False
         self.lexer = lex(module=self, **kwargs)
+
+    def reset(self) -> None:
+        """Forget the state of a previous (possibly failed) scan."""
+        self._trigger_head = False
+        self.lexer.lineno = 1

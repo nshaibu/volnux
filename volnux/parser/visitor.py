@@ -25,6 +25,11 @@ if typing.TYPE_CHECKING:
         RetryNode,
         AttributeNode,
         TernaryExprNode,
+        TriggerNode,
+        CallNode,
+        SourceNode,
+        ComponentNode,
+        ComponentRefNode,
     )
 
 
@@ -223,3 +228,20 @@ class ASTVisitorInterface(ABC):
     @abstractmethod
     def visit_ternary_expr(self, node: "TernaryExprNode"):
         pass
+
+    # Not abstract: trigger declarations are not part of the task graph, so most
+    # visitors have nothing to do for them.
+    def visit_trigger(self, node: "TriggerNode"):
+        return None
+
+    def visit_call(self, node: "CallNode"):
+        return None
+
+    def visit_source(self, node: "SourceNode"):
+        return None
+
+    def visit_component(self, node: "ComponentNode"):
+        return None
+
+    def visit_component_ref(self, node: "ComponentRefNode"):
+        return None

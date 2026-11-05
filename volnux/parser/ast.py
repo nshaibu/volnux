@@ -84,6 +84,14 @@ class ProgramNode(ASTNode):
     descriptors: typing.Dict[str, int] = field(default_factory=dict)
     author: typing.Optional[str] = None
     description: typing.Optional[str] = None
+    # ``@trigger:`` declarations, in source order.
+    triggers: typing.List["TriggerNode"] = field(default_factory=list)
+    # ``@source:`` declarations, in source order.
+    sources: typing.List["SourceNode"] = field(default_factory=list)
+    # ``@version:`` of the script (metadata); None if not declared as a string.
+    script_version: typing.Optional[str] = None
+    # ``@component Name: chain`` definitions, by name.
+    components: typing.Dict[str, "ComponentNode"] = field(default_factory=dict)
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_program(self)
@@ -123,13 +131,18 @@ class DirectiveNode(ASTNode):
 class VariableAccessNode(ExpressionNode):
     __slots__ = ("name", "value")
     name: str
-    value: "LiteralNode"
+    # The global ``@name`` it was bound to when parsed, or None when the name is
+    # only declared by an enclosing annotation (``[name=...]``). A scope that
+    # declares the name takes precedence over this binding.
+    value: typing.Optional["LiteralNode"]
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_variable_access(self)
 
     def resolve(self) -> typing.Any:
         value = self.value
+        if value is None:
+            raise LookupError(f"Variable '{self.name}' is not bound to a global")
 
         while (
             isinstance(value, LiteralNode)
@@ -379,3 +392,127 @@ class IndexExprNode(ExpressionNode):
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_index_expr(self)
+
+
+@dataclass
+class CallNode(ExpressionNode):
+    """``name(args, key=value)``: only valid inside a ``@trigger`` declaration
+    (e.g. the ``file_exists("/data/in.csv")`` of ``when file_exists(...)``)."""
+
+    name: str
+    args: typing.List[ASTNode] = field(default_factory=list)
+    kwargs: typing.Dict[str, ASTNode] = field(default_factory=dict)
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_call(self)
+
+
+def is_static_expression(node: typing.Optional[ASTNode]) -> bool:
+    """True if the value of ``node`` is known at parse time: a literal, a declared
+    variable that holds one, or a list / map of those. ``$env`` values and
+    function calls are only known at run time."""
+    if isinstance(node, LiteralNode):
+        return True
+    if isinstance(node, VariableAccessNode):
+        return is_static_expression(node.value)
+    if isinstance(node, ListNode):
+        return all(is_static_expression(item) for item in node.value)
+    if isinstance(node, MapNode):
+        return all(is_static_expression(item) for item in node.value.values())
+    if isinstance(node, (UnaryOpNode,)):
+        return is_static_expression(node.right)
+    if isinstance(node, BinOpNode):
+        return is_static_expression(node.left) and is_static_expression(node.right)
+    return False
+
+
+@dataclass
+class TriggerNode(ASTNode):
+    """One ``@trigger:`` declaration.
+
+    ``@trigger: schedule("0 6 * * MON-FRI", timezone="UTC")`` has ``kind``
+    ``"schedule"``, one positional argument and one keyword argument.
+    ``@trigger: when <condition>`` has ``kind`` ``"when"`` and the condition
+    (an expression, or a :class:`CallNode`) in ``condition``.
+
+    The node is only the declaration. Whether it can be acted on at parse time is
+    :attr:`is_static`; building the trigger object is the engine's job.
+    """
+
+    kind: str
+    args: typing.List[ASTNode] = field(default_factory=list)
+    kwargs: typing.Dict[str, ASTNode] = field(default_factory=dict)
+    condition: typing.Optional[ASTNode] = None
+    line: int = 0
+    column: int = 0
+
+    @property
+    def is_static(self) -> bool:
+        """Everything it needs is known at parse time (a ``when`` never is: its
+        condition is evaluated while the workflow runs)."""
+        if self.kind == "when" or self.condition is not None:
+            return False
+        return all(is_static_expression(a) for a in self.args) and all(
+            is_static_expression(v) for v in self.kwargs.values()
+        )
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_trigger(self)
+
+
+@dataclass
+class SourceNode(ASTNode):
+    """One ``@source:`` declaration.
+
+    ``@source: hub("trading_events", "trading-events", version="2.1.0")`` has
+    ``kind`` ``"hub"``, the namespace and the location as positional arguments and
+    ``version`` as a keyword argument. The namespace is the prefix tasks use
+    (``trading_events::ValidateOrder``).
+    """
+
+    kind: str
+    args: typing.List[ASTNode] = field(default_factory=list)
+    kwargs: typing.Dict[str, ASTNode] = field(default_factory=dict)
+    line: int = 0
+    column: int = 0
+
+    @property
+    def is_static(self) -> bool:
+        """Everything it needs is known at parse time (no ``$env``)."""
+        return all(is_static_expression(a) for a in self.args) and all(
+            is_static_expression(v) for v in self.kwargs.values()
+        )
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_source(self)
+
+
+@dataclass
+class ComponentNode(ASTNode):
+    """``@component Name[defaults]: chain``: a named, reusable sub-chain.
+
+    The body is one chain, so an invocation runs as a single-chain group. The
+    annotations are defaults for the variables the body reads (``$timeout``); an
+    invocation's annotations override them.
+    """
+
+    name: str
+    body: ASTNode
+    options: typing.List["AttributeNode"] = field(default_factory=list)
+    line: int = 0
+    column: int = 0
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_component(self)
+
+
+@dataclass
+class ComponentRefNode(ASTNode):
+    """An invocation of a component: ``Name[a=3]``. The annotations become
+    variables of the scope the component's body runs in."""
+
+    name: str
+    options: typing.List["AttributeNode"] = field(default_factory=list)
+
+    def accept(self, visitor: "ASTVisitor"):
+        return visitor.visit_component_ref(self)

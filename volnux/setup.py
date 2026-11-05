@@ -58,7 +58,7 @@ async def initialise_workflows(
         )
 
     # Configure logging from project settings
-    logging.config.dictConfig(volnux_config.LOGGING_CONFIG)
+    logging.config.dictConfig(volnux_config.LOGGING)
 
     # Install the configured pipeline reporters (``PIPELINE_REPORTERS``) now
     # that the project's own configuration — init.py — has been loaded, so the

@@ -60,7 +60,12 @@ class ResourceState(typing.TypedDict, total=False):
 
 
 class EventCheckpointSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
-    """The 'Source of Truth' persisted in Redis for a specific Task ID."""
+    """The 'Source of Truth' persisted for a specific Task ID (in
+    ``DATABASES["checkpoints"]``, else ``"default"``)."""
+
+    @classmethod
+    def get_database_alias(cls) -> str:
+        return "checkpoints"
 
     task_id: str
     class_path: str  # e.g., "myapp.events.SendEmailTask"

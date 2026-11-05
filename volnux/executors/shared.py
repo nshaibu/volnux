@@ -41,7 +41,7 @@ def _config(name: str, default: Any) -> Any:
     try:
         from volnux.config import VolnuxConfig
 
-        return VolnuxConfig.get_instance().get(name, default)
+        return VolnuxConfig.get_instance().resolve(name, default)
     except Exception:
         return default
 

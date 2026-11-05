@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+
+from volnux.config import setting
 import time
 import uvicorn
 import importlib
@@ -174,11 +176,11 @@ async def _start_heartbeat_worker():
     try:
         from volnux.distribution.channels.redis_channel import NodeHeartbeat
 
-        node_id = os.environ.get("VOLNUX_NODE_ID", "local")
+        node_id = setting("NODE_ID", "local")
         metadata = {
             "role": "worker",
-            "version": os.environ.get("VOLNUX_VERSION", "unknown"),
-            "grpc_port": os.environ.get("VOLNUX_GRPC_PORT", "45545"),
+            "version": setting("VERSION", "unknown"),
+            "grpc_port": str(setting("GRPC_PORT", 45545)),
         }
         heartbeat = NodeHeartbeat(node_id=node_id, metadata=metadata)
         await heartbeat.start()
@@ -242,7 +244,7 @@ async def _worker_shutdown(
             logger.warning("RemoteManager stop error: %s", exc)
 
     # ── 2. Drain checkpoint queue ─────────────────────────────────────────────
-    drain_timeout = float(os.environ.get("VOLNUX_CHECKPOINT_DRAIN_TIMEOUT", "120"))
+    drain_timeout = float(setting("CHECKPOINT_DRAIN_TIMEOUT", 120.0))
     if checkpoint_manager is not None and hasattr(checkpoint_manager, "drain"):
         logger.info("Draining checkpoint queue (timeout=%.0fs)...", drain_timeout)
         try:

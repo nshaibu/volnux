@@ -21,9 +21,7 @@ from volnux.governance.events import EventType, GovernanceEvent  # noqa: E402
 from volnux.governance.publisher import GovernanceEventPublisher  # noqa: E402
 
 _config = VolnuxConfig.get_instance()
-try:
-    _config.get("PROJECT_ID")
-except AttributeError:  # pragma: no cover - only if the singleton predates us
+if not _config.get("PROJECT_ID", None):  # (the singleton may predate the variable)
     _config.add("PROJECT_ID", os.environ["VOLNUX_PROJECT_ID"])
 
 

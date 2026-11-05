@@ -173,9 +173,18 @@ class BackendConnectionIntegrationMixin(ObjectIdentityMixin):
         return VolnuxConfig.get_instance()
 
     @classmethod
+    def get_database_alias(cls) -> str:
+        """Which entry of the ``DATABASES`` setting this class is stored in
+        (``"default"``). A model overrides this to be stored elsewhere; it is a
+        method, not an attribute, because model classes turn attributes into fields."""
+        return "default"
+
+    @classmethod
     def get_backend_config(cls) -> Dict[str, Any]:
-        """Get the backend configuration for this class from VolnuxConfig."""
-        return cls.get_volnux_config().KEY_VALUE_STORE_CONFIG
+        """The configuration of this class's database (``DATABASES[alias]``)."""
+        from volnux.backends.databases import get_database_config
+
+        return get_database_config(cls.get_database_alias())
 
     @classmethod
     async def _initialize_backend(cls) -> None:

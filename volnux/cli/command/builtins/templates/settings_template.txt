@@ -1,0 +1,64 @@
+"""
+Settings for the Volnux project "{project_name}".
+
+Only the settings a project changes are written here; every other setting has a
+default in `volnux.conf.global_settings`, where each one is documented. Any setting
+can also be overridden by an environment variable, VOLNUX_<NAME>
+(for example VOLNUX_API_PORT=9000).
+
+Read a setting in code with:
+
+    from volnux.conf import settings
+    settings.DATABASES
+"""
+
+from pathlib import Path
+
+# The directory of this project.
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = BASE_DIR
+
+# Name of your project
+PROJECT_NAME = '{project_name}'
+
+# Version
+VERSION = '{version}'
+
+# Available workflows
+WORKFLOWS = []
+
+# SECURITY WARNING: never run a deployment with DEBUG on. `volnux dev` turns it on
+# for you, so it stays off here.
+DEBUG = False
+
+# SECURITY WARNING: keep the secret key out of this file. Set it in the environment
+# (VOLNUX_SECRET_KEY) before `volnux serve`; it signs the API's login tokens.
+# SECRET_KEY = None
+
+# Databases, as in Django. 'default' holds everything that has no database of its
+# own, and so do the others you leave out. This default keeps data in memory, which
+# needs no setup but does not survive the process: use a real database in production.
+DATABASES = {{
+    "default": {{
+        "ENGINE": "volnux.backends.stores.inmemory.InMemoryKeyValueStoreBackend",
+    }},
+    # Trigger state is shared by the engine and the CLI, so it is kept in a file.
+    "triggers": {{
+        "ENGINE": "volnux.backends.stores.sqlite.SqliteStoreBackend",
+        "NAME": BASE_DIR / "volnux.db",
+    }},
+    # Production, for example:
+    # "default": {{
+    #     "ENGINE": "volnux.backends.stores.postgres.PostgresStoreBackend",
+    #     "NAME": "volnux",
+    #     "HOST": "db.internal",
+    #     "PORT": 5432,
+    #     "USER": "volnux",
+    #     "PASSWORD": "...",   # prefer building this from the environment
+    # }},
+    # "messaging": {{
+    #     "ENGINE": "volnux.backends.stores.redis.RedisStoreBackend",
+    #     "HOST": "redis.internal",
+    #     "PORT": 6379,
+    # }},
+}}

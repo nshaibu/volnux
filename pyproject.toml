@@ -86,6 +86,7 @@ kafka = [
 [tool.setuptools]
 packages = [
     "volnux",
+    "volnux.conf",
     "volnux.translator",
     "volnux.protos",
     "volnux.parser",

@@ -118,3 +118,20 @@ class CheckPointConfig(BaseModel):
     class Config:
         # frozen = True
         init_strategy = InitStrategy.DATACLASS
+
+    @classmethod
+    def from_settings(cls) -> "CheckPointConfig":
+        """The configuration set by the ``CHECKPOINT_CONFIG`` setting (its default
+        is the same as ``CheckPointConfig()``)."""
+        from volnux.config import setting
+        from volnux.exceptions import ImproperlyConfigured
+
+        value = setting("CHECKPOINT_CONFIG", {})
+        if isinstance(value, cls):
+            return value
+        try:
+            return cls.loads(value or {}, _format="dict")
+        except Exception as exc:
+            raise ImproperlyConfigured(
+                f"Invalid CHECKPOINT_CONFIG setting: {exc}"
+            ) from exc

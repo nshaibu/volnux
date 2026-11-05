@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from volnux.cli.command.base import SubCommand, CommandCategory, CommandError
+from volnux.config import setting
 
 __all__ = ["StartTriggerEngineSubCommand"]
 
@@ -26,13 +27,15 @@ class StartTriggerEngineSubCommand(SubCommand):
         parser.add_argument(
             "--pid-file",
             type=str,
-            default=".volnux_triggers.pid",
-            help="Path to PID file for daemon mode (default: .volnux_triggers.pid)",
+            default=setting("TRIGGERS_PID_FILE", ".volnux_triggers.pid"),
+            help="Path to PID file for daemon mode (default: the TRIGGERS_PID_FILE setting, .volnux_triggers.pid)",
         )
 
     def handle(self, *args, **options) -> None:
         daemon_mode = options.get("daemon", False)
-        pid_file = options.get("pid_file", ".volnux_triggers.pid")
+        pid_file = options.get("pid_file") or setting(
+            "TRIGGERS_PID_FILE", ".volnux_triggers.pid"
+        )
 
         project_dir, _ = self.get_project_root_and_config_module()
 

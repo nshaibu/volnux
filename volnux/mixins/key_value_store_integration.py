@@ -277,7 +277,8 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
     :ivar _backend_config: Configuration settings for the backend.
     :type _backend_config: ClassVar[Optional[Dict[str, Any]]]
 
-    The backend is configured via CONFIG.KEY_VALUE_STORE_CONFIG.
+    The backend is the entry of the ``DATABASES`` setting named by the class's
+    ``get_database_alias()`` (``"default"`` unless the class says otherwise).
 
     Example:
         >>> @dataclass
@@ -529,12 +530,11 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
     def get_migration_dir(cls) -> str:
         """Get the directory where migrations are stored for this class."""
         volnux_config = cls.get_volnux_config()
-        try:
-            return os.path.join(volnux_config.MIGRATION_DIR, f"{cls.__name__}")
-        except AttributeError:
-            return os.path.join(
-                os.path.expanduser("~"), ".volnux", "migrations", f"{cls.__name__}"
-            )
+        base = volnux_config.resolve(
+            "MIGRATION_DIR",
+            os.path.join(os.path.expanduser("~"), ".volnux", "migrations"),
+        )
+        return os.path.join(os.path.expanduser(str(base)), f"{cls.__name__}")
 
     @classmethod
     def get_volnux_config(cls) -> "VolnuxConfig":
@@ -544,8 +544,10 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
 
     @classmethod
     def get_backend_config(cls) -> Dict[str, Any]:
-        """Get the backend configuration for this class."""
-        return cls.get_volnux_config().KEY_VALUE_STORE_CONFIG
+        """The configuration of this class's database (``DATABASES[alias]``)."""
+        from volnux.backends.databases import get_database_config
+
+        return get_database_config(cls.get_database_alias())
 
     def _is_loaded_from_backend(self) -> bool:
         """Check if this instance was loaded from the backend.
