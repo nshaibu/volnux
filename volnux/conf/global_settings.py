@@ -474,14 +474,36 @@ TRIGGER_ENGINE_STATE_SYNC_INTERVAL = 10
 # -----------------------------------------------------------------------------
 # DEFAULT_WORKFLOW_EXECUTOR
 #   What:        Dotted path of the executor that runs a workflow when a trigger fires
-#                and none was set explicitly.
+#                and none was set explicitly. The executors are
+#                AsyncTaskWorkflowExecutor (in this process), CeleryWorkflowExecutor
+#                (on a Celery worker) and KubernetesWorkflowExecutor (as a Kubernetes
+#                Job). All of them run the workflow under the configuration that was
+#                active when it was started (volnux.context).
 #   Used by:     volnux/setup.py
 #   Env:         VOLNUX_DEFAULT_WORKFLOW_EXECUTOR
 #   Production:
 #       DEFAULT_WORKFLOW_EXECUTOR = "myproject.executors.CeleryWorkflowExecutor"
-DEFAULT_WORKFLOW_EXECUTOR = (
-    "volnux.engine.workflows.trigger.engine.WorkflowConfigExecutor"
-)
+DEFAULT_WORKFLOW_EXECUTOR = "volnux.engine.workflows.trigger.executors.asyncio_executor.AsyncTaskWorkflowExecutor"
+
+# -----------------------------------------------------------------------------
+# ASYNC_EXECUTOR_MAX_CONCURRENT
+#   What:        Most workflows the in-process executor runs at the same time; the
+#                others wait for a free slot.
+#   Used by:     volnux/engine/workflows/trigger/executors/asyncio_executor.py
+#   Env:         VOLNUX_ASYNC_EXECUTOR_MAX_CONCURRENT
+#   Production:
+#       ASYNC_EXECUTOR_MAX_CONCURRENT = 50
+ASYNC_EXECUTOR_MAX_CONCURRENT = 10
+
+# -----------------------------------------------------------------------------
+# ASYNC_EXECUTOR_TIMEOUT
+#   What:        Seconds an in-process workflow may run before it is cancelled.
+#                None means no limit.
+#   Used by:     volnux/engine/workflows/trigger/executors/asyncio_executor.py
+#   Env:         VOLNUX_ASYNC_EXECUTOR_TIMEOUT
+#   Production:
+#       ASYNC_EXECUTOR_TIMEOUT = 3600
+ASYNC_EXECUTOR_TIMEOUT = None
 
 # -----------------------------------------------------------------------------
 # CELERY_EXECUTOR_QUEUE
@@ -502,19 +524,39 @@ CELERY_EXECUTOR_QUEUE = "volnux_workflows"
 CELERY_EXECUTOR_POLL_INTERVAL = 0.5
 
 # -----------------------------------------------------------------------------
-# REDIS_CHECKPOINT_URL
-#   What:        Redis where Kubernetes jobs and `volnux serve` workers store job
-#                parameters, results and checkpoints.
-#   Used by:     volnux/cli/command/builtins/serve.py,
-#                volnux/engine/workflows/trigger/executors/kubernetes.py
-#   Env:         VOLNUX_REDIS_CHECKPOINT_URL
+# CELERY_EXECUTOR_SOFT_TIME_LIMIT
+#   What:        Seconds after which a Celery workflow task is asked to stop (it can
+#                clean up). None means no limit.
+#   Used by:     volnux/engine/workflows/trigger/executors/celery.py
+#   Env:         VOLNUX_CELERY_EXECUTOR_SOFT_TIME_LIMIT
 #   Production:
-#       REDIS_CHECKPOINT_URL = "rediss://redis.internal:6380/1"    # prefer the environment variable
-REDIS_CHECKPOINT_URL = "redis://localhost:6379/0"
+#       CELERY_EXECUTOR_SOFT_TIME_LIMIT = 3300
+CELERY_EXECUTOR_SOFT_TIME_LIMIT = None
+
+# -----------------------------------------------------------------------------
+# CELERY_EXECUTOR_TIME_LIMIT
+#   What:        Seconds after which a Celery workflow task is killed. None means no
+#                limit.
+#   Used by:     volnux/engine/workflows/trigger/executors/celery.py
+#   Env:         VOLNUX_CELERY_EXECUTOR_TIME_LIMIT
+#   Production:
+#       CELERY_EXECUTOR_TIME_LIMIT = 3600
+CELERY_EXECUTOR_TIME_LIMIT = None
+
+# -----------------------------------------------------------------------------
+# CELERY_EXECUTOR_RESULT_TIMEOUT
+#   What:        Seconds the caller waits for a Celery workflow's result before it
+#                gives up and revokes the task. None means wait indefinitely.
+#   Used by:     volnux/engine/workflows/trigger/executors/celery.py
+#   Env:         VOLNUX_CELERY_EXECUTOR_RESULT_TIMEOUT
+#   Production:
+#       CELERY_EXECUTOR_RESULT_TIMEOUT = 3900
+CELERY_EXECUTOR_RESULT_TIMEOUT = None
 
 # -----------------------------------------------------------------------------
 # REDIS_BROKER_URL
-#   What:        Message broker of the Celery executor started by `volnux serve`.
+#   What:        Message broker of the Celery executor started by `volnux serve`
+#                (Celery's own configuration, not a Volnux database).
 #   Used by:     volnux/cli/command/builtins/serve.py
 #   Env:         VOLNUX_REDIS_BROKER_URL
 #   Production:

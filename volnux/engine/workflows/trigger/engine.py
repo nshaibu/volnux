@@ -21,19 +21,17 @@ for sig in (signal.SIGTERM, signal.SIGINT):
 
 import logging
 import asyncio
-import abc
 from typing import (
     Dict,
     List,
     Tuple,
     Any,
-    cast,
     TYPE_CHECKING,
-    Literal,
     Optional,
 )
 
 from volnux.config import setting
+from .executors.base import WorkflowExecutor
 from .state import TriggerStateRecord
 from volnux.engine.workflows.workflow import WorkflowExecutionError, WorkflowNotFound
 
@@ -43,64 +41,6 @@ if TYPE_CHECKING:
     from volnux.engine.workflows import WorkflowRegistry
 
 logger = logging.getLogger(__name__)
-
-
-class BaseWorkflowConfigExecutor(abc.ABC):
-
-    def __init__(self, workflow_registry: "WorkflowRegistry"):
-        self._workflow_registry = workflow_registry
-
-    def get_workflow_registry(self) -> "WorkflowRegistry":
-        return self._workflow_registry
-
-    @abc.abstractmethod
-    async def execute(self, workflow_name: str, params: Dict[str, Any]) -> Any:
-        """
-        Executes a workflow by its name with the specified parameters. This method must
-        be implemented by subclasses and is designed to handle asynchronous execution
-        logic for workflows.
-
-        :param workflow_name: The name of the workflow to be executed.
-        :type workflow_name: str
-        :param params: A dictionary containing the parameters for the workflow execution.
-        :type params: Dict[str, Any]
-        :return: The result of the workflow execution.
-        :rtype: Any
-        """
-        raise NotImplementedError("execute() must be implemented by subclasses.")
-
-    async def __call__(self, workflow_name: str, params: Dict[str, Any]) -> Any:
-        return await self.execute(workflow_name, params)
-
-
-class WorkflowConfigExecutor(BaseWorkflowConfigExecutor):
-
-    async def execute(self, workflow_name: str, params: Dict[str, Any]) -> Any:
-        """
-        Execute the workflow through WorkflowConfig.
-        :rtype: Any
-        """
-        if not self._workflow_registry.is_ready():
-            logger.error("Workflow registry is not ready.")
-            raise WorkflowExecutionError("Workflow registry is not ready.")
-
-        config = self._workflow_registry.get_workflow_config(workflow_name)
-        if config is None:
-            logger.error("Workflow config not found.")
-            raise WorkflowExecutionError("Workflow config not found.")
-
-        run_type = cast(Literal["batch", "single"], params.get("run_type", "single"))
-        params = {k: v for k, v in params.items() if k != "run_type"}
-
-        try:
-            result = await config.run_workflow(params=params, run_type=run_type)
-
-            logger.info(f"Workflow {workflow_name} completed successfully")
-            return result
-
-        except WorkflowExecutionError as e:
-            logger.error(f"Workflow execution error: {e}")
-            raise
 
 
 class TriggerEngine:
@@ -113,7 +53,7 @@ class TriggerEngine:
     based on the triggers' events and configurations.
 
     :ivar workflow_executor: The workflow executor is used to handle workflow processing.
-    :type workflow_executor: Optional[BaseWorkflowConfigExecutor]
+    :type workflow_executor: Optional[WorkflowExecutor]
     :ivar consumer_concurrency: The number of consumer workers to process workflow tasks.
     :type consumer_concurrency: int
     :ivar triggers: A mapping between trigger IDs and the respective TriggerBase instances.
@@ -128,7 +68,7 @@ class TriggerEngine:
 
     def __init__(
         self,
-        workflow_executor: Optional[BaseWorkflowConfigExecutor] = None,
+        workflow_executor: Optional[WorkflowExecutor] = None,
         consumer_concurrency: Optional[int] = None,
         max_queue_size: Optional[int] = None,
         drain_timeout: Optional[int] = None,
@@ -140,7 +80,7 @@ class TriggerEngine:
         sets up the necessary attributes and validates input parameters to ensure correct
         functionality.
 
-        :param workflow_executor: An instance of BaseWorkflowConfigExecutor to handle
+        :param workflow_executor: An instance of WorkflowExecutor to handle
             workflow execution. Defaults to None.
         :param consumer_concurrency: The number of concurrent consumers allowed for
             processing the task queue. Must be at least 1. Defaults to the
@@ -173,7 +113,7 @@ class TriggerEngine:
         if drain_timeout <= 0:
             raise ValueError("drain_timeout must be a positive number")
 
-        self.workflow_executor: BaseWorkflowConfigExecutor = workflow_executor  # type: ignore[assignment]
+        self.workflow_executor: WorkflowExecutor = workflow_executor  # type: ignore[assignment]
         self.consumer_concurrency = consumer_concurrency
         self.triggers: Dict[str, TriggerBase] = {}
         self._running = False
@@ -196,9 +136,7 @@ class TriggerEngine:
     def has_workflow_executor(self) -> bool:
         return self.workflow_executor is not None
 
-    def set_workflow_executor(
-        self, workflow_executor: BaseWorkflowConfigExecutor
-    ) -> None:
+    def set_workflow_executor(self, workflow_executor: WorkflowExecutor) -> None:
         """
         Sets the workflow executor for the current object. This method allows replacing
         or updating the existing workflow executor with a new instance that adheres to
@@ -206,7 +144,7 @@ class TriggerEngine:
 
         :param workflow_executor: The workflow executor instance is responsible for
             managing workflow configurations.
-        :type workflow_executor: BaseWorkflowConfigExecutor
+        :type workflow_executor: WorkflowExecutor
         :return: None
         """
         self.workflow_executor = workflow_executor

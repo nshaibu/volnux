@@ -66,15 +66,23 @@ D7. `revoke()` is implemented.
 """
 
 import asyncio
+import json
 import logging
-import os
-
-from volnux.config import setting
+import time
 import warnings
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, TYPE_CHECKING
 
-from .base import BaseWorkflowConfigExecutor
+from volnux.config import setting
+from volnux.context import (
+    dispatch_worker_task,
+    get_current_correlation_id,
+    inject_carrier,
+    volnux_context,
+)
+from volnux.engine.workflows.workflow import WorkflowExecutionError
+
+from .base import WorkflowExecutor
 
 if TYPE_CHECKING:
     from volnux.engine.workflows import WorkflowRegistry
@@ -95,7 +103,7 @@ def _get_worker_engine():
             "Volnux engine is not initialised on this Celery worker. "
             "Ensure the worker was started with VOLNUX_PROJECT_DIR set "
             "and the worker_process_init signal is connected. "
-            "See CeleryWorkflowExecutor.register_worker_init()."
+            "See register_worker_init()."
         )
     return _WORKER_ENGINE
 
@@ -131,7 +139,8 @@ def register_worker_init(celery_app, project_dir: Union[str, Path]) -> None:
             logger.info(
                 "Worker process init: loading Volnux engine from %s", project_dir
             )
-            _WORKER_ENGINE = initialise_workflows(project_dir)
+            # (initialise_workflows is a coroutine; this signal handler is not)
+            _WORKER_ENGINE = asyncio.run(initialise_workflows(project_dir))
             logger.info("Volnux engine initialised on worker process")
         except Exception as exc:
             logger.critical(
@@ -144,7 +153,7 @@ def register_worker_init(celery_app, project_dir: Union[str, Path]) -> None:
             raise
 
 
-class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
+class CeleryWorkflowExecutor(WorkflowExecutor):
     """
     Dispatches workflow execution to Celery workers.
 
@@ -155,7 +164,7 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
     Setup (two-step)
     ----------------
     Step 1 — Register worker init (in your Celery app module):
-        from volnux.executors.celery_workflow import register_worker_init
+        from volnux.engine.workflows.trigger.executors.celery import register_worker_init
         register_worker_init(celery_app, project_dir="/opt/volnux")
 
     Step 2 — Create executor (in WorkflowConfig.ready()):
@@ -182,6 +191,7 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
         task_soft_time_limit: Optional[int] = None,
         task_time_limit: Optional[int] = None,
         poll_interval: Optional[float] = None,
+        result_timeout: Optional[float] = None,
         **celery_kwargs,
     ):
         """
@@ -224,6 +234,11 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
                 Lower = more responsive, higher = lower backend load.
                 Default: 0.5s.
 
+            result_timeout:
+                Seconds ``execute()`` waits for the result before it revokes the
+                task and raises. None: the ``CELERY_EXECUTOR_RESULT_TIMEOUT``
+                setting (wait indefinitely unless it is set).
+
             **celery_kwargs:
                 Additional keyword arguments forwarded to the Celery
                 constructor when ``broker_url`` is provided.
@@ -244,8 +259,15 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
 
         # (None: the CELERY_EXECUTOR_QUEUE / CELERY_EXECUTOR_POLL_INTERVAL settings)
         self._queue = queue or setting("CELERY_EXECUTOR_QUEUE", "volnux_workflows")
-        self._task_soft_time_limit = task_soft_time_limit
-        self._task_time_limit = task_time_limit
+        self._task_soft_time_limit = _optional_number(
+            task_soft_time_limit, "CELERY_EXECUTOR_SOFT_TIME_LIMIT"
+        )
+        self._task_time_limit = _optional_number(
+            task_time_limit, "CELERY_EXECUTOR_TIME_LIMIT"
+        )
+        self._result_timeout = _optional_number(
+            result_timeout, "CELERY_EXECUTOR_RESULT_TIMEOUT"
+        )
         self._poll_interval = float(
             poll_interval
             if poll_interval is not None
@@ -270,7 +292,7 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
 
         # Task name is queue-scoped so multiple executors with different queues
         # coexist without overwriting each other's registrations.
-        self._task_name = f"volnux.run_workflow.{queue}"
+        self._task_name = f"volnux.run_workflow.{self._queue}"
         self._task = self._register_task()
 
         # Track submitted tasks for revocation and status
@@ -298,12 +320,25 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
 
         Raises:
             WorkflowExecutionError: If the workflow fails or is revoked.
-            ValueError:             If workflow_name is not registered.
         """
-        from volnux.exceptions import WorkflowExecutionError
-
         project_dir = self._resolve_project_dir()
         execution_id = _new_execution_id()
+
+        # The payload is a new dict: the caller's ``params`` are not touched. The
+        # carrier is the context of this process (its non-secret configuration,
+        # the workflow/trace/correlation ids); the worker runs under it.
+        with volnux_context(
+            workflow_id=workflow_name,
+            execution_id=execution_id,
+            correlation_id=get_current_correlation_id() or execution_id,
+        ):
+            payload = inject_carrier(
+                {
+                    "workflow_name": workflow_name,
+                    "params": params,
+                    "project_dir": str(project_dir),
+                }
+            )
 
         logger.info(
             "Dispatching workflow %r to queue %r — execution_id=%s",
@@ -313,10 +348,10 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
         )
 
         try:
-            celery_result = await asyncio.get_event_loop().run_in_executor(
+            celery_result = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: self._task.apply_async(
-                    args=(workflow_name, params, str(project_dir)),
+                    args=(payload,),
                     queue=self._queue,
                     task_id=execution_id,
                 ),
@@ -352,7 +387,7 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
         finally:
             self._pending.pop(execution_id, None)
 
-    def revoke(self, task_id: str, terminate: bool = False) -> None:
+    def revoke(self, task_id: str, terminate: bool = False) -> None:  # noqa: D401
         """
         Revoke a pending or running Celery task.
 
@@ -418,7 +453,7 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
             return stats, active, reserved
 
         try:
-            stats, active, reserved = await asyncio.get_event_loop().run_in_executor(
+            stats, active, reserved = await asyncio.get_running_loop().run_in_executor(
                 None, _inspect
             )
             return {
@@ -459,9 +494,12 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
         Raises:
             WorkflowExecutionError: If the task failed or was revoked.
         """
-        from volnux.exceptions import WorkflowExecutionError
-
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
+        deadline = (
+            time.monotonic() + self._result_timeout
+            if self._result_timeout is not None
+            else None
+        )
 
         while True:
             # Run the blocking ready() check in a thread — never block the
@@ -469,6 +507,13 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
             is_ready = await loop.run_in_executor(None, celery_result.ready)
             if is_ready:
                 break
+            if deadline is not None and time.monotonic() >= deadline:
+                self.revoke(execution_id, terminate=True)
+                raise WorkflowExecutionError(
+                    f"Workflow {workflow_name!r} gave no result within "
+                    f"{self._result_timeout}s; the task was revoked — "
+                    f"execution_id={execution_id}"
+                )
             await asyncio.sleep(self._poll_interval)
 
         # Task is done — read the terminal state exactly once
@@ -524,56 +569,57 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
             reject_on_worker_lost=True,  # Requeue if worker dies mid-task
             track_started=True,
         )
-        def _volnux_run_workflow(
-            workflow_name: str,
-            params: Dict[str, Any],
-            project_dir: str,
-        ) -> Dict[str, Any]:
+        @dispatch_worker_task
+        def _volnux_run_workflow(payload: Dict[str, Any]) -> Dict[str, Any]:
             """
             Execute a Volnux workflow inside a Celery worker process.
 
-            Runs in a fresh asyncio event loop per invocation (asyncio.run).
-            Uses the singleton engine initialised at worker startup — never
-            calls initialise_workflows() itself.
+            ``dispatch_worker_task`` activates the context the executor injected
+            (the dispatcher's configuration and ids) for the whole call. The
+            workflow runs in a fresh asyncio event loop (``asyncio.run``), which
+            starts from the active context. Uses the singleton engine initialised
+            at worker startup — never calls initialise_workflows() itself.
 
             Args:
-                workflow_name: Workflow to execute.
-                params:        User-provided workflow parameters. Not mutated.
-                project_dir:   Project directory path (for error context only).
-                               The engine is already initialised from this path.
+                payload: ``workflow_name``, ``params`` (the user's workflow
+                    parameters, not mutated), ``project_dir`` (for error context
+                    only; the engine is already initialised from it) and the
+                    context carrier.
             """
-            import asyncio as _asyncio
-            from volnux.exceptions import WorkflowExecutionError as _WFError
+            workflow_name = payload["workflow_name"]
+            params = payload.get("params") or {}
+            project_dir = payload.get("project_dir")
 
             engine = _get_worker_engine()
             registry = engine.get_workflow_registry()
             config = registry.get_workflow_config(workflow_name)
 
             if config is None:
-                raise _WFError(
+                raise WorkflowExecutionError(
                     f"Workflow {workflow_name!r} is not registered on this worker. "
                     f"Ensure the workflow is declared in WorkflowConfig.ready() "
                     f"and the worker's project at {project_dir!r} includes it."
                 )
 
-            # asyncio.run() creates a fresh event loop for each task invocation.
-            # This is the correct pattern for synchronous Celery workers running
-            # async Volnux workflows — it guarantees no loop sharing between tasks.
+            run_type = params.get("run_type", "single")
+            workflow_params = {k: v for k, v in params.items() if k != "run_type"}
+
             try:
-                result = _asyncio.run(
-                    config.run_workflow_async(
-                        params=params,
-                        run_type="single",
-                    )
+                result = asyncio.run(
+                    config.run_workflow(params=workflow_params, run_type=run_type)
                 )
             except Exception as exc:
-                raise _WFError(
+                if type(exc).__name__ == "SoftTimeLimitExceeded":
+                    raise  # Celery's own signal: let Celery handle it
+                raise WorkflowExecutionError(
                     f"Workflow {workflow_name!r} raised an exception: {exc}"
                 ) from exc
 
             return {
                 "workflow_name": workflow_name,
-                "result": result,
+                # (the result backend serialises JSON: what JSON cannot hold, such
+                # as the Pipeline object, is returned as its text)
+                "result": json.loads(json.dumps(result, default=str)),
             }
 
         return _volnux_run_workflow
@@ -645,14 +691,22 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
             return Path(env_dir)
         # Fall back to the directory that contains init.py
         for parent in Path.cwd().parents:
-            if (parent / "init.py").exists() and (parent / "config.py").exists():
+            if (parent / "init.py").exists() and (
+                (parent / "settings.py").exists() or (parent / "config.py").exists()
+            ):
                 return parent
         return Path.cwd()
 
 
+def _optional_number(value: Optional[float], setting_name: str) -> Optional[float]:
+    """``value`` if given, else the setting (None when it is not set)."""
+    if value is None:
+        value = setting(setting_name, None)
+    return None if value is None else float(value)
+
+
 def _new_execution_id() -> str:
     """Generate a time-sortable unique execution ID for a Celery task."""
-    import time
     import uuid
 
     return f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"

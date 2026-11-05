@@ -475,6 +475,12 @@ class RedisStorePushPopMixin(RedisMessagingMixin, PushPopCapabilityMixin):
         with _redis_errors(f"Failed to delete queue {key}"):
             return bool(await self._execute("delete", key))
 
+    async def queue_expire(self, key: str, ttl: float) -> bool:
+        if ttl <= 0:
+            raise ValueError(f"ttl must be > 0, got {ttl!r}")
+        with _redis_errors(f"Failed to set the expiry of queue {key}"):
+            return bool(await self._execute("pexpire", key, max(1, int(ttl * 1000))))
+
     async def queue_length(self, key: str) -> int:
         with _redis_errors(f"Failed to get queue length for {key}"):
             return await self._execute("llen", key)

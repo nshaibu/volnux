@@ -3,9 +3,13 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
+from typing import Any, Dict, List, Literal, Optional, Union, cast, TYPE_CHECKING
 
-from .base import BaseWorkflowConfigExecutor
+from volnux.config import setting
+from volnux.context import get_current_correlation_id, volnux_context
+from volnux.engine.workflows.workflow import WorkflowExecutionError
+
+from .base import WorkflowExecutor
 
 if TYPE_CHECKING:
     from volnux.engine.workflows import WorkflowRegistry
@@ -29,7 +33,7 @@ class _TaskRecord:
         return f"{self.workflow_name}-{self.execution_id}"
 
 
-class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
+class AsyncTaskWorkflowExecutor(WorkflowExecutor):
     """
     Executes workflows as asyncio Tasks in the same event loop.
 
@@ -52,6 +56,13 @@ class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
     that exceeds the timeout is cancelled — all running events within it
     receive CancelledError and checkpoint before stopping.
 
+    Context
+    -------
+    Each workflow runs under a ``volnux.context`` of its own (workflow id,
+    execution id, correlation id) on top of the context of the caller, so the
+    workflow sees the configuration that was active when it was started and
+    concurrent workflows do not see each other's identifiers.
+
     Cancellation
     ------------
     Cancellation via ``cancel_workflow()`` awaits the task's completion so
@@ -63,7 +74,7 @@ class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
     def __init__(
         self,
         workflow_registry: "WorkflowRegistry",
-        max_concurrent: int = 10,
+        max_concurrent: Optional[int] = None,
         timeout: Optional[float] = None,
     ):
         """
@@ -76,12 +87,19 @@ class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
                 Maximum number of concurrently executing workflows.
                 Additional calls to execute() suspend until a slot opens.
                 Additional calls to execute_background() queue internally.
-                Must be >= 1.
+                Must be >= 1. Defaults to the ``ASYNC_EXECUTOR_MAX_CONCURRENT``
+                setting.
             timeout:
                 Maximum workflow duration in seconds. The workflow is
                 cancelled and WorkflowExecutionError is raised if exceeded.
-                None means no timeout.
+                None means the ``ASYNC_EXECUTOR_TIMEOUT`` setting (no timeout
+                unless it is set).
         """
+        if max_concurrent is None:
+            max_concurrent = int(setting("ASYNC_EXECUTOR_MAX_CONCURRENT", 10))
+        if timeout is None:
+            configured = setting("ASYNC_EXECUTOR_TIMEOUT", None)
+            timeout = float(configured) if configured is not None else None
         if max_concurrent < 1:
             raise ValueError(f"max_concurrent must be >= 1, got {max_concurrent}.")
 
@@ -118,7 +136,6 @@ class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
 
         Raises:
             WorkflowExecutionError: On failure, timeout, or cancellation.
-            ValueError:             If workflow_name is not registered.
         """
 
         execution_id = self._new_execution_id()
@@ -346,7 +363,14 @@ class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
             params=params,
             execution_id=execution_id,
         )
-        task = asyncio.create_task(coro, name=task_name)
+        # A task takes the context that is active when it is created, so the
+        # workflow's context is entered around the creation, not inside the task.
+        with volnux_context(
+            workflow_id=workflow_name,
+            execution_id=execution_id,
+            correlation_id=get_current_correlation_id() or execution_id,
+        ):
+            task = asyncio.create_task(coro, name=task_name)
         record = _TaskRecord(
             execution_id=execution_id,
             workflow_name=workflow_name,
@@ -429,17 +453,27 @@ class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
         execution_id: str,
     ) -> Any:
         """
-        Resolve the WorkflowConfig and delegate to run_workflow_async().
+        Resolve the WorkflowConfig and run it.
 
         Separated from _run() so subclasses can override only the dispatch
         logic without duplicating the task lifecycle boilerplate.
+
+        ``params["run_type"]`` (``"single"``, the default, or ``"batch"``) picks
+        how the workflow runs and is not passed on to it. The caller's dict is
+        not changed.
         """
+        if not self._workflow_registry.is_ready():
+            raise WorkflowExecutionError("Workflow registry is not ready.")
+
         config = self._workflow_registry.get_workflow_config(workflow_name)
         if config is None:
-            raise ValueError(
-                f"Workflow {workflow_name!r} is not registered. "
-                "Ensure it is declared in WorkflowConfig.ready()."
+            raise WorkflowExecutionError(
+                f"Workflow {workflow_name!r} is not registered "
+                "(workflow config not found)."
             )
+
+        run_type = cast(Literal["batch", "single"], params.get("run_type", "single"))
+        workflow_params = {k: v for k, v in params.items() if k != "run_type"}
 
         logger.debug(
             "Dispatching workflow %r to config %r — execution_id=%s",
@@ -448,10 +482,7 @@ class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
             execution_id,
         )
 
-        return await config.run_workflow_async(
-            params=params,
-            run_type="single",
-        )
+        return await config.run_workflow(params=workflow_params, run_type=run_type)
 
     async def _cancel_record(
         self,

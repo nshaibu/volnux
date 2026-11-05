@@ -1,39 +1,39 @@
 import logging
 import typing
 import asyncio
-import redis
 from celery import Celery, Task
 
 from .stream import (
-    batch_ttl_seconds,
+    RemoteBatch,
     batch_key_for,
-    done_sentinel,
-    encode_batch,
+    batch_route,
+    batch_ttl_seconds,
+    done_entry,
 )
 from .task import RemoteTaskPayload, RemoteTaskResult, execute_remote_task
 
 logger = logging.getLogger(__name__)
 
-# Batches are appended as JSON to a per-task Redis list (see .stream); the
-# requester reads until the {"type": "done"} sentinel or the key expires.
+# Batches are pushed as RemoteBatch messages onto a per-task queue of the messaging
+# backend (see .stream); the requester reads until the "done" entry or the queue
+# expires.
 
 
 def make_volnux_celery_task(
     celery_app: Celery,
-    redis_client: redis.Redis,
     task_name: str = "volnux.execute_remote_event",
 ) -> typing.Callable:
     """
     Create a Celery task for Volnux event execution.
 
-    Wires up a Redis-backed flush callback so that batch and aggregate mode
-    contexts stream their results incrementally rather than returning one
-    large payload. The requester polls the Redis list at
-    ``volnux:batches:{state_id}:{task_id}`` (see ``stream.batch_key_for``) to reconstruct the full result stream.
+    Wires up a flush callback that pushes batches to the messaging backend so
+    that batch and aggregate mode contexts stream their results incrementally
+    rather than returning one large payload. The requester reads the queue of
+    the task (``stream.BatchStreamReader``) to reconstruct the full result stream.
+    The backend is the ``messaging`` entry of ``DATABASES``; it must be shared by
+    the workers and the requester.
 
     :param celery_app: The Celery application to register the task on.
-    :param redis_client: Redis client used for batch streaming. Must be
-        accessible from all workers that will run this task.
     :param task_name: Celery task name. Override when registering multiple
         instances to avoid duplicate-name errors.
     """
@@ -52,58 +52,67 @@ def make_volnux_celery_task(
         """
         Execute a Volnux event on a Celery worker.
 
-        Streams result/error batches to Redis as they are produced, then
-        pushes a ``{"type": "done"}`` sentinel so the requester knows the
+        Streams result/error batches to the messaging backend as they are
+        produced, then pushes a ``done`` entry so the requester knows the
         stream is complete.
 
         :param payload_dict: Serialised ``RemoteTaskPayload``.
         :returns: Serialised ``RemoteTaskResult`` (summary only — bulk data
-            is in Redis).
+            is in the stream).
         """
         payload = RemoteTaskPayload.from_dict(payload_dict)
-        batch_key = batch_key_for(payload.mini_context["state_id"], payload.task_id)
+        state_id = payload.mini_context["state_id"]
+        batch_key = batch_key_for(state_id, payload.task_id)
+        route = batch_route(state_id, payload.task_id)
 
-        def flush_callback(batch: dict) -> None:
-            """Write one batch to the Redis stream list."""
+        async def flush_callback(batch: dict) -> None:
+            """Push one batch onto the task's stream."""
             try:
-                redis_client.rpush(batch_key, encode_batch(batch))
-                redis_client.expire(batch_key, batch_ttl_seconds())
-            except redis.RedisError:
+                await RemoteBatch.push(
+                    RemoteBatch.from_batch(batch),
+                    ttl=batch_ttl_seconds(),
+                    route_override=route,
+                )
+            except Exception:
                 logger.exception(
-                    "Failed to write batch to Redis for state_id=%s type=%s count=%d",
+                    "Failed to push batch to the stream for state_id=%s type=%s count=%d",
                     payload.mini_context["state_id"],
                     batch.get("type"),
                     batch.get("count", 0),
                 )
                 raise  # propagate so MiniExecutionContext records the failure
 
-        status: typing.Optional[str] = "FAILED"  # until the task has finished
-        try:
-            result = asyncio.run(
-                execute_remote_task(
+        async def push_done(status: typing.Optional[str]) -> None:
+            # Always pushed, so the requester is never left waiting on a queue that
+            # will never receive a "done" entry. A failure here is only logged.
+            try:
+                await RemoteBatch.push(
+                    done_entry(status), ttl=batch_ttl_seconds(), route_override=route
+                )
+            except Exception:
+                logger.exception("Failed to push done entry for state_id=%s", state_id)
+
+        async def run():
+            # (batches and the done entry go out on one loop: a backend's
+            # connections belong to the loop they were made on)
+            status: typing.Optional[str] = "FAILED"  # until the task has finished
+            try:
+                result = await execute_remote_task(
                     payload, flush_callback=flush_callback, batch_key=batch_key
                 )
-            )
-            status = result.context_delta.get("final_status")
-        except Exception:
-            logger.exception(
-                "execute_remote_task failed for task_id=%s state_id=%s",
-                payload.task_id,
-                payload.mini_context.get("state_id"),
-            )
-            raise
-
-        finally:
-            # Always push the sentinel so the requester is never left
-            # blocking on a list that will never receive a "done" entry.
-            try:
-                redis_client.rpush(batch_key, done_sentinel(status))
-                redis_client.expire(batch_key, batch_ttl_seconds())
-            except redis.RedisError:
+                status = result.context_delta.get("final_status")
+                return result
+            except Exception:
                 logger.exception(
-                    "Failed to push done sentinel for state_id=%s",
-                    payload.mini_context.get("state_id"),
+                    "execute_remote_task failed for task_id=%s state_id=%s",
+                    payload.task_id,
+                    state_id,
                 )
+                raise
+            finally:
+                await push_done(status)
+
+        result = asyncio.run(run())
 
         return result.to_dict()
 

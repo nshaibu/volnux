@@ -238,11 +238,34 @@ class InMemoryPushPopMixin(PushPopCapabilityMixin):
             self._queues: Dict[str, _AsyncDeque] = {}
             self._queues_lock = asyncio.Lock()
 
+    def _drop_if_expired(self, key: str) -> None:
+        """Forget a queue whose ``queue_expire`` deadline has passed. Call with the
+        queues lock held."""
+        deadlines = getattr(self, "_queue_deadlines", None)
+        if deadlines and key in deadlines and time.monotonic() >= deadlines[key]:
+            del deadlines[key]
+            self._queues.pop(key, None)
+
     async def _get_or_create_queue(self, key: str) -> _AsyncDeque:
         async with self._queues_lock:
+            self._drop_if_expired(key)
             if key not in self._queues:
                 self._queues[key] = _AsyncDeque()
             return self._queues[key]
+
+    async def queue_expire(self, key: str, ttl: float) -> bool:
+        if ttl <= 0:
+            raise ValueError(f"ttl must be > 0, got {ttl!r}")
+        if not hasattr(self, "_queues_lock"):
+            self.__post_init_queues__()
+        async with self._queues_lock:
+            self._drop_if_expired(key)
+            if key not in self._queues:
+                return False
+            if not hasattr(self, "_queue_deadlines"):
+                self._queue_deadlines: Dict[str, float] = {}
+            self._queue_deadlines[key] = time.monotonic() + ttl
+            return True
 
     async def push(
         self, key: str, *values: Any, side: QueueSide = QueueSide.RIGHT
@@ -260,6 +283,7 @@ class InMemoryPushPopMixin(PushPopCapabilityMixin):
 
     async def _get_queue(self, key: str, create: bool) -> Optional[_AsyncDeque]:
         async with self._queues_lock:
+            self._drop_if_expired(key)
             q = self._queues.get(key)
             if q is None and create:
                 q = self._queues[key] = _AsyncDeque()
@@ -321,12 +345,15 @@ class InMemoryPushPopMixin(PushPopCapabilityMixin):
         if not hasattr(self, "_queues_lock"):
             self.__post_init_queues__()
         async with self._queues_lock:
+            self._drop_if_expired(key)
+            getattr(self, "_queue_deadlines", {}).pop(key, None)
             return self._queues.pop(key, None) is not None
 
     async def queue_length(self, key: str) -> int:
         if not hasattr(self, "_queues_lock"):
             self.__post_init_queues__()
         async with self._queues_lock:
+            self._drop_if_expired(key)
             q = self._queues.get(key)
         return q.length() if q else 0
 
@@ -336,6 +363,7 @@ class InMemoryPushPopMixin(PushPopCapabilityMixin):
         if not hasattr(self, "_queues_lock"):
             self.__post_init_queues__()
         async with self._queues_lock:
+            self._drop_if_expired(key)
             q = self._queues.get(key)
         if not q:
             return []

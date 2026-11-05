@@ -47,6 +47,7 @@ REMOVED_SETTINGS: typing.Dict[str, str] = {
     "PROJECT_ROOT_DIR": "BASE_DIR",
     "API_CORS_ORIGINS": "CORS_ALLOWED_ORIGINS",
     "DEFAULT_EVENT_VERSIONING": "DEFAULT_EVENT_NAMESPACE (events use semantic versioning only)",
+    "REDIS_CHECKPOINT_URL": "DATABASES['messaging'] (the Kubernetes executor and remote batches use the messaging backend)",
 }
 
 

@@ -193,20 +193,17 @@ class TestExecutors:
             2,
             2.0,
         )
-        assert e._redis_url == "redis://localhost:6379/0"
 
     def test_k8s_environment_and_arguments(self, k8s, monkeypatch):
         monkeypatch.setenv("VOLNUX_K8S_NAMESPACE", "volnux")
         monkeypatch.setenv("VOLNUX_K8S_IMAGE", "reg/volnux:2.1.0")
         monkeypatch.setenv("VOLNUX_K8S_BACKOFF_LIMIT", "0")
-        monkeypatch.setenv("VOLNUX_REDIS_CHECKPOINT_URL", "redis://r:1/2")
         e = k8s(Mock())
         assert (e._namespace, e._image, e._backoff_limit) == (
             "volnux",
             "reg/volnux:2.1.0",
             0,
         )
-        assert e._redis_url == "redis://r:1/2"
         assert k8s(Mock(), namespace="mine")._namespace == "mine"
 
     def test_k8s_key_ttl(self, monkeypatch):

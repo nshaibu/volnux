@@ -275,6 +275,18 @@ class PushPopCapabilityMixin:
             Deserialised elements from start to stop, inclusive.
         """
 
+    async def queue_expire(self, key: str, ttl: float) -> bool:
+        """Make a queue (and what is in it) disappear ``ttl`` seconds from now.
+
+        A later call moves the deadline again, so a producer that keeps pushing
+        keeps the queue alive. Returns True if the queue existed. A backend that
+        cannot expire a queue says so rather than keeping data for ever.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support expiring a queue (ttl); "
+            "push without a ttl, or use a Redis or in-memory messaging backend."
+        )
+
     async def queue_delete(self, key: str) -> bool:
         """Delete a queue and everything in it.
 

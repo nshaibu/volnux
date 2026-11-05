@@ -10,7 +10,6 @@ from fastapi import FastAPI
 from typing import Optional, TYPE_CHECKING, Callable
 
 from volnux.app import get_current_app
-from volnux.models import NodeHeartbeat
 
 if TYPE_CHECKING:
     from volnux.engine.workflows.trigger import TriggerEngine
@@ -36,8 +35,7 @@ async def start_api_server(
 
     This function initializes and starts the FastAPI application, configures
     OpenTelemetry (OTel) for distributed tracing, launches the Prometheus
-    metrics server, starts the NodeHeartbeat service for Redis-based
-    liveness checks, and activates the TriggerEngine for registered triggers.
+    metrics server, and activates the TriggerEngine for registered triggers.
     It also configures the Uvicorn server for handling HTTP requests, with
     options for development features like hot reload and detailed logging.
     Graceful shutdown is ensured by reacting to a stop event triggered by signal
@@ -100,11 +98,6 @@ async def start_api_server(
 
     prometheus_shutdown = _start_prometheus(metrics_port)
 
-    # Start NodeHeartbeat
-    # Publishes volnux:node:alive:{node_id} to Redis with TTL.
-    # Other nodes and administrative tooling use this for liveness detection.
-    heartbeat = await _start_heartbeat()
-
     # Start TriggerEngine
     # Arms all triggers registered via WorkflowConfig.ready().
     # TriggerEngine must start AFTER Uvicorn is up so that WebhookTrigger
@@ -163,7 +156,6 @@ async def start_api_server(
         # Graceful shutdown — always runs
         await _shutdown(
             trigger_engine=trigger_engine,
-            heartbeat=heartbeat,
             otel_shutdown=otel_shutdown,
             prometheus_shutdown=prometheus_shutdown,
         )

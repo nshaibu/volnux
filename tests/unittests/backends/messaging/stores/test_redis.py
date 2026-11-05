@@ -418,6 +418,36 @@ class TestPush:
         cursor.rpush.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_queue_expire_sets_the_expiry_in_milliseconds(self, backend, cursor):
+        cursor.pexpire.return_value = 1
+        assert await backend.queue_expire("q", 2.5) is True
+        cursor.pexpire.assert_called_once_with("q", 2500)
+
+    @pytest.mark.asyncio
+    async def test_queue_expire_of_a_missing_queue_is_false(self, backend, cursor):
+        cursor.pexpire.return_value = 0
+        assert await backend.queue_expire("q", 5) is False
+
+    @pytest.mark.asyncio
+    async def test_queue_expire_has_a_one_millisecond_floor(self, backend, cursor):
+        cursor.pexpire.return_value = 1
+        await backend.queue_expire("q", 0.0001)
+        cursor.pexpire.assert_called_once_with("q", 1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ttl", [0, -3])
+    async def test_queue_expire_needs_a_positive_ttl(self, backend, cursor, ttl):
+        with pytest.raises(ValueError, match="ttl"):
+            await backend.queue_expire("q", ttl)
+        cursor.pexpire.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_queue_expire_wraps_redis_errors(self, backend, cursor):
+        cursor.pexpire.side_effect = RedisConnectionError("down")
+        with pytest.raises(ConnectionError, match="expiry of queue q: down"):
+            await backend.queue_expire("q", 5)
+
+    @pytest.mark.asyncio
     async def test_push_wraps_redis_errors(self, backend, cursor):
         cursor.rpush.side_effect = RedisConnectionError("down")
         with pytest.raises(ConnectionError, match="Failed to push to q: down"):

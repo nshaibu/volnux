@@ -35,14 +35,11 @@ async def initialise_workflows(
     if not project_path.exists():
         raise FileNotFoundError(f"Project path does not exist: {project_path}")
 
-    from volnux.config import VolnuxConfig
+    from volnux.config import VolnuxConfig, setting
     from volnux.import_utils import import_string as import_class
     from volnux.engine.workflows import get_workflow_registry
     from volnux.engine.workflows.trigger import get_trigger_engine
-    from volnux.engine.workflows.trigger.engine import (
-        WorkflowConfigExecutor,
-        BaseWorkflowConfigExecutor,
-    )
+    from volnux.engine.workflows.trigger.executors.base import WorkflowExecutor
     from volnux.reporting import ensure_pipeline_reporters_installed
 
     # Load project configuration
@@ -103,17 +100,28 @@ async def initialise_workflows(
 
     # Configure a workflow executor if not already set by init.py
     if not trigger_engine.has_workflow_executor():
-        executor: typing.Union[str, typing.Type["BaseWorkflowConfigExecutor"]] = (
-            await volnux_config.get_async(
-                "DEFAULT_WORKFLOW_EXECUTOR", WorkflowConfigExecutor
-            )
+        executor_path = setting("DEFAULT_WORKFLOW_EXECUTOR", None)
+        if executor_path is None:
+            from volnux.conf import global_settings
+
+            executor_path = global_settings.DEFAULT_WORKFLOW_EXECUTOR
+
+        executor_class = (
+            import_class(executor_path)
+            if isinstance(executor_path, str)
+            else executor_path
         )
+        if not (
+            isinstance(executor_class, type)
+            and issubclass(executor_class, WorkflowExecutor)
+        ):
+            raise TypeError(
+                f"DEFAULT_WORKFLOW_EXECUTOR must name a WorkflowExecutor subclass, "
+                f"got {executor_path!r}"
+            )
 
-        if isinstance(executor, str):
-            executor: typing.Type[BaseWorkflowConfigExecutor] = import_class(executor)  # type: ignore[assignment]
-
-        trigger_engine.set_workflow_executor(executor(workflow_registry))
-        logger.debug("Set default workflow executor: WorkflowConfigExecutor")
+        trigger_engine.set_workflow_executor(executor_class(workflow_registry))
+        logger.debug("Set default workflow executor: %s", executor_class.__name__)
 
     logger.info(
         "Initialization complete — trigger engine ready with %d workflow(s)",

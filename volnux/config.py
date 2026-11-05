@@ -11,7 +11,7 @@ from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass, asdict, field
 from types import ModuleType
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, Union
 from cryptography.exceptions import InvalidSignature
 
 from volnux.conf import (
@@ -119,6 +119,19 @@ def _coerce_env(name: str, raw: str, current: Any) -> Any:
     return raw
 
 
+def _jsonable(value: Any) -> Any:
+    """``value`` as something JSON can hold: a ``Path`` (``BASE_DIR``...) or any
+    other object JSON does not know becomes its text, containers are converted
+    item by item."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v) for v in value]
+    return str(value)
+
+
 @dataclass
 class ConfigEntry:
     value: Any
@@ -155,7 +168,7 @@ class ConfigEntry:
         """Serializes ConfigEntry into a JSON-compatible dictionary."""
         return {
             "name": self.name,
-            "value": self.value,
+            "value": _jsonable(self.value),
             "timestamp": self.timestamp,
             "origin_mesh_node": self.origin_mesh_node,
             "signature": self.signature.hex() if self.signature else None,
@@ -949,7 +962,29 @@ class VolnuxConfig:
         return f"VolnuxConfig <len={len(self._store)}>"
 
 
+# Set by ``volnux.context``: returns the configuration of the active context (the
+# one a Celery worker or Kubernetes pod rebuilt from the dispatcher's carrier), or
+# None when no context carries one.
+_active_context_config: Optional[Callable[[], Optional["VolnuxConfig"]]] = None
+
+
 def setting(name: str, default: Any = _MISSING) -> Any:
-    """``VolnuxConfig.get_instance().resolve(name, default)``: the current value of a
-    setting (environment, then config file, then ``settings.py``, then ``default``)."""
-    return VolnuxConfig.get_instance().resolve(name, default)
+    """The current value of a setting (environment, then config file, then
+    ``settings.py``, then ``default``).
+
+    Inside a ``volnux.context`` that carries a configuration (a workflow running on
+    a worker, in a pod, or as a task) the value is looked up there first, so the
+    workflow sees the settings of the process that started it. A setting the carried
+    configuration does not have (the secrets, which are never carried) comes from
+    this process's own configuration, as does everything outside a context.
+    """
+    instance = VolnuxConfig.get_instance()
+    if _active_context_config is not None:
+        active = _active_context_config()
+        if active is not None and active is not instance:
+            if not instance._overridden(name)[0]:
+                try:
+                    return active.resolve(name)
+                except AttributeError:
+                    pass
+    return instance.resolve(name, default)

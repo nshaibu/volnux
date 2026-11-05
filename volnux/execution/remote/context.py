@@ -27,6 +27,7 @@ Changes from original
 
 from __future__ import annotations
 
+import inspect
 import logging
 import math
 import random
@@ -186,7 +187,8 @@ class MiniExecutionContext:
     end_time: float = 0.0
 
     # Flush callback (injected by executor)
-    # Signature: callback({"type": str, "data": list, "count": int}) -> None
+    # Signature: callback({"type": str, "data": list, "count": int}) -> None, or a
+    # coroutine function (its result is awaited by add_result / add_error / finalize)
     _flush_callback: typing.Optional[typing.Callable] = field(default=None, repr=False)
 
     # Metadata
@@ -199,6 +201,9 @@ class MiniExecutionContext:
 
     def __post_init__(self) -> None:
         self._lock = asyncio.Lock()
+        # Batches an async flush callback has been called with and that still have to
+        # be awaited (the ``_locked`` helpers are synchronous): see _await_flushes_locked.
+        self._awaiting: typing.List[typing.Awaitable] = []
 
     @property
     def id(self) -> str:
@@ -234,6 +239,7 @@ class MiniExecutionContext:
         """
         async with self._lock:
             self._add_result_locked(result_dict)
+            await self._await_flushes_locked()
 
     async def add_error(self, error_dict: typing.Dict) -> None:
         """
@@ -243,6 +249,7 @@ class MiniExecutionContext:
         """
         async with self._lock:
             self._add_error_locked(error_dict)
+            await self._await_flushes_locked()
 
     async def finalize(self) -> None:
         """
@@ -255,6 +262,7 @@ class MiniExecutionContext:
             if self.mode == "batch":
                 self._flush_results_locked()
                 self._flush_errors_locked()
+                await self._await_flushes_locked()
             if not self.end_time:  # (idempotent: the first call fixes the end time)
                 self.end_time = time.time()
 
@@ -476,7 +484,11 @@ class MiniExecutionContext:
             return
 
         try:
-            self._flush_callback(payload)
+            outcome = self._flush_callback(payload)
+            if inspect.isawaitable(outcome):
+                # An async callback: the entry points await it, in order, once the
+                # synchronous bookkeeping is done (still under the lock).
+                self._awaiting.append(outcome)
         except Exception:
             logger.exception(
                 "flush callback raised for state_id=%s type=%s count=%d",
@@ -485,6 +497,24 @@ class MiniExecutionContext:
                 payload.get("count", 0),
             )
             raise
+
+    async def _await_flushes_locked(self) -> None:
+        """Await the async flush callbacks started by the last operation, in order.
+        The first failure is raised (after the others are closed, so none is left
+        un-awaited). Caller must hold _lock."""
+        pending, self._awaiting = self._awaiting, []
+        for index, outcome in enumerate(pending):
+            try:
+                await outcome
+            except Exception:
+                logger.exception(
+                    "async flush callback raised for state_id=%s", self.state_id
+                )
+                for rest in pending[index + 1 :]:
+                    close = getattr(rest, "close", None)
+                    if close is not None:
+                        close()
+                raise
 
     def _aggregate_result_locked(self, result_dict: typing.Dict) -> None:
         """Update the running statistics for one result. Caller must hold _lock.

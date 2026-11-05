@@ -1,5 +1,4 @@
 import logging
-import asyncio
 import abc
 from typing import Dict, Any, TYPE_CHECKING
 
@@ -10,7 +9,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class BaseWorkflowConfigExecutor(abc.ABC):
+class WorkflowExecutor(abc.ABC):
+    """What a trigger uses to run a workflow.
+
+    Which one is used is the ``DEFAULT_WORKFLOW_EXECUTOR`` setting. An executor runs
+    the workflow in this process (``AsyncTaskWorkflowExecutor``) or ships it to a
+    Celery worker or a Kubernetes Job; wherever it runs, it runs under the
+    ``volnux.context`` that was active when it was called, so the workflow sees the
+    same configuration.
+    """
 
     def __init__(self, workflow_registry: "WorkflowRegistry"):
         self._workflow_registry = workflow_registry

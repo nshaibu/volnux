@@ -238,6 +238,14 @@ def test_the_redis_channel_settings_are_gone():
     assert "redis_channel" not in SOURCE
 
 
+def test_the_redis_checkpoint_url_is_gone():
+    # the Kubernetes executor and remote batches use DATABASES['messaging']
+    from volnux.conf import REMOVED_SETTINGS
+
+    assert "REDIS_CHECKPOINT_URL" not in NAMES
+    assert "messaging" in REMOVED_SETTINGS["REDIS_CHECKPOINT_URL"]
+
+
 def test_django_names_exist():
     for name in (
         "DEBUG",

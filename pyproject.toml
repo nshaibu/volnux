@@ -189,3 +189,5 @@ ignore_errors = true
 # Define the command name and its Python entry function
 # Format: command_name = "module.submodule:function_name"
 volnux = "volnux.cli:main.main"
+# Runs a workflow inside a Kubernetes Job pod (see KubernetesWorkflowExecutor)
+volnux-job-runner = "volnux.engine.workflows.trigger.executors.kubernetes:job_runner_main"

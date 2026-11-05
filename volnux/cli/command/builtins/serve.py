@@ -17,6 +17,26 @@ from ..base import BaseCommand, CommandCategory, CommandError
 logger = logging.getLogger(__name__)
 
 
+async def _check_broker(url: str):
+    """Whether the Celery broker answers: ``(ok, message)``. Celery's own
+    connection does the checking, so any broker Celery supports works."""
+    from volnux.concurrency.async_utils import to_thread
+
+    def _ping():
+        from kombu import Connection
+
+        with Connection(url, connect_timeout=3) as connection:
+            connection.ensure_connection(max_retries=1)
+        return url
+
+    try:
+        return True, await to_thread(_ping)
+    except ImportError:
+        return False, "celery (kombu) is not installed"
+    except Exception as exc:
+        return False, str(exc)
+
+
 class ServeCommand(BaseCommand):
     """
     Start the Volnux production server.
@@ -238,51 +258,43 @@ class ServeCommand(BaseCommand):
         """
         Validate that required backends are reachable before starting.
         Fails fast with a clear error on any critical dependency failure.
-        The API role requires all three backends.
-        The worker role requires checkpoints and broker but not OTel (advisory).
+
+        Every database of ``DATABASES`` must answer (the same check as
+        ``volnux check``, through the configured backends, so the connection
+        settings live in one place). The Celery broker is Celery's own
+        configuration and is checked with Celery's connection: required by the
+        API role (it registers ScheduleTrigger), advisory for workers.
         """
+        from volnux.cli.command.mixins.check import _check_backends
+
         errors = []
         warnings = []
 
-        # PostgreSQL — required for both roles
-        pg_config = getattr(engine, "postgres_config", {})
-        pg_ok, pg_msg = await _check_postgres(pg_config)
-        if not pg_ok:
-            errors.append(
-                f"PostgreSQL unreachable ({pg_msg}). "
-                "Set VOLNUX_POSTGRES_HOST and VOLNUX_POSTGRES_PASSWORD."
-            )
-        else:
-            logger.info("Pre-flight: PostgreSQL OK — %s", pg_msg)
+        for alias, ok, message in await _check_backends(engine):
+            if not ok:
+                errors.append(
+                    f"Database '{alias}' unreachable ({message}). "
+                    "Check DATABASES in your settings."
+                )
+            else:
+                logger.info("Pre-flight: database '%s' OK — %s", alias, message)
 
-        # Redis checkpoints — required for both roles
-        ckpt_url = setting("REDIS_CHECKPOINT_URL", "redis://localhost:6379/0")
-        ck_ok, ck_msg = await _check_redis(ckpt_url)
-        if not ck_ok:
-            errors.append(
-                f"Redis (checkpoints) unreachable at {ckpt_url} ({ck_msg}). "
-                "Set VOLNUX_REDIS_CHECKPOINT_URL."
-            )
-        else:
-            logger.info("Pre-flight: Redis checkpoints OK — %s", ck_msg)
-
-        # Redis broker — required for both roles (Celery ScheduleTrigger)
         broker_url = setting("REDIS_BROKER_URL", "redis://localhost:6380/0")
-        br_ok, br_msg = await _check_redis(broker_url)
+        br_ok, br_msg = await _check_broker(broker_url)
         if not br_ok:
             # Broker failure is a warning for worker, error for API
             # (API registers ScheduleTrigger which requires broker)
             if role == "api":
                 errors.append(
-                    f"Redis (broker) unreachable at {broker_url} ({br_msg}). "
+                    f"Celery broker unreachable at {broker_url} ({br_msg}). "
                     "Set VOLNUX_REDIS_BROKER_URL."
                 )
             else:
                 warnings.append(
-                    f"Redis (broker) unreachable — ScheduleTrigger will not fire."
+                    "Celery broker unreachable — ScheduleTrigger will not fire."
                 )
         else:
-            logger.info("Pre-flight: Redis broker OK — %s", br_msg)
+            logger.info("Pre-flight: Celery broker OK — %s", br_msg)
 
         # Log warnings
         for w in warnings:

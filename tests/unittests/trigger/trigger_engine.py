@@ -2,11 +2,11 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from volnux.engine.workflows.trigger.engine import (
-    TriggerEngine,
-    WorkflowConfigExecutor,
-    BaseWorkflowConfigExecutor,
+from volnux.engine.workflows.trigger.engine import TriggerEngine
+from volnux.engine.workflows.trigger.executors.asyncio_executor import (
+    AsyncTaskWorkflowExecutor,
 )
+from volnux.engine.workflows.trigger.executors.base import WorkflowExecutor
 from volnux.engine.workflows.workflow import WorkflowExecutionError  # WorkflowNotfound
 from volnux.engine.workflows.trigger.triggers.base import (
     TriggerBase,
@@ -27,7 +27,7 @@ def make_trigger(trigger_id: str = "t1", workflow_name: str = "wf1") -> MagicMoc
 
 
 def make_executor(registry: MagicMock = None) -> MagicMock:
-    executor = AsyncMock(spec=BaseWorkflowConfigExecutor)
+    executor = AsyncMock(spec=WorkflowExecutor)
     executor._workflow_registry = registry or make_registry()
     executor.get_workflow_registry = MagicMock(return_value=executor._workflow_registry)
     return executor
@@ -37,12 +37,16 @@ def make_registry(workflow_names: list = None) -> MagicMock:
     registry = MagicMock()
     registry.is_ready.return_value = True
 
+    configs = {}
+
     def get_config(name):
         if workflow_names is None or name in workflow_names:
-            cfg = MagicMock()
+            if name in configs:
+                return configs[name]
+            cfg = configs[name] = MagicMock()
             cfg.triggers = MagicMock()
             cfg.triggers.register = MagicMock()
-            cfg.run_workflow = MagicMock(return_value="result")
+            cfg.run_workflow = AsyncMock(return_value="result")
             return cfg
         return None
 
@@ -343,19 +347,19 @@ class TestHandleActivation:
         assert trigger.error_count == 1
 
 
-class TestWorkflowConfigExecutor:
+class TestAsyncTaskWorkflowExecutor:
 
     @pytest.mark.asyncio
     async def test_execute_success(self):
         registry = make_registry(["wf1"])
-        executor = WorkflowConfigExecutor(registry)
+        executor = AsyncTaskWorkflowExecutor(registry)
         result = await executor.execute("wf1", {"run_type": "single", "key": "val"})
         assert result == "result"
 
     @pytest.mark.asyncio
     async def test_execute_does_not_mutate_params(self):
         registry = make_registry(["wf1"])
-        executor = WorkflowConfigExecutor(registry)
+        executor = AsyncTaskWorkflowExecutor(registry)
         params = {"run_type": "batch", "key": "val"}
         original = dict(params)
         await executor.execute("wf1", params)
@@ -365,14 +369,14 @@ class TestWorkflowConfigExecutor:
     async def test_execute_registry_not_ready_raises(self):
         registry = make_registry(["wf1"])
         registry.is_ready.return_value = False
-        executor = WorkflowConfigExecutor(registry)
+        executor = AsyncTaskWorkflowExecutor(registry)
         with pytest.raises(WorkflowExecutionError, match="not ready"):
             await executor.execute("wf1", {})
 
     @pytest.mark.asyncio
     async def test_execute_missing_config_raises(self):
         registry = make_registry([])  # no workflows
-        executor = WorkflowConfigExecutor(registry)
+        executor = AsyncTaskWorkflowExecutor(registry)
         with pytest.raises(WorkflowExecutionError, match="not found"):
             await executor.execute("wf_missing", {})
 
@@ -381,13 +385,13 @@ class TestWorkflowConfigExecutor:
         registry = make_registry(["wf1"])
         config = registry.get_workflow_config("wf1")
         config.run_workflow = AsyncMock(return_value="async_result")
-        executor = WorkflowConfigExecutor(registry)
+        executor = AsyncTaskWorkflowExecutor(registry)
         result = await executor.execute("wf1", {})
         assert result == "async_result"
 
     @pytest.mark.asyncio
     async def test_callable_interface(self):
         registry = make_registry(["wf1"])
-        executor = WorkflowConfigExecutor(registry)
+        executor = AsyncTaskWorkflowExecutor(registry)
         result = await executor("wf1", {})
         assert result == "result"

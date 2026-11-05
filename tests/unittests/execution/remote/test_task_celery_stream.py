@@ -1,17 +1,20 @@
+import asyncio
 import json
 
-import orjson
 import pytest
-import redis
 from celery import Celery
+
+from tests.unittests.support import SerializingMemoryBackend
 
 from volnux.execution.remote.celery import make_volnux_celery_task
 from volnux.execution.remote.context import MiniExecutionContext
 from volnux.execution.remote.stream import (
     BatchStreamReader,
+    RemoteBatch,
     StreamTimeout,
     batch_key_for,
-    encode_batch,
+    batch_route,
+    done_entry,
 )
 from volnux.execution.remote.task import (
     RemoteTaskPayload,
@@ -141,118 +144,203 @@ class TestExecuteRemoteTask:
         assert r.context_delta["final_status"] == "COMPLETED"
 
 
-class FakeRedis:
-    def __init__(self, fail_on=()):
-        self.lists = {}
-        self.ttls = {}
-        self.fail_on = set(fail_on)
-
-    def rpush(self, key, value):
-        if "rpush" in self.fail_on:
-            raise redis.RedisError("down")
-        self.lists.setdefault(key, []).append(value)
-
-    def expire(self, key, ttl):
-        self.ttls[key] = ttl
-
-    def lpop(self, key):
-        items = self.lists.get(key)
-        return items.pop(0) if items else None
+@pytest.fixture
+def bus(monkeypatch):
+    """The messaging backend the worker and the requester share (in memory here)."""
+    backend = SerializingMemoryBackend(namespace_prefix="remote-test")
+    monkeypatch.setattr(RemoteBatch, "_backend_store", backend, raising=False)
+    monkeypatch.setattr(RemoteBatch, "_backend_initialized", True, raising=False)
+    yield backend
+    backend.close()
 
 
-def build(fake):
+def build():
     app = Celery("t", broker="memory://", backend="cache+memory://")
-    return make_volnux_celery_task(app, fake, task_name=f"t.{id(fake)}")
+    return make_volnux_celery_task(app, task_name=f"t.{id(app)}")
+
+
+def read_all(state_id, task_id, timeout=1):
+    # (the requester is another process, with a loop of its own)
+    reader = BatchStreamReader(state_id, task_id)
+    results, errors = asyncio.run(reader.read_all(timeout=timeout))
+    return reader, results, errors
 
 
 class TestCeleryTask:
-    def test_streams_batches_then_done_with_status(self):
-        fake = FakeRedis()
-        task = build(fake)
-        out = task.run(payload("RtManyEvent", 450, state_id="S", task_id="T").to_dict())
-        key = batch_key_for("S", "T")
-        assert list(fake.lists) == [key] and fake.ttls[key] == 3600
-        reader = BatchStreamReader(fake, key)
-        results, errors = reader.read_all(timeout=1)
+    def test_streams_batches_then_done_with_status(self, bus):
+        out = build().run(
+            payload("RtManyEvent", 450, state_id="S", task_id="T").to_dict()
+        )
+        reader, results, errors = read_all("S", "T")
         assert len(results) == 450 and errors == []
         assert reader.done and reader.status == "COMPLETED"
+        key = batch_key_for("S", "T")
+        assert reader.key == key
         assert RemoteTaskResult.from_dict(out).context_delta["batch_key"] == key
 
-    def test_two_tasks_of_one_state_do_not_share_a_stream(self):
-        fake = FakeRedis()
-        task = build(fake)
+    def test_the_stream_is_a_queue_that_expires(self, bus):
+        build().run(payload("RtManyEvent", 450, state_id="S", task_id="T").to_dict())
+        deadlines = bus._queue_deadlines
+        assert len(deadlines) == 1
+        (key,) = deadlines
+        assert key.endswith("S:T") and "remote" in key
+
+    def test_two_tasks_of_one_state_do_not_share_a_stream(self, bus):
+        task = build()
         for tid in ("A", "B"):
             task.run(payload("RtManyEvent", 150, state_id="S", task_id=tid).to_dict())
-        assert len(fake.lists) == 2
-        a, _ = BatchStreamReader(fake, batch_key_for("S", "A")).read_all(timeout=1)
-        assert len(a) == 150
+        _, a, _ = read_all("S", "A")
+        _, b, _ = read_all("S", "B")
+        assert len(a) == len(b) == 150
 
-    def test_values_json_does_not_know_are_streamed(self):
-        fake = FakeRedis()
-        build(fake).run(payload("RtDatetimeEvent", state_id="S", task_id="T").to_dict())
-        results, _ = BatchStreamReader(fake, batch_key_for("S", "T")).read_all(1)
+    def test_values_json_does_not_know_are_streamed(self, bus):
+        build().run(payload("RtDatetimeEvent", state_id="S", task_id="T").to_dict())
+        _, results, _ = read_all("S", "T")
         assert len(results) == 150 and "2026-01-01" in results[0]["content"]["at"]
 
-    def test_a_crashing_task_still_ends_the_stream_as_failed(self):
-        fake = FakeRedis()
-        task = build(fake)
+    def test_a_crashing_task_still_ends_the_stream_as_failed(self, bus):
         bad = payload("RtOkEvent", state_id="S", task_id="T").to_dict()
         bad["mini_context"] = {"state_id": "S", "mode": "nonsense", "results": 5}
-        # whatever happens inside, the sentinel must be there
+        # whatever happens inside, the done entry must be there
         try:
-            task.run(bad)
+            build().run(bad)
         except Exception:
             pass
-        reader = BatchStreamReader(fake, batch_key_for("S", "T"))
-        list(reader.batches(timeout=1))
+        reader = BatchStreamReader("S", "T")
+
+        async def drain():
+            return [b async for b in reader.batches(timeout=1)]
+
+        asyncio.run(drain())
         assert reader.done
 
-    def test_redis_outage_fails_the_task_instead_of_losing_results(self):
-        fake = FakeRedis(fail_on={"rpush"})
-        with pytest.raises(redis.RedisError):
-            build(fake).run(
+    def test_a_backend_outage_fails_the_task_instead_of_losing_results(
+        self, bus, monkeypatch
+    ):
+        async def down(*args, **kwargs):
+            raise ConnectionError("down")
+
+        monkeypatch.setattr(bus, "push", down)
+        with pytest.raises(ConnectionError):
+            build().run(
                 payload("RtManyEvent", 450, state_id="S", task_id="T").to_dict()
             )
 
+    def test_a_failing_done_entry_is_only_logged(self, bus, monkeypatch, caplog):
+        real = bus.push
+
+        async def push(key, *values, **kwargs):
+            if any(v.kind == "done" for v in values):
+                raise ConnectionError("down")
+            return await real(key, *values, **kwargs)
+
+        monkeypatch.setattr(bus, "push", push)
+        out = build().run(payload("RtOkEvent", state_id="S", task_id="T").to_dict())
+        assert out  # the task itself succeeded
+        assert "Failed to push done entry" in caplog.text
+
 
 class TestBatchStreamReader:
-    def push(self, fake, key, *entries):
+    async def put(self, *entries, state_id="S", task_id="T"):
         for e in entries:
-            fake.rpush(key, e if isinstance(e, bytes) else encode_batch(e))
+            await RemoteBatch.push(e, route_override=batch_route(state_id, task_id))
 
-    def test_reads_in_order_and_stops_at_done(self):
-        fake = FakeRedis()
-        self.push(
-            fake,
-            "k",
-            {"type": "result_batch", "data": [1], "count": 1},
-            {"type": "error_batch", "data": [2], "count": 1},
-            {"type": "done", "status": "FAILED"},
-            {"type": "result_batch", "data": [3], "count": 1},  # next stream
+    def batch(self, kind, data):
+        return RemoteBatch(kind=kind, data=data, count=len(data))
+
+    @pytest.mark.asyncio
+    async def test_reads_in_order_and_stops_at_done(self, bus):
+        await self.put(
+            self.batch("result_batch", [1]),
+            self.batch("error_batch", [2]),
+            done_entry("FAILED"),
+            self.batch("result_batch", [3]),  # next stream
         )
-        r = BatchStreamReader(fake, "k")
-        assert [b["data"] for b in r.batches(timeout=1)] == [[1], [2]]
+        r = BatchStreamReader("S", "T")
+        assert [b["data"] async for b in r.batches(timeout=1)] == [[1], [2]]
         assert r.status == "FAILED" and r.done
-        assert len(fake.lists["k"]) == 1  # nothing past the sentinel was consumed
+        # nothing past the done entry was consumed
+        assert await RemoteBatch.queue_length(route_override=batch_route("S", "T")) == 1
 
-    def test_times_out_without_a_sentinel(self):
-        fake = FakeRedis()
-        self.push(fake, "k", {"type": "result_batch", "data": [1], "count": 1})
+    @pytest.mark.asyncio
+    async def test_times_out_without_a_done_entry(self, bus):
+        await self.put(self.batch("result_batch", [1]))
         with pytest.raises(StreamTimeout):
-            list(BatchStreamReader(fake, "k").batches(timeout=0.2))
+            async for _ in BatchStreamReader("S", "T").batches(timeout=0.2):
+                pass
 
-    def test_read_all_splits_results_and_errors(self):
-        fake = FakeRedis()
-        self.push(
-            fake,
-            "k",
-            {"type": "result_batch", "data": [1, 2], "count": 2},
-            {"type": "error_batch", "data": ["e"], "count": 1},
-            {"type": "done", "status": "FAILED"},
+    @pytest.mark.asyncio
+    async def test_it_waits_for_entries_that_arrive_later(self, bus):
+        async def writer():
+            await asyncio.sleep(0.05)
+            await self.put(self.batch("result_batch", [1]), done_entry("COMPLETED"))
+
+        task = asyncio.create_task(writer())
+        results, errors = await BatchStreamReader("S", "T").read_all(timeout=2)
+        await task
+        assert (results, errors) == ([1], [])
+
+    @pytest.mark.asyncio
+    async def test_read_all_splits_results_and_errors(self, bus):
+        await self.put(
+            self.batch("result_batch", [1, 2]),
+            self.batch("error_batch", ["e"]),
+            done_entry("FAILED"),
         )
-        assert BatchStreamReader(fake, "k").read_all(1) == ([1, 2], ["e"])
+        assert await BatchStreamReader("S", "T").read_all(1) == ([1, 2], ["e"])
 
-    def test_encode_handles_unknown_types(self):
+    @pytest.mark.asyncio
+    async def test_a_timeout_must_be_positive(self, bus):
+        with pytest.raises(ValueError):
+            async for _ in BatchStreamReader("S", "T").batches(timeout=0):
+                pass
+
+    def test_from_batch_handles_unknown_types(self):
         import decimal
 
-        assert orjson.loads(encode_batch({"d": decimal.Decimal("1.5")})) == {"d": "1.5"}
+        entry = RemoteBatch.from_batch(
+            {"type": "result_batch", "data": [{"d": decimal.Decimal("1.5")}]}
+        )
+        assert entry.data == [{"d": "1.5"}] and entry.count == 1
+        assert entry.to_batch()["type"] == "result_batch"
+
+
+class TestAsyncFlushCallback:
+    """The context awaits an async flush callback, in order."""
+
+    @pytest.mark.asyncio
+    async def test_batches_are_awaited_in_order(self):
+        seen = []
+
+        async def callback(batch):
+            await asyncio.sleep(0)
+            seen.append((batch["type"], batch["count"]))
+
+        ctx = MiniExecutionContext(state_id="S")
+        await ctx.set_flush_callback(callback)
+        for i in range(450):
+            await ctx.add_result({"error": False, "content": {"i": i}})
+        await ctx.finalize()
+        assert sum(count for _, count in seen) == 450
+        assert all(kind == "result_batch" for kind, _ in seen)
+
+    @pytest.mark.asyncio
+    async def test_a_failing_async_callback_fails_the_operation(self):
+        async def callback(batch):
+            raise ConnectionError("down")
+
+        ctx = MiniExecutionContext(state_id="S")
+        await ctx.set_flush_callback(callback)
+        with pytest.raises(ConnectionError):
+            for i in range(450):
+                await ctx.add_result({"error": False, "content": {"i": i}})
+
+    @pytest.mark.asyncio
+    async def test_a_sync_callback_still_works(self):
+        got = []
+        ctx = MiniExecutionContext(state_id="S")
+        await ctx.set_flush_callback(got.append)
+        for i in range(450):
+            await ctx.add_result({"error": False, "content": {"i": i}})
+        await ctx.finalize()
+        assert sum(b["count"] for b in got) == 450

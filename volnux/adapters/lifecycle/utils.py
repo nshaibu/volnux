@@ -10,7 +10,6 @@ from fastapi import FastAPI
 from typing import Optional, TYPE_CHECKING, Callable
 
 from volnux.app import get_current_app
-from volnux.models import NodeHeartbeat
 
 if TYPE_CHECKING:
     from volnux.engine.workflows.trigger import TriggerEngine
@@ -512,37 +511,9 @@ def _start_prometheus(metrics_port: int):
         return lambda: None
 
 
-# NodeHeartbeat
-async def _start_heartbeat():
-    """
-    Start the Redis NodeHeartbeat. Returns the heartbeat instance
-    so it can be stopped during shutdown.
-    """
-    try:
-        from volnux.adapters.redis_channel import NodeHeartbeat
-
-        node_id = setting("NODE_ID", "local")
-        metadata = {
-            "role": "api",
-            "version": setting("VERSION", "unknown"),
-        }
-        heartbeat = NodeHeartbeat(node_id=node_id, metadata=metadata)
-        await heartbeat.start()
-        logger.info("NodeHeartbeat started — node_id=%s", node_id)
-        return heartbeat
-
-    except ImportError:
-        logger.debug("RedisChannel not available — NodeHeartbeat disabled")
-        return None
-    except Exception as exc:
-        logger.warning("NodeHeartbeat failed to start: %s", exc)
-        return None
-
-
 # Graceful shutdown
 async def _shutdown(
     trigger_engine: "TriggerEngine",
-    heartbeat: "NodeHeartbeat",
     otel_shutdown: Callable[[], None],
     prometheus_shutdown: Callable[[], None],
 ) -> None:
@@ -551,9 +522,8 @@ async def _shutdown(
 
     Order matters:
         1. TriggerEngine stops — no new workflows are fired
-        2. NodeHeartbeat stops — node deregisters from Redis
-        3. OTel flushes — all pending spans exported
-        4. Prometheus closes — scrape endpoint gone
+        2. OTel flushes — all pending spans exported
+        3. Prometheus closes — scrape endpoint gone
 
     The checkpoint drain uses VOLNUX_CHECKPOINT_DRAIN_TIMEOUT (default 120s).
     This must be less than the container's terminationGracePeriodSeconds.
@@ -568,13 +538,6 @@ async def _shutdown(
             logger.warning("TriggerEngine stop timed out")
         except Exception as exc:
             logger.warning("TriggerEngine stop error: %s", exc)
-
-    if heartbeat is not None:
-        try:
-            await asyncio.wait_for(heartbeat.stop(), timeout=5.0)
-            logger.info("NodeHeartbeat stopped")
-        except Exception as exc:
-            logger.warning("NodeHeartbeat stop error: %s", exc)
 
     # otel_shutdown is synchronous — run in executor to not block the loop
     if callable(otel_shutdown):

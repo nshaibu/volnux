@@ -315,3 +315,16 @@ class TestUnsupportedQueueOperations:
             await Backend().push("q")
         with pytest.raises(ValueError):
             await Backend().pop("q", object, timeout=-1)
+
+
+@pytest.mark.asyncio
+async def test_kafka_cannot_expire_a_queue():
+    """Kafka keeps the default: a clear refusal, never data kept for ever."""
+    from volnux.backends.messaging.base import PushPopCapabilityMixin
+    from volnux.backends.messaging.stores.kafka import KafkaStorePushPopMixin
+
+    assert KafkaStorePushPopMixin.queue_expire is PushPopCapabilityMixin.queue_expire
+    with pytest.raises(NotImplementedError, match="expiring a queue"):
+        await KafkaStorePushPopMixin.queue_expire(
+            object.__new__(KafkaStorePushPopMixin), "q", 5
+        )
