@@ -130,7 +130,7 @@ class PipelineWrapper:
         Connect per-signal handlers for each requested soft signal.
 
         Each signal gets its own handler closure that captures the signal
-        module so construct_signal() in the parent process can import and
+         module, so construct_signal() in the parent process can import and
         re-emit the correct signal.
 
         A shared single handler (original approach) cannot include the
