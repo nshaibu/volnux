@@ -205,16 +205,20 @@ class FileProxy:
 
     def writable(self) -> bool:
         """True if the file was opened for writing."""
-        return "w" in self._mode or "a" in self._mode or "+" in self._mode
+        # "x" (exclusive creation) writes too
+        return any(flag in self._mode for flag in "wax+")
 
     def seekable(self) -> bool:
         """
         True if the file supports random access.
 
-        If the file has not been opened yet, returns True speculatively —
+        A closed proxy is not seekable. If the file has not been opened yet, returns
+        True speculatively —
         most regular files are seekable. Pipes and sockets are not, but
         this cannot be determined without opening them.
         """
+        if self.closed:
+            return False
         if self._file is not None:
             return self._file.seekable()
         return True

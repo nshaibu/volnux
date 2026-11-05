@@ -109,7 +109,12 @@ packages = [
     "volnux.task",
     "volnux.flows",
     "volnux.concurrency",
+    "volnux.manifest",
 ]
+
+[tool.setuptools.package-data]
+# the JSON schemas the loaders and the CLI validate manifests against
+"volnux.manifest" = ["schema/event/*.json", "schema/workflow/*.json"]
 
 [tool.coverage.run]
 branch = true

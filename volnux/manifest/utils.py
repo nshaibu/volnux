@@ -26,6 +26,7 @@ __all__ = [
     "load_manifest",
     "check_compatibility",
     "register_workflow_config_and_events_from_manifest",
+    "check_declared_sources",
     "build_authenticated_url",
     "resolve_workflow_config_classes",
     "resolve_event_class",
@@ -37,27 +38,28 @@ logger = logging.getLogger(__name__)
 # Canonical manifest filename. Must match the filename shipped in the wheel.
 _MANIFEST_FILENAME = "volnux.manifest.json"
 
-# Required schema URI. Validated before any other field is trusted.
-_MANIFEST_SCHEMA_FILE = Path(__file__).cwd() / os.sep.join(
-    ("schema", "event", "v1.json")
-)
-
 _MANIFEST_SCHEMA_URI = "https://eventhub.volnux.dev/manifest/v1.json"
 
-# Top-level fields that must be present for a manifest to be considered valid.
-_MANIFEST_REQUIRED_FIELDS = frozenset(
+# Top-level fields every manifest must have, whatever it packages.
+_MANIFEST_COMMON_FIELDS = frozenset(
     [
         "$schema",
         "manifest_version",
         "package",
-        "events",
         "changelog",
         "dependencies",
         "compatibility",
     ]
 )
 
-# Fields required on every event entry.
+# What the package carries: events for an event package, workflows for a workflow one.
+_MANIFEST_CONTENT_FIELD = {"event": "events", "workflow": "workflows"}
+
+# Top-level fields that must be present for an event manifest (the default type).
+_MANIFEST_REQUIRED_FIELDS = _MANIFEST_COMMON_FIELDS | {"events"}
+
+# Fields required on every event entry: the same list as ``event_entry.required`` in
+# schema/event/v1.json (a test keeps them in step).
 _EVENT_ENTRY_REQUIRED_FIELDS = frozenset(
     [
         "class",
@@ -65,12 +67,11 @@ _EVENT_ENTRY_REQUIRED_FIELDS = frozenset(
         "namespace",
         "name",
         "version",
-        "event_type",
+        "categories",
         "deprecated",
         "changelog",
-        "result_evaluation_strategy",
-        "executor",
-        "extra_init_params_schema",
+        "init_params",
+        "call_params",
     ]
 )
 
@@ -180,7 +181,25 @@ def _validate_manifest_structure(
     Returns True if the manifest passes all checks, False otherwise. All
     failures are logged at ERROR level so operators can act on them.
     """
-    missing = _MANIFEST_REQUIRED_FIELDS - set(manifest.keys())
+    package = manifest.get("package")
+    package_type = (
+        package.get("package_type", "event") if isinstance(package, dict) else "event"
+    )
+    content_field = _MANIFEST_CONTENT_FIELD.get(package_type)
+    if content_field is None:
+        logger.error(
+            "_validate_manifest_structure: '%s' in '%s' declares unknown "
+            "package_type '%s'. Expected one of %s.",
+            _MANIFEST_FILENAME,
+            package_name,
+            package_type,
+            sorted(_MANIFEST_CONTENT_FIELD),
+        )
+        return False
+
+    # An event package carries events, a workflow package workflows (it used to be
+    # required to carry events too, so no workflow package could load).
+    missing = (_MANIFEST_COMMON_FIELDS | {content_field}) - set(manifest.keys())
     if missing:
         logger.error(
             "_validate_manifest_structure: '%s' in '%s' is missing "
@@ -361,7 +380,12 @@ def register_workflow_config_and_events_from_manifest(
     event_registry = get_event_registry()
     event_entries: List[Dict[str, Any]] = manifest.get("events", [])
 
-    if not event_entries:
+    is_workflow_package = (
+        isinstance(manifest.get("package"), dict)
+        and manifest["package"].get("package_type") == "workflow"
+    )
+
+    if not event_entries and not is_workflow_package:
         logger.warning(
             "register_workflow_config_and_events_from_manifest: 'events' list in '%s' manifest "
             "is empty. At least one event is required.",
@@ -453,6 +477,15 @@ def register_workflow_config_and_events_from_manifest(
                 f"{workflow_config_class.__name__} from '{package_name}': {exc}",
             )
 
+    if is_workflow_package:
+        # The events a workflow package defines itself (its events.py): without them
+        # the pulled workflow would name events that nothing registers.
+        registered_events |= _register_local_events(
+            manifest, module, package_name, event_registry
+        )
+        for issue in check_declared_sources(manifest, registry):
+            logger.warning("%s: %s", package_name, issue)
+
     logger.info(
         "register_workflow_config_and_events_from_manifest: %d/%d workflow_config_class(es) registered from '%s'",
         len(workflow_config_classes),
@@ -460,6 +493,90 @@ def register_workflow_config_and_events_from_manifest(
         package_name,
     )
     return registered_events, registered_workflow_config
+
+
+def _register_local_events(
+    manifest: Dict[str, Any],
+    module: types.ModuleType,
+    package_name: str,
+    event_registry: Any,
+) -> Set[typing.Type["EventBase"]]:
+    """Register the ``local_events`` of every workflow in a workflow manifest.
+
+    An entry that cannot be resolved or registered is logged and skipped, as for the
+    events of an event package.
+    """
+    registered: Set[typing.Type["EventBase"]] = set()
+    seen: Set[Tuple[str, str]] = set()
+    for workflow in manifest.get("workflows", []) or []:
+        for entry in workflow.get("local_events", []) or []:
+            key = (entry.get("module", ""), entry.get("class", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            event_class = resolve_event_class(
+                entry.get("class", ""), entry.get("module", ""), module, package_name
+            )
+            if event_class is None:
+                continue
+            try:
+                event_registry.register(event_class)
+                registered.add(event_class)
+            except Exception as exc:
+                logger.error(
+                    "_register_local_events: failed to register '%s' from '%s': %s",
+                    key[1],
+                    package_name,
+                    exc,
+                )
+    return registered
+
+
+def check_declared_sources(manifest: Dict[str, Any], registry: Any) -> List[str]:
+    """Compare the event sources a workflow manifest declares with the ones its
+    ``WorkflowConfig`` registered (in ``ready()``).
+
+    The manifest is what a designer or a resolver reads; ``ready()`` is what runs.
+    When they differ, the workflow either cannot find an event it uses or the manifest
+    misleads. Returns one message per difference (empty: they agree). Only the sources
+    registered by name in the registry are compared, so a registry that cannot say
+    (no ``combined_workflow_sources``) yields no messages.
+    """
+    registered = getattr(registry, "combined_workflow_sources", None)
+    if not isinstance(registered, typing.Mapping):
+        return []
+
+    issues: List[str] = []
+    declared: Dict[str, Dict[str, Any]] = {}
+    for workflow in manifest.get("workflows", []) or []:
+        for source in workflow.get("sources", []) or []:
+            declared.setdefault(source.get("name", ""), source)
+
+    for name, source in declared.items():
+        actual = registered.get(name)
+        if actual is None:
+            issues.append(
+                f"source '{name}' is declared in the manifest but the workflow "
+                "does not register it"
+            )
+            continue
+        actual_type = getattr(
+            getattr(actual, "source_type", None),
+            "value",
+            getattr(actual, "source_type", None),
+        )
+        if actual_type != source.get("source_type"):
+            issues.append(
+                f"source '{name}' is declared as '{source.get('source_type')}' in the "
+                f"manifest but registered as '{actual_type}'"
+            )
+    for name in registered:
+        if name not in declared:
+            issues.append(
+                f"source '{name}' is registered by the workflow but not declared in "
+                "the manifest"
+            )
+    return issues
 
 
 def resolve_workflow_config_classes(
@@ -497,16 +614,25 @@ def resolve_workflow_config_classes(
     )
 
     # Check the submodule workflow.py for subclasses of WorkflowConfig
-    workflow_module = importlib.import_module(f"{package_module.__name__}.workflow")
-    classes.update(
-        set(
-            [
-                cls
-                for cls in workflow_module.__dict__.values()
-                if _validate_workflow_config_class(cls)
-            ]
+    workflow_module_name = f"{package_module.__name__}.workflow"
+    try:
+        workflow_module = importlib.import_module(workflow_module_name)
+    except ModuleNotFoundError as exc:
+        # An event package has no workflow.py; only that module being absent is fine
+        # (a workflow.py that fails to import something else is a real error).
+        if exc.name != workflow_module_name:
+            raise
+        workflow_module = None
+    if workflow_module is not None:
+        classes.update(
+            set(
+                [
+                    cls
+                    for cls in workflow_module.__dict__.values()
+                    if _validate_workflow_config_class(cls)
+                ]
+            )
         )
-    )
 
     if len(classes) > 0:
         logger.info(

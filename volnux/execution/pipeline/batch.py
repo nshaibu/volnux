@@ -1,3 +1,4 @@
+import copy
 import inspect
 import logging
 import multiprocessing as mp
@@ -643,11 +644,10 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
                 "No pipeline template set. Subclass BatchPipeline and set 'pipeline_template'"
             )
         pipeline = template(**kwargs)
+        # Each pipeline gets its own copy of the batch's metadata. (update_internal
+        # merges a dict into a dict and raised for any other value.)
         for key, value in self.__dict__.get(self._INTERNAL_KEY, {}).items():
-            try:
-                pipeline.update_internal(key, value)
-            except KeyError:
-                continue
+            pipeline.set_internal(key, copy.deepcopy(value))
 
         return pipeline
 
@@ -752,7 +752,6 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
         while batch_processor_map:
             all_exhausted = True
             kwargs = {}
-            consumed = []  # fields that are now exhausted
 
             for field_obj, batch_operation in batch_processor_map.items():
                 try:
@@ -760,7 +759,6 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
                     all_exhausted = False  # at least one iterator still has items
                 except StopIteration:
                     value = None
-                    consumed.append(field_obj)
 
                 value = self._convert_value_to_field_data_type(field_obj, value)
                 kwargs[field_obj.name] = value
@@ -770,10 +768,9 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
 
             if all_exhausted:
                 break
-
-            # Remove exhausted iterators so we don't keep yielding None for them
-            for field_obj in consumed:
-                batch_processor_map.pop(field_obj, None)
+            # A field that ran out keeps giving None until the others do: dropping
+            # it left the pipeline without the argument (a TypeError for a required
+            # field) instead of with None.
 
     async def execute(self, on_result: _ResultCallback) -> typing.Dict[str, int]:
         """
@@ -1039,8 +1036,17 @@ class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
     def _prepare_args_for_non_batch_fields(self) -> typing.Dict[str, typing.Any]:
         args = {}
         template = self.get_pipeline_template()
+        parameters = self.__signature__.parameters
         for field_name, _ in template.get_non_batch_fields():
-            args[field_name] = getattr(self, field_name, None)
+            # A field the caller did not give is the field's default, as for the
+            # template itself (it was None, overriding the default in every pipeline).
+            param = parameters.get(field_name)
+            default = (
+                param.default
+                if param is not None and param.default is not param.empty
+                else None
+            )
+            args[field_name] = getattr(self, field_name, default)
         return args
 
     @staticmethod

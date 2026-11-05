@@ -1,6 +1,11 @@
+import asyncio
+import hashlib
+import hmac
 import importlib
 import json
 import logging
+import re
+import shutil
 import tempfile
 import typing
 import httpx
@@ -11,6 +16,7 @@ from volnux import EventBase
 from volnux.event.base import EventType
 from .git import LoadFromGit
 from .pypi import LoadFromPyPi
+from volnux.manifest.schemas import schema_path
 from volnux.manifest.utils import (
     check_compatibility,
     load_manifest,
@@ -25,9 +31,9 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # JSON Schema paths
-_SCHEMA_DIR = Path(__file__).parent.parent.parent / "manifest" / "schema"
-_EVENT_SCHEMA_PATH = _SCHEMA_DIR / "event" / "v1.json"
-_WORKFLOW_SCHEMA_PATH = _SCHEMA_DIR / "workflow" / "v1.json"
+# (they were computed one directory short of the manifest package, so neither existed)
+_EVENT_SCHEMA_PATH = schema_path("event")
+_WORKFLOW_SCHEMA_PATH = schema_path("workflow")
 
 # ``package.source.type`` values (from both JSON schemas)
 _SOURCE_PYPI = "pypi"
@@ -90,6 +96,43 @@ def _validate_manifest_against_schema(
             exc.message,
         )
         return False
+
+
+# {name}-{version}(-{build})?-{python}-{abi}-{platform}.whl: pip refuses any other name
+_WHEEL_NAME_RE = re.compile(
+    r"^[A-Za-z0-9_.+]+-[A-Za-z0-9_.+!]+(-\d[A-Za-z0-9_.]*)?"
+    r"-[A-Za-z0-9_.]+-[A-Za-z0-9_.]+-[A-Za-z0-9_.]+\.whl$"
+)
+
+
+def _wheel_filename(response: "httpx.Response", package_name: str, version: str) -> str:
+    """The file name to give a downloaded wheel.
+
+    pip only installs a wheel whose *name* says what it is, so a random temporary name
+    (what was used) is refused. Use the name the hub sent in ``Content-Disposition``;
+    failing that, a pure-Python name built from the package and version.
+    """
+    match = re.search(
+        r"filename\*?=(?:UTF-8'')?\"?([^\";]+)\"?",
+        response.headers.get("content-disposition", ""),
+    )
+    if match:
+        candidate = Path(match.group(1).strip()).name  # never a path
+        if _WHEEL_NAME_RE.match(candidate):
+            return candidate
+    base = re.sub(r"[-.]+", "_", package_name)
+    return f"{base}-{re.sub(r'[^A-Za-z0-9_.+]', '.', version)}-py3-none-any.whl"
+
+
+def _discard_download(wheel_path: Optional[str]) -> None:
+    """Remove a downloaded wheel and the temporary directory it was put in."""
+    if not wheel_path:
+        return
+    path = Path(wheel_path)
+    if path.parent.name.startswith("volnux-hub-"):
+        shutil.rmtree(path.parent, ignore_errors=True)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def _jwt_headers(credentials: Optional["SourceCredentials"]) -> Dict[str, str]:
@@ -195,6 +238,7 @@ class LoadFromEventHub(EventBase):
             timeout_s=timeout_s,
             registry=registry,
             eventhub_url=eventhub_url,
+            package_type=manifest.get("package", {}).get("package_type", "event"),
         )
         if not installed:
             return False, None
@@ -305,8 +349,13 @@ class LoadFromEventHub(EventBase):
         timeout_s: float,
         registry: "WorkflowRegistry",
         eventhub_url: str,
+        package_type: str = "workflow",
     ) -> bool:
-        """Route to the correct sub-loader based on ``package.source.type``."""
+        """Route to the correct sub-loader based on ``package.source.type``.
+
+        ``package_type`` matters for a git source: a workflow package is a directory
+        holding ``workflow.py``, an event package is a Python package to pip install.
+        """
         loader: Optional[EventBase] = None
         params: Dict[str, Any] = {}
 
@@ -347,6 +396,7 @@ class LoadFromEventHub(EventBase):
                 # git checks out the exact ref, not a mutable branch head.
                 "branch": git_ref or "main",
                 "timeout": timeout / 1000 if timeout else None,
+                "as_package": package_type == "event",
             }
 
         if loader is not None:
@@ -368,6 +418,7 @@ class LoadFromEventHub(EventBase):
                 timeout_s=timeout_s,
                 timeout=timeout,
                 registry=registry,
+                expected_sha256=source.get("sha256"),
             )
 
         logger.error(
@@ -387,9 +438,14 @@ class LoadFromEventHub(EventBase):
         timeout_s: float,
         timeout: int,
         registry: "WorkflowRegistry",
+        expected_sha256: Optional[str] = None,
     ) -> bool:
         """
         Download the wheel from EventHub and install it with pip.
+
+        The wheel must hash to ``expected_sha256`` (``package.source.sha256`` of the
+        manifest) before pip sees it: the hub is the only thing vouching for the file,
+        so a download that cannot be checked is refused.
 
         Endpoint:
 
@@ -398,10 +454,19 @@ class LoadFromEventHub(EventBase):
         The wheel is streamed to a temp file, then passed to: class:`LoadFromPyPi` as a ``file://`` path.
         """
 
+        if not expected_sha256:
+            logger.error(
+                "LoadFromEventHub: the manifest of %r gives no source.sha256; "
+                "a download that cannot be verified is not installed.",
+                package_name,
+            )
+            return False
+
         download_url = (
             f"{eventhub_url.rstrip('/')}/packages/{package_name}/{version}/download"
         )
         headers = _jwt_headers(credentials)
+        wheel_path: Optional[str] = None
 
         try:
             async with httpx.AsyncClient(timeout=timeout_s) as client:
@@ -422,30 +487,50 @@ class LoadFromEventHub(EventBase):
                         )
                         return False
 
+                    digest = hashlib.sha256()
                     try:
-                        with tempfile.NamedTemporaryFile(
-                            suffix=".whl", delete=False
-                        ) as tmp:
+                        download_dir = tempfile.mkdtemp(prefix="volnux-hub-")
+                        wheel_path = str(
+                            Path(download_dir)
+                            / _wheel_filename(response, package_name, version)
+                        )
+                        with open(wheel_path, "wb") as tmp:
                             async for chunk in response.aiter_bytes(chunk_size=65536):
+                                digest.update(chunk)
                                 tmp.write(chunk)
-                            wheel_path = tmp.name
                     except OSError as exc:
                         logger.error(
                             "LoadFromEventHub: failed to write wheel for %r: %s",
                             package_name,
                             exc,
                         )
+                        _discard_download(wheel_path)
                         return False
 
         except httpx.TimeoutException:
             logger.error(
                 "LoadFromEventHub: wheel download timed out for %r.", package_name
             )
+            _discard_download(wheel_path)
             return False
         except httpx.RequestError as exc:
             logger.error(
                 "LoadFromEventHub: wheel download failed for %r: %s", package_name, exc
             )
+            _discard_download(wheel_path)
+            return False
+
+        if wheel_path is None:
+            return False
+
+        if not hmac.compare_digest(digest.hexdigest(), expected_sha256.lower()):
+            logger.error(
+                "LoadFromEventHub: the wheel downloaded for %r does not match the "
+                "sha256 in its manifest (got %s); not installing it.",
+                package_name,
+                digest.hexdigest(),
+            )
+            _discard_download(wheel_path)
             return False
 
         logger.info(
@@ -455,12 +540,13 @@ class LoadFromEventHub(EventBase):
             self._execution_context, self._task_id, options=self.options
         )
         params = {
-            "location": f"file://{wheel_path}",
+            "location": package_name,
             "registry": registry,
             "version": version,
             "credentials": None,  # local file — no index auth needed
             "timeout": timeout,
             "index_url": None,
+            "wheel_path": wheel_path,  # install this file, not an index package
         }
 
         try:
@@ -473,6 +559,9 @@ class LoadFromEventHub(EventBase):
                 exc,
             )
             return False
+        finally:
+            # the download is a temporary file: it was never removed
+            _discard_download(wheel_path)
 
     @staticmethod
     async def _register_from_manifest(
@@ -499,15 +588,28 @@ class LoadFromEventHub(EventBase):
             ``(False, None)`` on import failure or empty registration.
         """
 
-        try:
-            module = importlib.import_module(package_name)
-        except ImportError as exc:
+        # A package is named like a PyPI project (lowercase, hyphens) but imported by
+        # its module name (underscores): 'acme-events' is `import acme_events`.
+        module = None
+        last_error: Optional[ImportError] = None
+        for candidate in dict.fromkeys([package_name.replace("-", "_"), package_name]):
+            try:
+                module = importlib.import_module(candidate)
+                break
+            except ImportError as exc:
+                last_error = exc
+        if module is None:
             logger.error(
                 "LoadFromEventHub: %r installed but cannot be imported: %s",
                 package_name,
-                exc,
+                last_error,
             )
             return False, None
+
+        # A workflow config is built in the directory of its package; without it the
+        # config refuses to initialise and no workflow package could be registered.
+        module_file = getattr(module, "__file__", None)
+        project_root = Path(module_file).parent if module_file else None
 
         # register_workflow_config_and_events_from_manifest is sync (no I/O)
         # but may be slow for large manifests — run in thread to stay non-blocking.
@@ -517,6 +619,7 @@ class LoadFromEventHub(EventBase):
             module,
             package_name,
             registry,
+            project_root,
         )
 
         if not registered_events and not registered_configs:

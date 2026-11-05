@@ -189,6 +189,13 @@ class FileInputDataField(InputDataField):
             return
 
         if value is not None:
+            if not isinstance(value, (str, os.PathLike)):
+                # (an int would otherwise be taken by os.path.isfile for a file
+                # descriptor, and a list would raise an unrelated TypeError)
+                raise TypeError(
+                    f"FileInputDataField {self.name!r} expects a str or os.PathLike "
+                    f"path, got {type(value).__qualname__}."
+                )
             if not os.path.isfile(value):
                 raise ValueError(
                     f"FileInputDataField {self.name!r}: "

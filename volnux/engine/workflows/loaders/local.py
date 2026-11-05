@@ -90,4 +90,5 @@ class LoadFromLocal(Event):
         if not status:
             logger.error(f"Failed to load workflow from: {workflow_dir}")
 
-        return True, None
+        # (it returned True whether or not a workflow was found)
+        return status, None

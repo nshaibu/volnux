@@ -3,6 +3,7 @@ import importlib
 import importlib.util
 import inspect
 import json
+import types
 import typing
 from pathlib import Path
 
@@ -82,6 +83,16 @@ class GenerateManifestSubCommand(SubCommand):
             help="Distribution channel for package.source.type. Defaults to 'pypi'.",
         )
         parser.add_argument(
+            "--sha256",
+            metavar="HEX",
+            default=None,
+            help=(
+                "SHA-256 of the package file (the wheel). Required in the manifest of a "
+                "package whose --source-type is 'hub': the loader refuses a download "
+                "that does not match."
+            ),
+        )
+        parser.add_argument(
             "--volnux-requires",
             metavar="SPEC",
             default=">=0.8.0",
@@ -118,12 +129,15 @@ class GenerateManifestSubCommand(SubCommand):
     def handle(self, *args, **options) -> typing.Optional[str]:
         source_module: str = options["source_module"]
         pkg_version: str = options["package_version"]
-        pkg_name: str = options.get("package_name") or source_module.replace("_", "-")
+        pkg_name: str = options.get("package_name") or self._default_package_name(
+            source_module
+        )
         author: str = options.get("author", "unknown")
         license_id: str = options.get("license_id", "MIT")
         source_type: str = options.get("source_type", "pypi")
         volnux_req: str = options.get("volnux_requires", ">=0.8.0")
         python_req: str = options.get("python_requires", ">=3.11")
+        sha256: typing.Optional[str] = options.get("sha256")
         dry_run: bool = options.get("dry_run", False)
         skip_validate: bool = options.get("skip_validate", False)
         output_path: Path = (
@@ -162,6 +176,7 @@ class GenerateManifestSubCommand(SubCommand):
             source_module=source_module,
             volnux_req=volnux_req,
             python_req=python_req,
+            sha256=sha256,
         )
 
         manifest_json = json.dumps(manifest, indent=2, ensure_ascii=False)
@@ -190,6 +205,15 @@ class GenerateManifestSubCommand(SubCommand):
             "Fields marked '(TODO)' require manual completion.\n"
         )
         return None
+
+    @staticmethod
+    def _default_package_name(source_module: str) -> str:
+        """A PyPI-style name (lowercase, hyphens only) from a module path:
+        ``my_app.events`` is ``my-app-events``. (The dot was kept, which the schema
+        rejects.)"""
+        import re
+
+        return re.sub(r"[^a-z0-9]+", "-", source_module.lower()).strip("-")
 
     def _collect_event_classes(
         self, module: typing.Any, source_module: str
@@ -249,6 +273,7 @@ class GenerateManifestSubCommand(SubCommand):
         source_module: str,
         volnux_req: str,
         python_req: str,
+        sha256: typing.Optional[str] = None,
     ) -> typing.Dict:
         """Assemble the full manifest dict from introspected data."""
 
@@ -264,6 +289,7 @@ class GenerateManifestSubCommand(SubCommand):
                 source_module=source_module,
                 volnux_req=volnux_req,
                 python_req=python_req,
+                sha256=sha256,
             ),
             "events": [self._build_event_entry(cls) for cls in event_classes],
             "changelog": self._build_initial_changelog(pkg_version),
@@ -271,10 +297,20 @@ class GenerateManifestSubCommand(SubCommand):
                 "volnux-core": volnux_req,
             },
             "compatibility": {
-                "volnux": ["0.9.x"],
+                "volnux": [self._runtime_series()],
                 "python": ["3.11", "3.12"],
             },
         }
+
+    @staticmethod
+    def _runtime_series() -> str:
+        """``major.minor.x`` of the Volnux running now (what the package was tested on)."""
+        import re
+
+        from volnux import __version__
+
+        match = re.match(r"(\d+)\.(\d+)", str(__version__))
+        return f"{match.group(1)}.{match.group(2)}.x" if match else "0.9.x"
 
     def _build_package_block(
         self,
@@ -286,240 +322,257 @@ class GenerateManifestSubCommand(SubCommand):
         source_module: str,
         volnux_req: str,
         python_req: str,
+        sha256: typing.Optional[str] = None,
     ) -> typing.Dict:
+        source: typing.Dict[str, typing.Any] = {
+            "type": source_type,
+            "package": pkg_name if source_type == "pypi" else source_module,
+            "version": pkg_version,
+        }
+        if sha256:
+            source["sha256"] = sha256.lower()
         return {
             "name": pkg_name,
             "version": pkg_version,
+            "package_type": "event",
             "description": "(TODO) Short description of this package.",
             "author": author,
             "license": license_id,
-            "homepage": "(TODO) https://github.com/your-org/" + pkg_name,
-            "repository": "(TODO) https://github.com/your-org/" + pkg_name,
             "python_requires": python_req,
             "volnux_requires": volnux_req,
             "keywords": [],
-            "source": {
-                "type": source_type,
-                "package": pkg_name if source_type == "pypi" else source_module,
-                "version": pkg_version,
-            },
+            "source": source,
         }
+
+    # ------------------------------------------------------------------ events
+
+    _MAX_CATEGORIES = 5
 
     def _build_event_entry(self, cls: typing.Type[EventBase]) -> typing.Dict:
         """
-        Read EventBase class attributes and produce one events[] entry.
+        Read the EventBase class attributes and produce one ``events[]`` entry in the
+        shape of ``event_entry`` in schema/event/v1.json (the same shape the runtime
+        loader expects):
 
-        Attributes read directly from the class:
-            version, changelog, deprecated, deprecation_info,
-            namespace, name, event_type, result_evaluation_strategy,
-            executor, executor_config, EXTRA_INIT_PARAMS_SCHEMA
+            identity     class, module, namespace, name, version
+            lifecycle    deprecated, deprecation_info, changelog
+            discovery    categories, event_type
+            execution    executor, executor_config, result_evaluation_strategy, streaming
+            parameters   init_params (INIT_PARAMS_SCHEMA), call_params (process())
         """
-        module_path: str = cls.__module__
         class_name: str = cls.__name__
-
-        version: str = getattr(cls, "version", "1.0.0")
-        changelog_val = getattr(cls, "changelog", None)
         deprecated: bool = bool(getattr(cls, "deprecated", False))
-        dep_info = getattr(cls, "deprecation_info", None)
-        namespace: str = getattr(cls, "namespace", "local")
-        name_val = getattr(cls, "name", None)
 
-        # EventType enum → string
-        event_type_raw = getattr(cls, "event_type", None)
-        event_type_str: str = (
-            event_type_raw.value
-            if hasattr(event_type_raw, "value")
-            else str(event_type_raw) if event_type_raw is not None else "OTHER"
-        )
-        # Normalise to the schema enum (strip module prefix if present)
-        event_type_str = event_type_str.split(".")[-1].upper()
-
-        # result_evaluation_strategy → string
-        res_strat_raw = getattr(cls, "result_evaluation_strategy", None)
-        res_strat_str: str = (
-            res_strat_raw.__class__.__name__
-            if res_strat_raw is not None
-            else "ALL_MUST_SUCCEED"
-        )
-        # Map common class names to the enum values used in the schema
-        _strat_map = {
-            "AllTasksMustSucceedStrategy": "ALL_MUST_SUCCEED",
-            "NoFailuresAllowedStrategy": "NO_FAILURES_ALLOWED",
-            "AnyTaskMustSucceedStrategy": "ANY_MUST_SUCCEED",
-            "MajorityMustSucceedStrategy": "MAJORITY_MUST_SUCCEED",
-        }
-        res_strat_str = _strat_map.get(res_strat_str, "ALL_MUST_SUCCEED")
-
-        # executor class name
-        executor_cls = getattr(cls, "executor", None)
-        executor_name: str = (
-            executor_cls.__name__
-            if inspect.isclass(executor_cls)
-            else "DefaultExecutor"
-        )
-
-        executor_config = getattr(cls, "executor_config", None)
-        executor_config_dict: typing.Optional[typing.Dict] = (
-            executor_config.__dict__ if executor_config is not None else None
-        )
-
-        # DeprecationInfo → dict
-        dep_info_dict: typing.Optional[typing.Dict] = None
-        if deprecated and dep_info is not None:
-            dep_info_dict = {
-                "since_version": getattr(dep_info, "since_version", "(TODO)"),
-                "reason": getattr(dep_info, "reason", "(TODO)"),
-                "replacement": getattr(dep_info, "replacement", None),
-                "removal_version": getattr(dep_info, "removal_version", "(TODO)"),
-            }
-        elif deprecated:
-            # deprecated=True but no DeprecationInfo object — scaffold it
-            dep_info_dict = {
-                "since_version": "(TODO)",
-                "reason": "(TODO) Describe why this event is deprecated.",
-                "replacement": None,
-                "removal_version": "(TODO)",
-            }
-
-        # EXTRA_INIT_PARAMS_SCHEMA → extra_init_params_schema dict
-        raw_schema: typing.Dict = getattr(cls, "EXTRA_INIT_PARAMS_SCHEMA", {}) or {}
-        extra_init = self._build_extra_init_params(raw_schema, cls)
-
-        entry: typing.Dict[str, typing.Any] = {
+        return {
             "class": class_name,
-            "module": module_path,
-            "namespace": namespace,
-            "name": name_val or class_name,
-            "version": version,
-            "event_type": (
-                event_type_str
-                if event_type_str
-                in (
-                    "EXTRACT",
-                    "TRANSFORM",
-                    "LOAD",
-                    "VALIDATE",
-                    "NOTIFY",
-                    "AI",
-                    "CONTROL",
-                    "CHECKPOINT",
-                    "OTHER",
-                )
-                else "OTHER"
-            ),
+            "module": cls.__module__,
+            "namespace": getattr(cls, "namespace", None) or "local",
+            "name": getattr(cls, "name", None) or class_name,
+            "version": getattr(cls, "version", "1.0.0"),
+            "categories": self._categories(cls),
+            "event_type": self._event_type(cls),
             "deprecated": deprecated,
-            "deprecation_info": dep_info_dict,
-            "changelog": changelog_val,
-            "result_evaluation_strategy": res_strat_str,
-            "executor": executor_name,
-            "executor_config": executor_config_dict,
-            "extra_init_params_schema": extra_init,
+            "deprecation_info": (
+                self._deprecation_info(getattr(cls, "deprecation_info", None))
+                if deprecated
+                else None
+            ),
+            "changelog": getattr(cls, "changelog", None),
+            "result_evaluation_strategy": self._strategy_name(
+                getattr(cls, "result_evaluation_strategy", None)
+            ),
+            "executor": self._executor_name(getattr(cls, "executor", None)),
+            "executor_config": self._jsonable_dict(
+                getattr(cls, "executor_config", None)
+            ),
+            "streaming": bool(getattr(cls, "_volnux_streaming", False)),
+            "init_params": self._init_params(cls),
+            "call_params": self._call_params(cls),
         }
 
-        return entry
+    def _categories(self, cls: typing.Type[EventBase]) -> typing.List[str]:
+        from enum import Enum
 
-    def _build_extra_init_params(
-        self,
-        raw_schema: typing.Dict,
-        cls: typing.Type[EventBase],
-    ) -> typing.Dict:
-        """
-        Convert EXTRA_INIT_PARAMS_SCHEMA entries into the manifest's
-        extra_init_params_schema format.
+        raw = getattr(cls, "categories", None) or ()
+        if isinstance(raw, (str, Enum)):
+            raw = [raw]
+        names = []
+        for category in raw:
+            name = category.name if isinstance(category, Enum) else str(category)
+            name = name.upper()
+            if name not in names:
+                names.append(name)
+        names.sort()
+        return names[: self._MAX_CATEGORIES] or ["OTHER"]
 
-        Falls back to inspecting __init__ type annotations when the
-        schema dict is empty or absent.
-        """
-        if raw_schema:
-            return self._schema_from_extra_init_dict(raw_schema)
-        return self._schema_from_init_signature(cls)
+    @staticmethod
+    def _event_type(cls: typing.Type[EventBase]) -> str:
+        raw = getattr(cls, "event_type", None)
+        value = str(getattr(raw, "value", raw) or "other").lower()
+        return value if value in ("system", "meta", "other") else "other"
 
-    def _schema_from_extra_init_dict(self, raw: typing.Dict) -> typing.Dict:
+    @staticmethod
+    def _strategy_name(strategy: typing.Any) -> str:
+        from volnux.result_evaluators import (
+            AllTasksMustSucceedStrategy,
+            AnyTaskMustSucceedStrategy,
+            MajorityTasksMustSucceedStrategy,
+            NoFailuresAllowedStrategy,
+        )
+
+        known = (
+            (AllTasksMustSucceedStrategy, "ALL_MUST_SUCCEED"),
+            (AnyTaskMustSucceedStrategy, "ANY_MUST_SUCCEED"),
+            (MajorityTasksMustSucceedStrategy, "MAJORITY_MUST_SUCCEED"),
+            (NoFailuresAllowedStrategy, "NO_FAILURES_ALLOWED"),
+        )
+        if strategy is None:
+            return "ALL_MUST_SUCCEED"
+        for strategy_class, name in known:
+            if type(strategy) is strategy_class:
+                return name
+        return "CUSTOM"  # a threshold strategy or one of the author's own
+
+    @staticmethod
+    def _executor_name(executor: typing.Any) -> str:
+        if executor is None:
+            return "default"
+        if isinstance(executor, str):
+            return executor
+        if inspect.isclass(executor):
+            return executor.__name__
+        return type(executor).__name__
+
+    @staticmethod
+    def _jsonable(value: typing.Any) -> typing.Any:
+        """``value`` as plain JSON data (anything else becomes its text)."""
+        try:
+            return json.loads(json.dumps(value, default=str))
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _jsonable_dict(self, value: typing.Any) -> typing.Optional[typing.Dict]:
+        if value is None:
+            return None
+        if hasattr(value, "to_dict"):
+            try:
+                value = value.to_dict()
+            except Exception:
+                value = getattr(value, "__dict__", None)
+        elif not isinstance(value, dict):
+            value = getattr(value, "__dict__", None)
+        return self._jsonable(value) if isinstance(value, dict) else None
+
+    def _deprecation_info(self, info: typing.Any) -> typing.Dict:
+        """The class's ``DeprecationInfo`` (a dict) in the manifest's shape. What the
+        class does not say is left as a TODO to complete by hand."""
+        info = info if isinstance(info, dict) else {}
+        return {
+            "since_version": info.get("since_version", "(TODO)"),
+            "reason": info.get(
+                "reason", "(TODO) Describe why this event is deprecated."
+            ),
+            "replacement": info.get("replacement"),
+            "removal_version": info.get("removal_version", "(TODO)"),
+        }
+
+    # ------------------------------------------------------------- parameters
+
+    def _init_params(self, cls: typing.Type[EventBase]) -> typing.Dict:
+        """Parameters from ``INIT_PARAMS_SCHEMA`` (the event's extra init arguments).
+
+        Validators are Python callables and cannot be written to JSON; a parameter's
+        allowed values go to ``enum`` (from ``choices``).
         """
-        Translate EXTRA_INIT_PARAMS_SCHEMA values (ExtraEventInitKwargs)
-        into manifest param entries.
-        """
-        result: typing.Dict = {}
+        raw = getattr(cls, "INIT_PARAMS_SCHEMA", None) or {}
+        result: typing.Dict[str, typing.Any] = {}
         for param_name, spec in raw.items():
-            # spec may be a dataclass, TypedDict, or plain dict
-            if isinstance(spec, dict):
-                field = spec
-            else:
-                field = spec.__dict__ if hasattr(spec, "__dict__") else {}
-
-            p_type = field.get("type", "any")
-            required = bool(field.get("required", True))
-            desc = field.get("description", "(TODO) Describe this parameter.")
-            default = field.get("default", None)
-            enum_vals = field.get("enum", None)
-            examples = field.get("examples", None)
-
+            spec = spec if isinstance(spec, dict) else getattr(spec, "__dict__", {})
+            required = bool(spec.get("required", False))
             entry: typing.Dict[str, typing.Any] = {
-                "type": self._normalise_type_str(str(p_type)),
+                "type": self._param_type(spec.get("type")),
                 "required": required,
-                "description": desc,
+                "description": spec.get("description")
+                or f"(TODO) Describe the '{param_name}' parameter.",
             }
             if not required:
-                entry["default"] = default
-            if enum_vals:
-                entry["enum"] = list(enum_vals)
-            if examples:
-                entry["examples"] = list(examples)
-
+                entry["default"] = self._default_of(spec)
+            allowed = spec.get("choices") or spec.get("enum")
+            if allowed and len(set(map(str, allowed))) >= 2:
+                entry["enum"] = [str(v) for v in dict.fromkeys(allowed)]
+            if spec.get("examples"):
+                entry["examples"] = list(spec["examples"])[:5]
             result[param_name] = entry
-
         return result
 
-    def _schema_from_init_signature(self, cls: typing.Type[EventBase]) -> typing.Dict:
-        """
-        Fall back to inspecting __init__ annotations when EXTRA_INIT_PARAMS_SCHEMA
-        is not declared, skipping 'self' and 'execution_context'.
-        """
-        result: typing.Dict = {}
-        _SKIP = {"self", "execution_context", "args", "kwargs"}
+    def _default_of(self, spec: typing.Dict) -> typing.Any:
+        from volnux.constants import EMPTY
 
+        default = spec.get("default", EMPTY)
+        if default is EMPTY or default is None:
+            factory = spec.get("default_factory")
+            if callable(factory):
+                try:
+                    default = factory()
+                except Exception:
+                    default = None
+            else:
+                default = None
+        return self._jsonable(default)
+
+    def _call_params(self, cls: typing.Type[EventBase]) -> typing.Dict:
+        """Arguments of ``process()``, from its signature (``self``, ``*args`` and
+        ``**kwargs`` are not parameters a workflow supplies)."""
+        process = getattr(cls, "process", None)
+        if process is None:
+            return {}
         try:
-            sig = inspect.signature(cls.__init__)
+            signature = inspect.signature(process)
         except (ValueError, TypeError):
-            return result
+            return {}
+        try:
+            hints = typing.get_type_hints(process)
+        except Exception:
+            hints = dict(getattr(process, "__annotations__", {}) or {})
 
-        hints = (
-            typing.get_type_hints(cls.__init__)
-            if hasattr(cls.__init__, "__annotations__")
-            else {}
-        )
-
-        for param_name, param in sig.parameters.items():
-            if param_name in _SKIP:
-                continue
-            if param.kind in (
+        result: typing.Dict[str, typing.Any] = {}
+        for param_name, param in signature.parameters.items():
+            if param_name == "self" or param.kind in (
                 inspect.Parameter.VAR_POSITIONAL,
                 inspect.Parameter.VAR_KEYWORD,
             ):
                 continue
-
             has_default = param.default is not inspect.Parameter.empty
-            annotation = hints.get(param_name, None)
-            type_str = self._type_hint_to_str(annotation)
-            default_val = param.default if has_default else None
-
             entry: typing.Dict[str, typing.Any] = {
-                "type": type_str,
+                "type": self._param_type(hints.get(param_name)),
                 "required": not has_default,
-                "description": f"(TODO) Describe the '{param_name}' parameter.",
+                "description": f"(TODO) Describe the '{param_name}' argument.",
             }
             if has_default:
-                entry["default"] = (
-                    default_val
-                    if isinstance(
-                        default_val, (str, int, float, bool, list, dict, type(None))
-                    )
-                    else str(default_val)
-                )
-
+                entry["default"] = self._jsonable(param.default)
             result[param_name] = entry
-
         return result
+
+    def _param_type(self, declared: typing.Any) -> str:
+        """The manifest type name (``param_type_enum``) for a declared type."""
+        if declared is None:
+            return "any"
+        if isinstance(declared, str):
+            return self._normalise_type_str(declared)
+        if isinstance(declared, (tuple, list)):
+            members = [t for t in declared if t is not type(None)]
+            if len(members) == 1:
+                base = self._param_type(members[0])
+                nullable = f"{base} | None" if len(members) != len(declared) else base
+                return nullable if self._is_valid_type(nullable) else "any"
+            return "any"
+        return self._type_hint_to_str(declared)
+
+    @staticmethod
+    def _is_valid_type(name: str) -> bool:
+        from volnux.manifest.schemas import load_schema
+
+        return name in load_schema("event")["$defs"]["param_type_enum"]["enum"]
 
     def _type_hint_to_str(self, hint: typing.Any) -> str:
         """Convert a runtime type hint to the nearest manifest param_type_enum string."""
@@ -531,42 +584,34 @@ class GenerateManifestSubCommand(SubCommand):
             int: "int",
             float: "float",
             bool: "bool",
+            dict: "dict",
+            list: "list",
         }
         if hint in _MAP:
             return _MAP[hint]
 
-        # Handle Optional[X] — typing.Union[X, None]
-        origin = getattr(hint, "__origin__", None)
-        args = getattr(hint, "__args__", ())
+        origin = typing.get_origin(hint)
+        args = typing.get_args(hint)
 
-        if origin is typing.Union and type(None) in args:
-            inner = [a for a in args if a is not type(None)]
-            if len(inner) == 1:
-                base = self._type_hint_to_str(inner[0])
-                nullable = base + " | None"
-                _VALID = {
-                    "str | None",
-                    "int | None",
-                    "float | None",
-                    "bool | None",
-                    "list[str] | None",
-                    "list[int] | None",
-                    "dict | None",
-                }
-                return nullable if nullable in _VALID else "any"
-
-        if origin is list:
-            if args and args[0] is str:
-                return "list[str]"
-            if args and args[0] is int:
-                return "list[int]"
-            if args and args[0] is float:
-                return "list[float]"
+        # Optional[X] / X | None
+        if origin is typing.Union or origin is types.UnionType:
+            if type(None) in args:
+                inner = [a for a in args if a is not type(None)]
+                if len(inner) == 1:
+                    nullable = self._type_hint_to_str(inner[0]) + " | None"
+                    return nullable if self._is_valid_type(nullable) else "any"
             return "any"
+        if origin is list:
+            element = {str: "str", int: "int", float: "float"}.get(
+                args[0] if args else None
+            )
+            return f"list[{element}]" if element else "list"
 
         if origin is dict:
             if len(args) == 2 and args[0] is str and args[1] is str:
                 return "dict[str, str]"
+            if len(args) == 2 and args[0] is str:
+                return "dict[str, any]"
             return "dict"
 
         return "any"
@@ -574,30 +619,12 @@ class GenerateManifestSubCommand(SubCommand):
     @staticmethod
     def _normalise_type_str(raw: str) -> str:
         """Best-effort normalisation of a freeform type string to a schema enum value."""
-        _DIRECT = {
-            "str",
-            "int",
-            "float",
-            "bool",
-            "list[str]",
-            "list[int]",
-            "list[float]",
-            "dict",
-            "dict[str, str]",
-            "dict[str, any]",
-            "str | None",
-            "int | None",
-            "float | None",
-            "bool | None",
-            "list[str] | None",
-            "list[int] | None",
-            "dict | None",
-            "any",
-        }
+        from volnux.manifest.schemas import load_schema
+
+        valid = set(load_schema("event")["$defs"]["param_type_enum"]["enum"])
         clean = raw.strip()
-        if clean in _DIRECT:
+        if clean in valid:
             return clean
-        # Common aliases
         _ALIAS = {
             "Optional[str]": "str | None",
             "Optional[int]": "int | None",
@@ -605,10 +632,22 @@ class GenerateManifestSubCommand(SubCommand):
             "Optional[bool]": "bool | None",
             "Optional[list[str]]": "list[str] | None",
             "Optional[dict]": "dict | None",
+            "Optional[list]": "list | None",
             "List[str]": "list[str]",
             "List[int]": "list[int]",
+            "List[float]": "list[float]",
+            "List": "list",
+            "Dict": "dict",
             "Dict[str, str]": "dict[str, str]",
+            "Dict[str, Any]": "dict[str, any]",
             "typing.Optional[str]": "str | None",
+            "<class 'str'>": "str",
+            "<class 'int'>": "int",
+            "<class 'float'>": "float",
+            "<class 'bool'>": "bool",
+            "<class 'dict'>": "dict",
+            "<class 'list'>": "list",
+            "Any": "any",
         }
         return _ALIAS.get(clean, "any")
 
@@ -629,7 +668,7 @@ class GenerateManifestSubCommand(SubCommand):
     def _validate_generated(self, manifest: typing.Dict) -> None:
         """Run the schema validator on the freshly built manifest and emit warnings."""
         try:
-            schema = _load_schema()
+            schema = _load_schema("event")
         except CommandError:
             self.warning("Could not load schema for post-generation validation.\n")
             return

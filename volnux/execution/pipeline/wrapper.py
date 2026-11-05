@@ -161,14 +161,17 @@ class PipelineWrapper:
                 wid: str,
             ) -> typing.Callable:
                 def handler(*args, **kwargs) -> None:
+                    # Only what a signal accepts when it is emitted again in the
+                    # parent: its own arguments plus pipeline_id / process_id.
+                    # (timestamp and wrapper_id here made every re-emission fail
+                    # with "unexpected keyword argument"; they travel on the
+                    # message itself.)
                     enhanced_kwargs = {
                         **kwargs,
                         # signal key is required by construct_signal()
                         "signal": sig_module,
                         "pipeline_id": pid_str,
                         "process_id": os.getpid(),
-                        "timestamp": time.time(),
-                        "wrapper_id": wid,
                     }
                     signal_data = {
                         "message_type": "pipeline_signal",

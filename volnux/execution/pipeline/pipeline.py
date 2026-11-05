@@ -129,8 +129,9 @@ class CacheFieldDescriptor(object):
     def __set__(self, instance, value):
         if instance is None:
             return self
-        if instance.__dict__.get(self.name) is None:
-            instance.__dict__[self.name] = OrderedDict()
+        # The value is stored (it used to be dropped for an empty OrderedDict, so
+        # __getstate__ could not narrow the cache to one instance).
+        instance.__dict__[self.name] = value if value is not None else OrderedDict()
 
     def __get__(self, instance, owner=None):
         if instance is None:
@@ -462,12 +463,13 @@ class Pipeline(ObjectIdentityMixin, InternalMetadataMixin, metaclass=PipelineMet
         """
         from volnux.engine import run_workflow
 
-        await pipeline_execution_start.emit_async(sender=self.__class__, pipeline=self)
-
+        # Refuse before announcing: a rejected start has no matching end signal.
         if self.execution_context and not force_rerun:
             raise EventDone(
                 "Pipeline has already executed. Pass force_rerun=True to re-run."
             )
+
+        await pipeline_execution_start.emit_async(sender=self.__class__, pipeline=self)
 
         self.execution_context = None
         self._stop_requested = False
@@ -669,9 +671,14 @@ class Pipeline(ObjectIdentityMixin, InternalMetadataMixin, metaclass=PipelineMet
         # Iterating the ChainMap directly gives field names.
         combined_cache = pipeline_state.cache(pk)
         kwargs = dict(combined_cache)
+        # The framework metadata is cached beside the fields but is not a field:
+        # handed to the constructor it was an unexpected argument.
+        internal = kwargs.pop(cls._INTERNAL_KEY, None)
 
         instance = cls(**kwargs)
         setattr(instance, "_id", pk)
+        if internal:
+            instance.__dict__[cls._INTERNAL_KEY] = copy.deepcopy(internal)
         return instance
 
     def get_pipeline_tree(self) -> typing.Optional[Tree]:

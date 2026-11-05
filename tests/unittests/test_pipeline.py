@@ -14,6 +14,9 @@ from volnux.execution.pipeline.fields import FileInputDataField, InputDataField
 multiprocessing.set_start_method("spawn", force=True)
 
 
+# Running, rerunning, stopping and shutting a pipeline down are tested for real in
+# tests/unittests/execution/pipeline/test_pipeline_lifecycle.py (the async tests that
+# were here were never awaited by unittest.TestCase, so they tested nothing).
 class PipelineTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -67,29 +70,6 @@ class PipelineTest(unittest.TestCase):
 
         with pytest.raises(TypeError):
             self.pipeline_klass()
-
-    async def test_pipeline_start(self):
-        pipe = self.pipeline_klass(name="test_name")
-        try:
-            await pipe.start()
-        except EventDone:
-            self.fail("Pipeline raised EventDone unexpectedly!")
-
-    async def test_pipeline_shutdown(self):
-        pipe = self.pipeline_klass(name="test_name")
-        await pipe.start()
-        try:
-            await pipe.shutdown()
-        except Exception as e:
-            self.fail(f"Pipeline shutdown raised an exception: {e}")
-
-    async def test_pipeline_stop(self):
-        pipe = self.pipeline_klass(name="test_name")
-        await pipe.start()
-        try:
-            await pipe.stop()
-        except Exception as e:
-            self.fail(f"Pipeline stop raised an exception: {e}")
 
     def test_pipeline_get_cache_key(self):
         pipe = self.pipeline_klass(name="test_name")
@@ -147,18 +127,6 @@ class PipelineTest(unittest.TestCase):
         self.assertIsNotNone(pipe._state)
         self.assertIsNotNone(pipe._state.pipeline_cache)
 
-    async def test_pipeline_rerun(self):
-        pipe = self.pipeline_klass(name="test")
-        await pipe.start()
-
-        with pytest.raises(EventDone):
-            await pipe.start()  # Should raise without force_rerun
-
-        try:
-            await pipe.start(force_rerun=True)  # Should work with force_rerun
-        except EventDone:
-            self.fail("Pipeline start with force_rerun raised EventDone!")
-
     def test_pipeline_get_non_batch_fields(self):
         fields = list(self.pipeline_klass.get_non_batch_fields())
         self.assertEqual(len(fields), 2)
@@ -215,20 +183,6 @@ class PipelineTest(unittest.TestCase):
             self.assertTrue(hasattr(TestPipeline, PIPELINE_STATE))
         except Exception as e:
             self.fail(f"PipelineMeta initialization raised an exception: {e}")
-
-    def test_pipeline_shutdown_without_start(self):
-        pipe = self.pipeline_klass(name="test_name")
-        try:
-            pipe.shutdown()
-        except Exception as e:
-            self.fail(f"Pipeline shutdown without start raised an exception: {e}")
-
-    def test_pipeline_stop_without_start(self):
-        pipe = self.pipeline_klass(name="test_name")
-        try:
-            pipe.stop()
-        except Exception as e:
-            self.fail(f"Pipeline stop without start raised an exception: {e}")
 
     @classmethod
     def tearDownClass(cls):

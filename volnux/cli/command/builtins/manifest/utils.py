@@ -3,24 +3,34 @@ import typing
 from pathlib import Path
 
 from volnux.cli.command.base import CommandError
-
-_SCHEMA_PATH = Path(__file__).parent.parent / "schemas" / "volnux.manifest.schema.json"
+from volnux.manifest.schemas import PACKAGE_TYPES, load_schema, schema_for_manifest
 
 # Conventional manifest filename.
 _MANIFEST_FILENAME = "volnux.manifest.json"
 
 
-def _load_schema() -> typing.Dict:
-    """Load the bundled JSON Schema from the disk."""
-    if not _SCHEMA_PATH.exists():
+def _load_schema(package_type: str = "event") -> typing.Dict:
+    """Load the bundled JSON Schema for ``package_type`` (``event`` or ``workflow``)."""
+    if package_type not in PACKAGE_TYPES:
         raise CommandError(
-            f"Bundled manifest schema not found at {_SCHEMA_PATH}. "
-            "Your Volnux installation may be incomplete."
+            f"Unknown package type {package_type!r}; expected one of {list(PACKAGE_TYPES)}."
         )
     try:
-        return json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        return load_schema(package_type)
+    except FileNotFoundError as exc:
+        raise CommandError(
+            f"{exc} Your Volnux installation may be incomplete."
+        ) from exc
     except json.JSONDecodeError as exc:
         raise CommandError(f"Bundled manifest schema is not valid JSON: {exc}") from exc
+
+
+def _schema_for(manifest: typing.Dict) -> typing.Dict:
+    """The schema a manifest has to satisfy, chosen by its ``package.package_type``."""
+    try:
+        return schema_for_manifest(manifest)
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        raise CommandError(f"Cannot load the manifest schema: {exc}") from exc
 
 
 def _load_manifest(path: Path) -> typing.Dict:

@@ -64,6 +64,7 @@ class LoadFromPyPi(Event):
         credentials: Optional["SourceCredentials"] = None,
         timeout: int = 30_000,
         index_url: Optional[str] = None,
+        wheel_path: Optional[Union[str, Path]] = None,
         **kwargs: Any,
     ) -> typing.Tuple[bool, Optional[str]]:
         """
@@ -76,6 +77,9 @@ class LoadFromPyPi(Event):
             version:     Required. Exact version to install (PEP 440).
             credentials: Optional credentials for private index authentication.
             timeout:     pip timeout in milliseconds. Defaults to 30 000 ms.
+            wheel_path:  Install this wheel file instead of ``location==version`` from
+                         an index (what EventHub hands over after downloading a
+                         package). ``location`` then only names the package.
             index_url:   Private index URL. When present and credentials are
                          valid, credentials are embedded into the URL and passed
                          as ``--extra-index-url``. Ignored when absent.
@@ -87,6 +91,9 @@ class LoadFromPyPi(Event):
             ``(False, None)`` on any validation or installation failure.
         """
         package_name = str(location)
+
+        if wheel_path is not None:
+            return await self._install_wheel(package_name, Path(wheel_path), timeout)
 
         if not _SAFE_PACKAGE_RE.match(package_name):
             logger.error(
@@ -140,6 +147,43 @@ class LoadFromPyPi(Event):
 
         logger.info("LoadFromPyPi: installed %r successfully", package_spec)
         return True, package_spec
+
+    async def _install_wheel(
+        self, package_name: str, wheel: Path, timeout: int
+    ) -> typing.Tuple[bool, Optional[str]]:
+        """``pip install`` a wheel file (a download, not an index package)."""
+        if not _SAFE_PACKAGE_RE.match(package_name):
+            logger.error(
+                "LoadFromPyPi: %r is not a valid PEP 508 package name.", package_name
+            )
+            return False, None
+        if wheel.suffix != ".whl" or not wheel.is_file():
+            logger.error("LoadFromPyPi: %s is not a wheel file.", wheel)
+            return False, None
+
+        logger.info("LoadFromPyPi: installing wheel %s", wheel.name)
+        try:
+            result = await to_thread(
+                run_command,
+                cmd=[sys.executable, "-m", "pip", "install", str(wheel)],
+                timeout_ms=timeout,
+            )
+        except SubprocessTimeoutError as exc:
+            logger.error(
+                "LoadFromPyPi: pip timed out after %.1fs for %s.",
+                exc.timeout_seconds,
+                wheel.name,
+            )
+            return False, None
+        if result.returncode != 0:
+            logger.error(
+                "LoadFromPyPi: pip failed (exit %d) for %s:\n%s",
+                result.returncode,
+                wheel.name,
+                redact_credentials(result.stderr or result.stdout or "(no output)"),
+            )
+            return False, None
+        return True, str(wheel)
 
     @staticmethod
     def _build_pip_command(

@@ -6,7 +6,7 @@ import jsonschema
 from volnux.cli.command.base import SubCommand, CommandCategory
 from volnux.cli.command.builtins.manifest.utils import (
     _load_manifest,
-    _load_schema,
+    _schema_for,
     _resolve_manifest_path,
     _MANIFEST_FILENAME,
 )
@@ -69,8 +69,8 @@ class ValidateManifestSubCommand(SubCommand):
 
         self.success(f"Validating {manifest_path} …\n") if not json_output else None
 
-        schema = _load_schema()
         manifest = _load_manifest(manifest_path)
+        schema = _schema_for(manifest)  # by package.package_type
 
         validator = jsonschema.Draft202012Validator(schema)
         schema_errors = sorted(
@@ -151,9 +151,9 @@ class ValidateManifestSubCommand(SubCommand):
             path_prefix = f"events > {i} ({event.get('class', '?')})"
 
             # Deprecated events should name a replacement
-            if event.get("deprecated") and not event.get("deprecation_info", {}).get(
-                "replacement"
-            ):
+            if event.get("deprecated") and not (
+                event.get("deprecation_info") or {}
+            ).get("replacement"):
                 warnings.append(
                     {
                         "path": f"{path_prefix} > deprecation_info > replacement",
@@ -164,25 +164,26 @@ class ValidateManifestSubCommand(SubCommand):
                     }
                 )
 
-            # Events with EXTRA_INIT_PARAMS_SCHEMA entries should have descriptions
-            schema = event.get("extra_init_params_schema", {})
-            for param_name, param in schema.items():
-                if not param.get("description", "").strip():
-                    warnings.append(
-                        {
-                            "path": f"{path_prefix} > extra_init_params_schema > {param_name} > description",
-                            "message": f"Parameter '{param_name}' has no description.",
-                        }
-                    )
+            # Every parameter should say what it is for
+            for section in ("init_params", "call_params"):
+                for param_name, param in (event.get(section) or {}).items():
+                    if not str(param.get("description", "")).strip():
+                        warnings.append(
+                            {
+                                "path": f"{path_prefix} > {section} > {param_name} > description",
+                                "message": f"Parameter '{param_name}' has no description.",
+                            }
+                        )
 
-            # event_type OTHER is allowed but worth flagging
-            if event.get("event_type") == "OTHER":
+            # categories == [OTHER] is allowed but makes the event hard to find
+            if event.get("categories") == ["OTHER"]:
                 warnings.append(
                     {
-                        "path": f"{path_prefix} > event_type",
+                        "path": f"{path_prefix} > categories",
                         "message": (
-                            "event_type is 'OTHER'. Consider using a more specific type "
-                            "(EXTRACT, TRANSFORM, LOAD, VALIDATE, NOTIFY, AI, CONTROL, CHECKPOINT)."
+                            "The only category is 'OTHER'. Consider a more specific one "
+                            "(EXTRACT, TRANSFORM, LOAD, VALIDATE, NOTIFICATION, AI, ...) "
+                            "so the event can be found in the registry."
                         ),
                     }
                 )
@@ -200,7 +201,59 @@ class ValidateManifestSubCommand(SubCommand):
                     }
                 )
 
+        for w_index, workflow in enumerate(manifest.get("workflows", []) or []):
+            for s_index, source in enumerate(workflow.get("sources", []) or []):
+                if source.get("source_type") == "local":
+                    warnings.append(
+                        {
+                            "path": f"workflows > {w_index} > sources > {s_index}",
+                            "message": (
+                                f"Source '{source.get('name')}' is local: a workflow that "
+                                "depends on it cannot be pulled and run elsewhere."
+                            ),
+                        }
+                    )
+
         return warnings
+
+    def _workflow_cross_checks(
+        self, manifest: typing.Dict
+    ) -> typing.List[typing.Dict[str, str]]:
+        """Checks on a workflow package: the event sources it depends on and the
+        events it defines itself must each be listed once."""
+        errors: typing.List[typing.Dict[str, str]] = []
+        for w_index, workflow in enumerate(manifest.get("workflows", []) or []):
+            where = f"workflows > {w_index} ({workflow.get('name', '?')})"
+
+            names: typing.Set[str] = set()
+            for s_index, source in enumerate(workflow.get("sources", []) or []):
+                name = source.get("name", "")
+                if name in names:
+                    errors.append(
+                        {
+                            "path": f"{where} > sources > {s_index}",
+                            "message": f"Event source '{name}' is declared more than once.",
+                            "level": "error",
+                        }
+                    )
+                names.add(name)
+
+            local: typing.Set[typing.Tuple[str, str]] = set()
+            for e_index, entry in enumerate(workflow.get("local_events", []) or []):
+                key = (entry.get("module", ""), entry.get("class", ""))
+                if key in local:
+                    errors.append(
+                        {
+                            "path": f"{where} > local_events > {e_index}",
+                            "message": (
+                                f"Local event '{key[1]}' from module '{key[0]}' is "
+                                "listed more than once."
+                            ),
+                            "level": "error",
+                        }
+                    )
+                local.add(key)
+        return errors
 
     def _cross_reference_checks(
         self, manifest: typing.Dict
@@ -225,6 +278,8 @@ class ValidateManifestSubCommand(SubCommand):
                 }
             )
 
+        errors.extend(self._workflow_cross_checks(manifest))
+
         # Every event class listed must be unique (class + module)
         seen: typing.Set[typing.Tuple[str, str]] = set()
         for i, event in enumerate(manifest.get("events", [])):
@@ -241,5 +296,28 @@ class ValidateManifestSubCommand(SubCommand):
                     }
                 )
             seen.add(key)
+
+        # Two events cannot answer to the same address in a workflow
+        # (namespace::name@version): the registry would keep only one.
+        addresses: typing.Dict[str, str] = {}
+        for i, event in enumerate(manifest.get("events", [])):
+            if not event.get("version"):
+                continue
+            address = (
+                f"{event.get('namespace', 'local')}::"
+                f"{event.get('name') or event.get('class', '')}@{event['version']}"
+            )
+            if address in addresses and addresses[address] != event.get("class"):
+                errors.append(
+                    {
+                        "path": f"events > {i}",
+                        "message": (
+                            f"'{event.get('class')}' and '{addresses[address]}' share the "
+                            f"address '{address}'. Give one a different name or version."
+                        ),
+                        "level": "error",
+                    }
+                )
+            addresses.setdefault(address, event.get("class", ""))
 
         return errors

@@ -16,7 +16,7 @@ workflows/
 │   ├── events.py         # EventBase subclasses — business logic
 │   ├── pipeline.py      # Pipeline subclass — input schema
 │   ├── batch_pipeline.py # BatchPipeline subclass — multi-instance
-│   └── trading.ptl      # Pointy-Lang source — workflow structure
+│   └── trading.pty      # Pointy-Lang source — workflow structure
 """
 
 import logging
@@ -61,7 +61,9 @@ class TriggerRegistry:
     """Manages triggers registered by a workflow configuration."""
 
     def __init__(self):
-        self._triggers: TriggerSet["TriggerBase"] = TriggerSet[TriggerBase]()
+        # (TriggerBase is imported for type checking only: subscripting the set with
+        # it at run time raised NameError, so no WorkflowConfig could be built)
+        self._triggers: TriggerSet["TriggerBase"] = TriggerSet()
 
     def register(
         self,
