@@ -17,7 +17,7 @@ import multiprocessing
 import threading
 import time
 import warnings
-from concurrent.futures import Future, ProcessPoolExecutor, wait, FIRST_EXCEPTION
+from concurrent.futures import Future, ProcessPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import (
@@ -118,11 +118,21 @@ class QueueTask:
     args: tuple = field(compare=False, default_factory=tuple)
     kwargs: dict = field(compare=False, default_factory=dict)
     source: str = field(compare=False, default="local")
+    # When the task last changed level (or was queued): starvation is counted from
+    # here, so a task is promoted one level per threshold - not one level on every
+    # dequeue once it has waited long enough. ``enqueue_time`` stays the FIFO key.
+    waiting_since: float = field(compare=False, default=0.0)
 
     def __post_init__(self) -> None:
         if not isinstance(self.priority, TaskPriority):
-            # Accept bare int but coerce to TaskPriority for .name access
-            self.priority = TaskPriority(int(self.priority))
+            try:
+                # Accept a bare int, coerced so ``.name`` works
+                self.priority = TaskPriority(int(self.priority))
+            except (TypeError, ValueError):
+                valid = [f"{p.name}={p.value}" for p in TaskPriority]
+                raise ValueError(
+                    f"Invalid task priority {self.priority!r}; expected one of {valid}."
+                ) from None
 
 
 class PriorityTaskQueue:
@@ -130,21 +140,23 @@ class PriorityTaskQueue:
     Priority-ordered task queue with starvation prevention.
 
     Tasks are ordered by (priority, enqueue_time). Within the same priority
-    level, tasks are FIFO. Tasks that have waited longer than
-    ``starvation_threshold`` seconds are promoted one priority level.
+    level, tasks are FIFO. A task that has waited longer than
+    ``starvation_threshold`` seconds at its level is promoted one level (and its
+    waiting clock restarts, so it is promoted again only after another threshold).
 
     A ``max_size`` limit provides backpressure: ``enqueue()`` raises
-    ``QueueFull`` when the limit is reached, allowing callers to apply
-    backpressure rather than growing the queue without bound.
+    ``QueueFull`` when the limit is reached.
+
+    A task that has been dequeued but not yet handed to the executor is *in
+    transit*: it is still counted by :meth:`pending_count` and can still be
+    cancelled (:meth:`cancel_context`), so there is no window in which a task
+    belongs to neither the queue nor the executor.
 
     Thread-safe. All public methods acquire the internal lock.
     """
 
     class QueueFull(Exception):
         """Raised by enqueue() when the queue is at capacity."""
-
-    # Sentinel pushed to unblock dequeue() when the queue is shutting down
-    _STOP = object()
 
     def __init__(
         self,
@@ -154,7 +166,7 @@ class PriorityTaskQueue:
         """
         Args:
             starvation_threshold:
-                Seconds a task may wait before being promoted one priority
+                Seconds a task may wait at one level before being promoted one
                 level. Default 60s. Set to 0 to disable starvation promotion.
             max_size:
                 Maximum number of tasks the queue will hold. 0 = unlimited.
@@ -165,18 +177,25 @@ class PriorityTaskQueue:
         self._max_size: int = max_size
         self._total_enqueued: int = 0
         self._total_dequeued: int = 0
-        self._lock = threading.Lock()
-        self._item_available = threading.Event()
+        self._cond = threading.Condition(threading.Lock())
         self._stopped: bool = False
+        # dequeued, not yet handed over: task_id -> task; and those cancelled meanwhile
+        self._in_transit: Dict[str, QueueTask] = {}
+        self._cancelled_in_transit: Set[str] = set()
 
     @property
     def size(self) -> int:
-        with self._lock:
+        with self._cond:
             return len(self._heap)
 
     @property
+    def stopped(self) -> bool:
+        with self._cond:
+            return self._stopped
+
+    @property
     def stats(self) -> Dict[str, Any]:
-        with self._lock:
+        with self._cond:
             by_priority: Dict[str, int] = {}
             for p in TaskPriority:
                 by_priority[p.name.lower()] = sum(
@@ -184,11 +203,21 @@ class PriorityTaskQueue:
                 )
             return {
                 "queue_depth": len(self._heap),
+                "in_transit": len(self._in_transit),
                 "total_enqueued": self._total_enqueued,
                 "total_dequeued": self._total_dequeued,
                 "max_size": self._max_size or "unlimited",
                 "priorities": by_priority,
             }
+
+    def pending_count(self, context_id: str) -> int:
+        """Tasks of ``context_id`` that are queued or in transit (not yet handed over)."""
+        with self._cond:
+            queued = sum(1 for t in self._heap if t.context_id == context_id)
+            moving = sum(
+                1 for t in self._in_transit.values() if t.context_id == context_id
+            )
+            return queued + moving
 
     def enqueue(self, task: QueueTask) -> None:
         """
@@ -200,7 +229,7 @@ class PriorityTaskQueue:
             RuntimeError:
                 If the queue has been stopped.
         """
-        with self._lock:
+        with self._cond:
             if self._stopped:
                 raise RuntimeError("Cannot enqueue to a stopped PriorityTaskQueue.")
             if self._max_size and len(self._heap) >= self._max_size:
@@ -208,40 +237,39 @@ class PriorityTaskQueue:
                     f"Queue is full ({self._max_size} tasks). "
                     "Apply backpressure or increase max_size."
                 )
-            task.enqueue_time = time.monotonic()
+            task.enqueue_time = task.waiting_since = time.monotonic()
             heapq.heappush(self._heap, task)
             self._total_enqueued += 1
-            self._item_available.set()
+            depth = len(self._heap)
+            self._cond.notify()
 
         logger.debug(
             "Task %s enqueued (priority=%s source=%s depth=%d)",
             task.task_id,
             task.priority.name,
             task.source,
-            len(self._heap),
+            depth,
         )
 
-    def dequeue(self) -> Optional[QueueTask]:
+    def dequeue(self, timeout: Optional[float] = None) -> Optional[QueueTask]:
         """
         Remove and return the highest-priority task.
 
-        Blocks until a task is available or ``stop()`` is called.
-        Returns ``None`` when the queue has been stopped and is empty,
-        signalling the caller to exit.
+        Blocks until a task is available, ``stop()`` is called, or ``timeout``
+        seconds pass. Returns ``None`` when the queue has been stopped and is
+        empty (see :attr:`stopped`), or when the timeout elapsed.
 
+        The task is *in transit* until :meth:`finish_dispatch` is called.
         Thread-safe.
         """
-        while True:
-            with self._lock:
-                # Apply starvation promotion before each dequeue
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._cond:
+            while True:
                 if self._heap:
                     self._promote_starving_tasks()
-
-                if self._heap:
                     task = heapq.heappop(self._heap)
                     self._total_dequeued += 1
-                    if not self._heap:
-                        self._item_available.clear()
+                    self._in_transit[task.task_id] = task
                     logger.debug(
                         "Task %s dequeued (priority=%s waited=%.2fs remaining=%d)",
                         task.task_id,
@@ -250,22 +278,34 @@ class PriorityTaskQueue:
                         len(self._heap),
                     )
                     return task
-
                 if self._stopped:
-                    # Queue is empty and stopped — signal caller to exit
                     return None
+                if deadline is None:
+                    self._cond.wait()
+                else:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return None
+                    self._cond.wait(remaining)
 
-            # Queue is empty and not stopped — wait for the next item
-            # Short timeout so we re-check _stopped frequently
-            self._item_available.wait(timeout=0.1)
+    def is_cancelled(self, task: QueueTask) -> bool:
+        """True if ``task`` was cancelled while in transit."""
+        with self._cond:
+            return task.task_id in self._cancelled_in_transit
+
+    def finish_dispatch(self, task: QueueTask) -> None:
+        """The task has reached the executor (or was dropped): it is no longer in transit."""
+        with self._cond:
+            self._in_transit.pop(task.task_id, None)
+            self._cancelled_in_transit.discard(task.task_id)
 
     def remove_task(self, task_id: str) -> Optional[QueueTask]:
         """
-        Remove a specific task from the queue by task_id.
-        Returns the removed task, or None if not found.
+        Remove a specific queued task by task_id.
+        Returns the removed task, or None if it is not queued.
         Thread-safe.
         """
-        with self._lock:
+        with self._cond:
             for i, task in enumerate(self._heap):
                 if task.task_id == task_id:
                     # Swap with last element and re-heapify
@@ -277,11 +317,23 @@ class PriorityTaskQueue:
 
     def remove_by_context(self, context_id: str) -> List[QueueTask]:
         """
-        Remove all queued (not yet dispatched) tasks for a given context_id.
+        Remove all queued (not yet dequeued) tasks for a given context_id.
         Returns the list of removed tasks.
         Thread-safe.
         """
-        with self._lock:
+        removed, _ = self.cancel_context(context_id, flag_in_transit=False)
+        return removed
+
+    def cancel_context(
+        self, context_id: str, *, flag_in_transit: bool = True
+    ) -> Tuple[List[QueueTask], int]:
+        """
+        Remove the queued tasks of ``context_id`` and flag those in transit as
+        cancelled, so the dispatcher drops them instead of submitting them.
+
+        Returns ``(removed_tasks, flagged_in_transit)``.
+        """
+        with self._cond:
             remaining = []
             removed = []
             for task in self._heap:
@@ -289,12 +341,19 @@ class PriorityTaskQueue:
                     removed.append(task)
                 else:
                     remaining.append(task)
-
             if removed:
                 self._heap = remaining
                 heapq.heapify(self._heap)
-                if not self._heap:
-                    self._item_available.clear()
+
+            flagged = 0
+            if flag_in_transit:
+                for task in self._in_transit.values():
+                    if (
+                        task.context_id == context_id
+                        and task.task_id not in self._cancelled_in_transit
+                    ):
+                        self._cancelled_in_transit.add(task.task_id)
+                        flagged += 1
 
         if removed:
             logger.debug(
@@ -302,29 +361,32 @@ class PriorityTaskQueue:
                 len(removed),
                 context_id[:8],
             )
-        return removed
+        return removed, flagged
+
+    def clear(self) -> List[QueueTask]:
+        """Remove and return every queued task (those in transit are flagged cancelled)."""
+        with self._cond:
+            removed, self._heap = self._heap, []
+            self._cancelled_in_transit.update(self._in_transit)
+            return removed
 
     def stop(self) -> None:
         """
         Signal the queue to stop. Unblocks any waiting ``dequeue()`` calls.
-        After stop(), ``dequeue()`` returns None when the queue is empty.
-        Safe to call multiple times.
+        After stop(), ``dequeue()`` returns tasks until the queue is empty, then
+        None. Safe to call multiple times.
         """
-        with self._lock:
+        with self._cond:
             self._stopped = True
-            self._item_available.set()  # wake any blocked dequeue()
+            self._cond.notify_all()
 
     def _promote_starving_tasks(self) -> None:
         """
-        Promote tasks that have waited beyond the starvation threshold by
-        one priority level.
+        Promote tasks that have waited beyond the starvation threshold at their
+        level by one priority level, and restart their waiting clock.
 
-        Must be called with self._lock held.
-
-        Rather than mutating heap elements in place (which corrupts the heap
-        invariant until heapify is called and risks corruption on exception),
-        we rebuild the heap from scratch. The heap is typically small
-        (<1,000 items) so this is O(n) — acceptable.
+        Must be called with the lock held. The heap is re-heapified once after the
+        in-place changes; it is typically small, so O(n) is acceptable.
         """
         if not self._starvation_threshold:
             return
@@ -335,10 +397,11 @@ class PriorityTaskQueue:
         for task in self._heap:
             if task.priority == TaskPriority.CRITICAL:
                 continue  # Already at maximum urgency
-            wait_time = now - task.enqueue_time
+            wait_time = now - task.waiting_since
             if wait_time > self._starvation_threshold:
                 old_priority = task.priority
                 task.priority = task.priority.promote()
+                task.waiting_since = now  # one level per threshold
                 logger.info(
                     "Task %s promoted %s → %s after %.1fs waiting",
                     task.task_id,
@@ -349,7 +412,6 @@ class PriorityTaskQueue:
                 changed = True
 
         if changed:
-            # Rebuild the heap to restore the invariant after in-place mutations
             heapq.heapify(self._heap)
 
 
@@ -427,25 +489,33 @@ class VolnuxPoolManager:
     def __new__(cls) -> "VolnuxPoolManager":
         with cls._singleton_lock:
             if cls._instance is None:
+                # All state is created here, once, under the singleton lock.
+                # (It used to be created in __init__, which Python runs on every
+                # VolnuxPoolManager() call: two threads making the first calls
+                # could each replace the other's lock and registry.)
                 instance = object.__new__(cls)
-                instance._initialized = False  # guard for __init__
+                instance._executor = None
+                instance._backend_type = None
+                instance._initialized = False
+                instance._shut_down = False
+                instance._state_lock = threading.Lock()
+                instance._registry = _ContextFutureRegistry()
+                instance._task_queue = None
+                instance._dispatch_thread = None
+                instance._dispatch_started = False
+                # In-flight limit: the dispatcher waits for a free slot before it takes
+                # the next task, which is what makes priority order matter.
+                instance._slots = None
+                instance._max_in_flight = 0
+                # Held while a task goes from the queue to the executor, and by
+                # cancel_context, so a cancel can never miss a task half-way.
+                instance._dispatch_lock = threading.Lock()
                 cls._instance = instance
         return cls._instance
 
     def __init__(self) -> None:
-        # __init__ is called every time __new__ returns the singleton.
-        # The _initialized guard ensures setup runs only once.
-        if self._initialized:
-            return
-        self._executor: Optional[Union[ProcessPoolExecutor, Any]] = None
-        self._backend_type: Optional[BackendType] = None
-        self._initialized: bool = False
-        self._shut_down: bool = False
-        self._state_lock = threading.Lock()
-        self._registry = _ContextFutureRegistry()
-        self._task_queue: Optional[PriorityTaskQueue] = None
-        self._dispatch_thread: Optional[threading.Thread] = None
-        self._dispatch_started: bool = False
+        # State is created in __new__; __init__ runs on every call and does nothing.
+        pass
 
     def initialize(
         self,
@@ -458,6 +528,7 @@ class VolnuxPoolManager:
         task_time_limit: Optional[int] = None,
         starvation_threshold: float = 60.0,
         max_queue_size: int = 0,
+        max_in_flight: Optional[int] = None,
     ) -> None:
         """
         Configure and start the executor and dispatch loop.
@@ -482,6 +553,13 @@ class VolnuxPoolManager:
             max_queue_size:
                 Maximum tasks held in the priority queue. 0 = unlimited.
                 When full, ``submit_task()`` raises ``PriorityTaskQueue.QueueFull``.
+            max_in_flight:
+                Most tasks handed to the executor at once. The dispatcher takes
+                the next task from the priority queue only when one of these
+                slots is free, so priority order, starvation promotion and
+                cancellation of queued tasks apply to every task that is waiting
+                for a worker. Default: ``max_workers`` (local); unlimited for
+                celery (its workers are elsewhere). 0 = unlimited.
 
         Raises:
             RuntimeError: If already initialized with a different backend,
@@ -504,10 +582,16 @@ class VolnuxPoolManager:
                     f"{self._backend_type!r}. Call reset() first to switch backends."
                 )
 
+            if max_in_flight is not None and max_in_flight < 0:
+                raise ValueError(f"max_in_flight must be >= 0, got {max_in_flight}.")
+
+            in_flight_limit = max_in_flight or 0
             if backend == "local":
                 if max_workers is not None and max_workers < 1:
                     raise ValueError(f"max_workers must be >= 1, got {max_workers}.")
                 num_workers = max_workers or multiprocessing.cpu_count()
+                if max_in_flight is None:
+                    in_flight_limit = num_workers
                 # "spawn" is mandatory — "fork" + asyncio produces undefined behaviour
                 ctx = multiprocessing.get_context("spawn")
                 self._executor = ProcessPoolExecutor(
@@ -545,6 +629,10 @@ class VolnuxPoolManager:
             self._task_queue = PriorityTaskQueue(
                 starvation_threshold=starvation_threshold,
                 max_size=max_queue_size,
+            )
+            self._max_in_flight = in_flight_limit
+            self._slots = (
+                threading.BoundedSemaphore(in_flight_limit) if in_flight_limit else None
             )
             self._backend_type = backend  # type: ignore[assignment]
             self._initialized = True
@@ -616,25 +704,51 @@ class VolnuxPoolManager:
         timeout: Optional[float] = None,
     ) -> None:
         """
-        Block until every in-flight task belonging to ``context`` finishes.
+        Block until every task of ``context`` has finished: those still waiting in
+        the priority queue (they used to be ignored, so a drain could return with
+        the work not yet started) and those in flight.
 
         Raises:
-            TimeoutError: If timeout elapses before all futures settle.
+            TimeoutError: If timeout elapses before all tasks settle.
         """
         ctx_id = context.state_id
-        futures = self._registry.snapshot(ctx_id)
-        if not futures:
-            return
+        deadline = None if timeout is None else time.monotonic() + timeout
+        waited: Set[Future] = set()
 
-        logger.debug(
-            "Draining context=%s — %d in-flight task(s).", ctx_id[:8], len(futures)
-        )
-        done, not_done = wait(futures, timeout=timeout)
-        if not_done:
-            raise TimeoutError(
-                f"drain_context timed out for context {ctx_id!r}: "
-                f"{len(not_done)} task(s) still running."
-            )
+        while True:
+            # Queued first, then the futures: a task is registered before it stops
+            # being pending, so a task that is not pending any more is in the second
+            # read. (The other order let a task slip between the two reads.)
+            queued = self._task_queue.pending_count(ctx_id) if self._task_queue else 0
+            futures = self._registry.snapshot(ctx_id) - waited
+            if not futures and not queued:
+                break
+
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise TimeoutError(
+                    f"drain_context timed out for context {ctx_id!r}: "
+                    f"{len(futures) + queued} task(s) still running or queued."
+                )
+
+            if futures:
+                logger.debug(
+                    "Draining context=%s — %d in-flight task(s), %d queued.",
+                    ctx_id[:8],
+                    len(futures),
+                    queued,
+                )
+                # Wait in short slices while tasks are still queued, so those are
+                # noticed as they are dispatched.
+                slice_ = remaining
+                if queued:
+                    slice_ = 0.05 if remaining is None else min(0.05, remaining)
+                done, _ = wait(futures, timeout=slice_)
+                waited |= done
+            else:
+                time.sleep(
+                    0.01 if remaining is None else max(0.0, min(0.01, remaining))
+                )
         logger.debug("Context %s drained.", ctx_id[:8])
 
     def cancel_context(
@@ -663,14 +777,18 @@ class VolnuxPoolManager:
         cancelled = 0
         skipped = 0
 
-        queued_removed = (
-            self._task_queue.remove_by_context(ctx_id)
-            if self._task_queue is not None
-            else []
-        )
-        cancelled += len(queued_removed)
+        # Under the dispatch lock a task is either still the queue's (removed or
+        # flagged here) or already the executor's (registered, so cancelled below):
+        # a cancel can no longer fall between the two.
+        with self._dispatch_lock:
+            queued_removed, flagged = (
+                self._task_queue.cancel_context(ctx_id)
+                if self._task_queue is not None
+                else ([], 0)
+            )
+            in_flight = self._registry.pop_all(ctx_id)
+        cancelled += len(queued_removed) + flagged
 
-        in_flight = self._registry.pop_all(ctx_id)
         for future in in_flight:
             if (
                 terminate
@@ -691,8 +809,8 @@ class VolnuxPoolManager:
             "cancel_context %s — queued_removed=%d futures_cancelled=%d "
             "futures_skipped=%d",
             ctx_id[:8],
-            len(queued_removed),
-            cancelled - len(queued_removed),
+            len(queued_removed) + flagged,
+            cancelled - len(queued_removed) - flagged,
             skipped,
         )
         return cancelled, skipped
@@ -704,7 +822,12 @@ class VolnuxPoolManager:
         timeout: Optional[float] = None,
     ) -> Tuple[Set[Future], Set[Future]]:
         """
-        Wait until at least one task in ``context`` finishes or raises.
+        Wait until at least one dispatched task of ``context`` finishes (normally,
+        by raising, or cancelled).
+
+        (It waited for the first *exception* - which, if nothing raised, meant for
+        every task - although it is documented to return as soon as one finishes.)
+        Tasks still waiting in the queue have no future yet and are not waited for.
 
         Returns:
             (done, not_done): Sets of futures in each state.
@@ -712,7 +835,7 @@ class VolnuxPoolManager:
         futures = self._registry.snapshot(context.state_id)
         if not futures:
             return set(), set()
-        return wait(futures, timeout=timeout, return_when=FIRST_EXCEPTION)
+        return wait(futures, timeout=timeout, return_when=FIRST_COMPLETED)
 
     @property
     def is_initialized(self) -> bool:
@@ -741,7 +864,15 @@ class VolnuxPoolManager:
                 "shut_down": self._shut_down,
             },
             "contexts": {
+                # contexts with something in flight (not the number of tasks)
                 "active_count": len(self._registry.all_context_ids()),
+            },
+            "in_flight": {
+                "tasks": sum(
+                    self._registry.active_count(c)
+                    for c in self._registry.all_context_ids()
+                ),
+                "limit": self._max_in_flight or "unlimited",
             },
         }
 
@@ -755,8 +886,12 @@ class VolnuxPoolManager:
         Stop the dispatch loop and tear down the executor.
 
         Args:
-            wait_for_tasks: Block until all in-flight tasks complete.
-            cancel_futures: Cancel pending futures before shutdown.
+            wait_for_tasks: Run what is already queued and wait for everything in
+                flight. When False the tasks still waiting in the priority queue are
+                dropped (they used to be pushed at an executor that was shutting
+                down, and failed there).
+            cancel_futures: Drop the queued tasks and cancel the executor's pending
+                futures.
 
         Safe to call multiple times.
         """
@@ -765,16 +900,27 @@ class VolnuxPoolManager:
                 return
             self._shut_down = True
 
-        # Stop the queue — this unblocks the dispatch thread immediately
+        dropped: List[QueueTask] = []
         if self._task_queue is not None:
+            if cancel_futures or not wait_for_tasks:
+                dropped = self._task_queue.clear()
+            # Stop: the dispatcher finishes what is left, then exits
             self._task_queue.stop()
+        if dropped:
+            logger.info("Shutdown dropped %d queued task(s).", len(dropped))
 
-        # Join the dispatch thread with a reasonable timeout
-        if self._dispatch_thread and self._dispatch_thread.is_alive():
-            self._dispatch_thread.join(timeout=10.0)
-            if self._dispatch_thread.is_alive():
+        # The dispatcher must be gone before the executor is, or it would submit to
+        # a closed one. With tasks to run it may take as long as they do.
+        thread = self._dispatch_thread
+        if (
+            thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=None if wait_for_tasks and not cancel_futures else 10.0)
+            if thread.is_alive():
                 logger.warning(
-                    "Dispatch thread did not exit within 10s — continuing shutdown."
+                    "Dispatch thread did not exit in time — continuing shutdown."
                 )
 
         # Shut down the executor
@@ -836,47 +982,82 @@ class VolnuxPoolManager:
         self._dispatch_thread.start()
         logger.debug("Dispatch loop started.")
 
+    def _release_slot(self) -> None:
+        slots = self._slots
+        if slots is None:
+            return
+        try:
+            slots.release()
+        except ValueError:  # released more often than acquired (e.g. after a reset)
+            pass
+
+    def _on_done(self, ctx_id: str, future: Future) -> None:
+        """A task finished (or was cancelled): forget it and free its slot."""
+        self._registry.discard(ctx_id, future)
+        self._release_slot()
+
     def _dispatch_loop(self) -> None:
         """
-        Continuously dequeue tasks from the priority queue and submit them
-        to the worker pool.
+        Take tasks from the priority queue, in order, and hand them to the executor.
 
-        Runs in a background thread. Each task is submitted to the executor
-        and the resulting Future is registered under its context ID so that
-        drain_context() and cancel_context() can track it.
+        Runs in a background thread. A task is taken only when an in-flight slot is
+        free (``max_in_flight``), so the executor's own FIFO queue never holds more
+        than the pool can run and the priority order of what is waiting is decided
+        here, when a worker is actually available. The future of each task is
+        registered under its context ID so drain_context() and cancel_context() can
+        track it, and its slot is given back when it finishes.
 
-        Exits cleanly when the queue returns None (queue stopped and empty).
+        Exits cleanly when the queue is stopped and empty.
         """
+        queue = self._task_queue
         logger.debug(
             "Dispatch loop running on thread %s.", threading.current_thread().name
         )
 
         while True:
-            task = self._task_queue.dequeue()  # type: ignore[union-attr]
+            # A free slot first, then the best waiting task.
+            slots = self._slots
+            if slots is not None:
+                acquired = False
+                while not acquired:
+                    acquired = slots.acquire(timeout=0.1)
+                    if not acquired and queue.stopped and queue.size == 0:  # type: ignore[union-attr]
+                        break
+                if not acquired:
+                    logger.debug("Dispatch loop received stop signal — exiting.")
+                    break
 
+            task = queue.dequeue()  # type: ignore[union-attr]
             if task is None:
                 # Queue has been stopped and is empty — exit cleanly
+                self._release_slot()
                 logger.debug("Dispatch loop received stop signal — exiting.")
                 break
 
-            if self._executor is None:
-                logger.warning("Task %s dropped — executor is gone.", task.task_id)
-                continue
-
+            submitted = False
             try:
-                future = self._executor.submit(
-                    task.dispatch_fn, *task.args, **task.kwargs
-                )
-                self._registry.add(task.context_id, future)
-                future.add_done_callback(
-                    lambda f, ctx_id=task.context_id: self._registry.discard(ctx_id, f)
-                )
-                logger.debug(
-                    "Task %s dispatched (context=%s source=%s).",
-                    task.task_id,
-                    task.context_id[:8],
-                    task.source,
-                )
+                with self._dispatch_lock:
+                    if queue.is_cancelled(task):  # type: ignore[union-attr]
+                        logger.debug("Task %s cancelled in transit.", task.task_id)
+                    elif self._executor is None:
+                        logger.warning(
+                            "Task %s dropped — executor is gone.", task.task_id
+                        )
+                    else:
+                        future = self._executor.submit(
+                            task.dispatch_fn, *task.args, **task.kwargs
+                        )
+                        submitted = True
+                        self._registry.add(task.context_id, future)
+                        future.add_done_callback(
+                            lambda f, ctx_id=task.context_id: self._on_done(ctx_id, f)
+                        )
+                        logger.debug(
+                            "Task %s dispatched (context=%s source=%s).",
+                            task.task_id,
+                            task.context_id[:8],
+                            task.source,
+                        )
             except Exception as exc:
                 # Log and continue — a single task submit failure should
                 # not bring down the dispatch loop
@@ -886,6 +1067,11 @@ class VolnuxPoolManager:
                     exc,
                     exc_info=True,
                 )
+            finally:
+                # (only now is the task no longer pending: it is registered)
+                queue.finish_dispatch(task)  # type: ignore[union-attr]
+                if not submitted:
+                    self._release_slot()  # nothing will run, so nothing to wait for
 
         logger.debug("Dispatch loop exited.")
 
