@@ -233,6 +233,7 @@ class TriggerEngine:
         workflow_name: str,
         workflow_params: Dict[str, Any],
         trigger_type: TriggerType,
+        execution_id: Optional[str] = None,
     ) -> None:
         """
         Fire a trigger to execute a specified workflow with parameters. This method ensures
@@ -246,6 +247,10 @@ class TriggerEngine:
         :type workflow_params: Dict[str, Any]
         :param trigger_type: The type of trigger that initiates the workflow.
         :type trigger_type: TriggerType
+        :param execution_id: The caller's id for this run (the platform's ``Execution``
+            record). It travels with the queued run to the executor, which uses it to
+            pause, resume or stop the run and to report its end.
+        :type execution_id: Optional[str]
         :return: This function does not return a value.
         :rtype: None
 
@@ -273,14 +278,24 @@ class TriggerEngine:
                 f"Trigger type {trigger_type.value} not enabled for workflow {workflow_name}"
             )
 
-        if self._enqueue(workflow_name, workflow_params):
+        queued = (
+            self._enqueue(workflow_name, workflow_params)
+            if execution_id is None
+            else self._enqueue(workflow_name, workflow_params, execution_id)
+        )
+        if queued:
             logger.debug(f"fire_trigger: workflow '{workflow_name}' enqueued.")
         else:
             logger.warning(
                 f"fire_trigger: task queue is full, dropping workflow '{workflow_name}'."
             )
 
-    def _enqueue(self, workflow_name: str, params: Dict[str, Any]) -> bool:
+    def _enqueue(
+        self,
+        workflow_name: str,
+        params: Dict[str, Any],
+        execution_id: Optional[str] = None,
+    ) -> bool:
         """Put a workflow run on the queue without waiting.
 
         ``put_nowait``, not ``put``: on a full bounded queue ``put()`` waits for room
@@ -290,10 +305,59 @@ class TriggerEngine:
         :return: False if the queue is full (the run is dropped), True otherwise.
         """
         try:
-            self.task_queue.put_nowait((workflow_name, params))
+            item = (
+                (workflow_name, params)
+                if execution_id is None
+                else (workflow_name, params, execution_id)
+            )
+            self.task_queue.put_nowait(item)
         except asyncio.QueueFull:
             return False
         return True
+
+    async def start_trigger(self, trigger_id: str) -> bool:
+        """
+        Start a trigger registered after the engine started (``start()`` only
+        starts the triggers known when it runs). Does nothing, returning False,
+        while the engine is not running or the trigger is already started.
+
+        :raises ValueError: no trigger with this id is registered.
+        """
+        trigger = self.triggers.get(trigger_id)
+        if trigger is None:
+            raise ValueError(f"Trigger '{trigger_id}' is not registered.")
+        if not self._running or trigger.lifecycle in (
+            TriggerLifecycle.ACTIVE,
+            TriggerLifecycle.PAUSED,
+        ):
+            return False
+        await trigger.run()
+        return True
+
+    async def unregister(self, trigger_id: str) -> None:
+        """
+        Remove a trigger: it is stopped, and no longer known to the engine or to
+        its workflow.
+
+        :raises ValueError: no trigger with this id is registered.
+        """
+        trigger = self.triggers.get(trigger_id)
+        if trigger is None:
+            raise ValueError(f"Trigger '{trigger_id}' is not registered.")
+
+        try:
+            await self._end_trigger(trigger)
+        finally:
+            del self.triggers[trigger_id]
+            workflow = self.get_workflow_registry().get_workflow_config(
+                trigger.workflow_name
+            )
+            if workflow is not None:
+                try:
+                    workflow.triggers.unregister(trigger_id)
+                except ValueError:
+                    pass  # (the workflow no longer holds it)
+        logger.info(f"Unregistered trigger: {trigger_id}")
 
     async def start(self):
         """
@@ -628,10 +692,15 @@ class TriggerEngine:
             try:
                 item = await self.task_queue.get()
                 try:
-                    workflow_name, params = item
+                    workflow_name, params, *rest = item
 
                     logger.info(f"Worker {worker_id} executing '{workflow_name}'")
-                    await self.workflow_executor(workflow_name, params)
+                    if rest:  # (the caller's execution id, when there is one)
+                        await self.workflow_executor(
+                            workflow_name, params, execution_id=rest[0]
+                        )
+                    else:
+                        await self.workflow_executor(workflow_name, params)
                     logger.info(f"Worker {worker_id} finished '{workflow_name}'")
                 finally:
                     self.task_queue.task_done()

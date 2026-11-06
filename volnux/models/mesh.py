@@ -1,20 +1,13 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from formax import MiniAnnotated, Attrib, InitStrategy
+from formax import MiniAnnotated, Attrib
 
-from volnux.backends.fields import (
-    ForeignKeyField,
-    FKConfig,
-    # ForeignKey,
-    OnDelete,
-    FKConstraint,
-)
+from volnux.backends.fields import ForeignKeyField, FKConfig, OnDelete
 
 from .enums import NodeType, NodeStatus
 from .base import GovernanceModel
 from .users import Organization, User
-from .utils import pre_format_timestamps, post_format_timestamps
 
 
 class MeshNode(GovernanceModel):
@@ -40,6 +33,7 @@ class MeshNode(GovernanceModel):
         User,
         FKConfig(
             nullable=True,
+            default=None,
             reverse_name="decommissioned_nodes",
             on_delete=OnDelete.SET_NULL,
         ),
@@ -47,22 +41,16 @@ class MeshNode(GovernanceModel):
     decommissioned_at: Optional[float] = None
     last_heartbeat: Optional[float] = None
 
-    capacity_cpu_cores: Optional[int] = None
-    capacity_memory_gb: Optional[float] = None
-    capacity_disk_gb: Optional[float] = None
-    current_load: int = 0
+    capacity_cpu_cores: MiniAnnotated[Optional[int], Attrib(default=None, ge=1)]
+    capacity_memory_gb: MiniAnnotated[Optional[float], Attrib(default=None, gt=0)]
+    capacity_disk_gb: MiniAnnotated[Optional[float], Attrib(default=None, gt=0)]
+    current_load: MiniAnnotated[int, Attrib(default=0, ge=0)]
 
     node_type: NodeType = NodeType.GENERAL
     status: NodeStatus = NodeStatus.OFFLINE
     region: Optional[str] = None
     endpoint: Optional[str] = None
     mtls_cert_fingerprint: Optional[str] = None
-
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
 
 
 class NodeHeartbeat(GovernanceModel):
@@ -73,22 +61,18 @@ class NodeHeartbeat(GovernanceModel):
         FKConfig(reverse_name="heartbeats", on_delete=OnDelete.CASCADE),
     ]
     status: NodeStatus
-    current_load: int
+    current_load: MiniAnnotated[int, Attrib(ge=0)]
     recorded_at: MiniAnnotated[
         float,
-        Attrib(
-            default_factory=lambda: datetime.now(timezone.utc).timestamp(),
-            pre_formatter=pre_format_timestamps,
-            post_formatter=post_format_timestamps,
-        ),
+        Attrib(default_factory=lambda: datetime.now(timezone.utc).timestamp()),
     ]
 
-    cpu_utilization: Optional[float] = None
-    memory_utilization: Optional[float] = None
-    disk_utilization: Optional[float] = None
-
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
+    cpu_utilization: MiniAnnotated[
+        Optional[float], Attrib(default=None, ge=0.0, le=100.0)
+    ]
+    memory_utilization: MiniAnnotated[
+        Optional[float], Attrib(default=None, ge=0.0, le=100.0)
+    ]
+    disk_utilization: MiniAnnotated[
+        Optional[float], Attrib(default=None, ge=0.0, le=100.0)
+    ]

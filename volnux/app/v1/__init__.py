@@ -5,9 +5,14 @@ from .approvals import (
     reject_workflow,
     create_approval_chain,
 )
-from .audit import list_audit_entries
+from .audit import list_audit_entries, verify_audit_trail
 from .auth import login, get_me
-from .break_glass import review_break_glass, initiate_break_glass
+from .break_glass import (
+    review_break_glass,
+    initiate_break_glass,
+    list_break_glass,
+    get_break_glass,
+)
 from .delegations import create_delegation, list_delegations, revoke_delegation
 from .eventhub import list_events, get_event, publish_event, list_event_versions
 from .executions import (
@@ -18,6 +23,7 @@ from .executions import (
     stop_execution,
     resume_execution,
     get_execution_traces,
+    on_execution_finished,
 )
 from .health import health_check
 from .hitl import respond_hitl, get_hitl_request, list_hitl_requests
@@ -32,7 +38,6 @@ from .notifications import (
     list_notification_configs,
     update_notification_config,
     create_notification_config,
-    update_notification_config,
     delete_notification_config,
 )
 from .organizations import (

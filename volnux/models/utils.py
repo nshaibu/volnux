@@ -10,3 +10,6 @@ def pre_format_timestamps(self, value: Union[datetime, float]) -> float:
     if isinstance(value, datetime):
         return value.timestamp()
     return value
+
+
+SEMVER = r"^\d+\.\d+\.\d+$"

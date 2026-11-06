@@ -644,6 +644,7 @@ class WorkflowConfig(ABC):
         self,
         params: Dict[str, Any],
         run_type: Literal["batch", "single"] = "single",
+        on_pipeline: typing.Optional[typing.Callable[[typing.Any], None]] = None,
     ) -> typing.Union[Pipeline, BatchPipeline, None]:
         """
         Execute the workflow.
@@ -652,6 +653,8 @@ class WorkflowConfig(ABC):
             params: Workflow parameters passed to the pipeline.
             run_type: ``"single"`` for a single execution, ``"batch"`` for
                 multi-instance execution via BatchPipeline.
+            on_pipeline: Called with the pipeline once it is built and before it
+                starts, so the caller can hold it (to pause, resume or stop the run).
 
         Returns:
             The Pipeline or BatchPipeline instance that was executed,
@@ -669,20 +672,26 @@ class WorkflowConfig(ABC):
             )
 
         if run_type == "single":
-            return await self._run_single(params)
+            return await self._run_single(params, on_pipeline=on_pipeline)
 
         if run_type == "batch":
-            return await self._run_batch(params)
+            return await self._run_batch(params, on_pipeline=on_pipeline)
 
         raise RuntimeError(
             f"Unknown run_type '{run_type}'. Expected 'single' or 'batch'."
         )
 
-    async def _run_single(self, params: Dict[str, Any]) -> Pipeline:
+    async def _run_single(
+        self,
+        params: Dict[str, Any],
+        on_pipeline: typing.Optional[typing.Callable[[typing.Any], None]] = None,
+    ) -> Pipeline:
         """Execute a single pipeline run."""
         pipeline_class = self.get_pipeline_class()
         try:
             pipeline = pipeline_class(**params)
+            if on_pipeline is not None:
+                on_pipeline(pipeline)
             await pipeline.start(force_rerun=True)
             logger.info("Workflow '%s' completed single run successfully", self.name)
             return pipeline
@@ -693,7 +702,10 @@ class WorkflowConfig(ABC):
             ) from e
 
     async def _run_batch(
-        self, params: Dict[str, Any], on_result: typing.Optional[typing.Callable] = None
+        self,
+        params: Dict[str, Any],
+        on_result: typing.Optional[typing.Callable] = None,
+        on_pipeline: typing.Optional[typing.Callable[[typing.Any], None]] = None,
     ) -> BatchPipeline:
         """
         Execute a batch pipeline run.
@@ -709,6 +721,8 @@ class WorkflowConfig(ABC):
         _on_result = on_result if on_result is not None else (lambda r: None)
         try:
             batch_pipeline = batch_pipeline_class(**params)
+            if on_pipeline is not None:
+                on_pipeline(batch_pipeline)
             await batch_pipeline.execute(on_result=_on_result)
             logger.info("Workflow '%s' completed batch run successfully", self.name)
             return batch_pipeline

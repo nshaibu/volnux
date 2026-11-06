@@ -1,5 +1,6 @@
 from .help import HelpCommand
 from .init_project import InitProjectCommand
+from .createsuperuser import CreateSuperuserCommand
 from .dev import DevCommand
 from .serve import ServeCommand
 from .shell import ShellCommand
@@ -11,6 +12,7 @@ from .triggers import TriggerEngineCommand, TriggerCommand
 __all__ = [
     "InitProjectCommand",
     "DevCommand",
+    "CreateSuperuserCommand",
     "ServeCommand",
     "VersionCommand",
     "HelpCommand",

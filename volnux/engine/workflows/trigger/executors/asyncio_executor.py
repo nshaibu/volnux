@@ -71,6 +71,8 @@ class AsyncTaskWorkflowExecutor(WorkflowExecutor):
     returns but the task is still running.
     """
 
+    supports_control = True
+
     def __init__(
         self,
         workflow_registry: "WorkflowRegistry",
@@ -116,10 +118,18 @@ class AsyncTaskWorkflowExecutor(WorkflowExecutor):
         self._completed_count: int = 0
         self._failed_count: int = 0
 
+        # Runs started with an execution id from the caller (the platform's
+        # Execution record): their live pipelines, and which of them were stopped.
+        self._external_ids: set = set()
+        self._pipelines: Dict[str, Any] = {}
+        self._stop_requested: set = set()
+
     async def execute(
         self,
         workflow_name: str,
         params: Dict[str, Any],
+        *,
+        execution_id: Optional[str] = None,
     ) -> Any:
         """
         Execute a workflow and wait for its result.
@@ -130,6 +140,9 @@ class AsyncTaskWorkflowExecutor(WorkflowExecutor):
         Args:
             workflow_name: Name of the workflow to execute.
             params:        Parameters passed to the workflow.
+            execution_id:  The caller's id for this run. It becomes the run's id
+                           (``pause_execution`` and the other controls take it) and
+                           the listeners are told when the run ends.
 
         Returns:
             The workflow's return value.
@@ -138,7 +151,7 @@ class AsyncTaskWorkflowExecutor(WorkflowExecutor):
             WorkflowExecutionError: On failure, timeout, or cancellation.
         """
 
-        execution_id = self._new_execution_id()
+        execution_id = self._claim_execution_id(execution_id)
 
         logger.info(
             "Workflow %r queued — execution_id=%s active=%d limit=%d",
@@ -402,6 +415,7 @@ class AsyncTaskWorkflowExecutor(WorkflowExecutor):
                 workflow_name,
                 execution_id,
             )
+            await self._finish(execution_id, "completed")
             return result
 
         except asyncio.TimeoutError:
@@ -412,21 +426,27 @@ class AsyncTaskWorkflowExecutor(WorkflowExecutor):
             except (asyncio.CancelledError, Exception):
                 pass
             self._failed_count += 1
-            raise WorkflowError(
+            message = (
                 f"Workflow {workflow_name!r} timed out after {self._timeout}s "
                 f"(execution_id={execution_id})"
             )
+            await self._finish(execution_id, "failed", message)
+            raise WorkflowError(message)
 
         except asyncio.CancelledError:
             # Workflow was cancelled from outside (cancel_execution, cancel_all)
             self._failed_count += 1
-            raise WorkflowError(
+            message = (
                 f"Workflow {workflow_name!r} was cancelled "
                 f"(execution_id={execution_id})"
             )
+            self._stop_requested.add(execution_id)
+            await self._finish(execution_id, "stopped", message)
+            raise WorkflowError(message)
 
-        except WorkflowError:
+        except WorkflowError as exc:
             self._failed_count += 1
+            await self._finish(execution_id, "failed", str(exc))
             raise
 
         except Exception as exc:
@@ -438,10 +458,12 @@ class AsyncTaskWorkflowExecutor(WorkflowExecutor):
                 exc,
                 exc_info=True,
             )
-            raise WorkflowError(
+            message = (
                 f"Workflow {workflow_name!r} failed: {exc} "
                 f"(execution_id={execution_id})"
-            ) from exc
+            )
+            await self._finish(execution_id, "failed", message)
+            raise WorkflowError(message) from exc
 
         finally:
             self._deregister(record)
@@ -482,6 +504,15 @@ class AsyncTaskWorkflowExecutor(WorkflowExecutor):
             execution_id,
         )
 
+        if execution_id in self._external_ids:
+            # (the pipeline is held so the run can be paused, resumed or stopped)
+            return await config.run_workflow(
+                params=workflow_params,
+                run_type=run_type,
+                on_pipeline=lambda pipeline: self._pipelines.__setitem__(
+                    execution_id, pipeline
+                ),
+            )
         return await config.run_workflow(params=workflow_params, run_type=run_type)
 
     async def _cancel_record(
@@ -515,6 +546,55 @@ class AsyncTaskWorkflowExecutor(WorkflowExecutor):
             pass
 
         return True
+
+    # ── Control of live runs ──────────────────────────────────────────────────
+
+    def _claim_execution_id(self, execution_id: Optional[str]) -> str:
+        if execution_id is None:
+            return self._new_execution_id()
+        if execution_id in self._external_ids or execution_id in self._records_by_id:
+            raise ValueError(f"Execution {execution_id!r} is already running")
+        self._external_ids.add(execution_id)
+        return execution_id
+
+    def _pipeline(self, execution_id: str) -> Any:
+        return self._pipelines.get(execution_id)
+
+    async def pause_execution(self, execution_id: str) -> bool:
+        pipeline = self._pipeline(execution_id)
+        if pipeline is None or not hasattr(pipeline, "pause"):
+            return False
+        await pipeline.pause()
+        return True
+
+    async def resume_execution(self, execution_id: str) -> bool:
+        pipeline = self._pipeline(execution_id)
+        if pipeline is None or not hasattr(pipeline, "resume"):
+            return False
+        await pipeline.resume()
+        return True
+
+    async def stop_execution(self, execution_id: str) -> bool:
+        pipeline = self._pipeline(execution_id)
+        if pipeline is None or not hasattr(pipeline, "stop"):
+            return False
+        self._stop_requested.add(execution_id)
+        await pipeline.stop()
+        return True
+
+    async def _finish(
+        self, execution_id: str, state: str, error: Optional[str] = None
+    ) -> None:
+        """Forget a run the caller knows by its own id, and tell the listeners."""
+        self._pipelines.pop(execution_id, None)
+        if execution_id not in self._external_ids:
+            return
+        self._external_ids.discard(execution_id)
+        if execution_id in self._stop_requested:
+            self._stop_requested.discard(execution_id)
+            if state in ("completed", "failed"):
+                state = "stopped"  # (a stopped run may end either way)
+        await self._notify(execution_id, state, error)
 
     # ── Task registry ─────────────────────────────────────────────────────────
 

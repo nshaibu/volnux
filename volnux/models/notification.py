@@ -1,15 +1,8 @@
 from typing import Any, Dict, List
 from dataclasses import field
 
-from formax import InitStrategy
 
-from volnux.backends.fields.foreign_key import (
-    ForeignKeyField,
-    FKConfig,
-    ForeignKey,
-    OnDelete,
-    FKConstraint,
-)
+from volnux.backends.fields.foreign_key import ForeignKeyField, FKConfig, OnDelete
 
 from .base import GovernanceModel
 from .enums import NotificationChannel
@@ -32,8 +25,4 @@ class NotificationConfig(GovernanceModel):
     is_active: bool = True
     event_types: List[str] = field(default_factory=list)
 
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
+    encrypted_fields = ("config",)

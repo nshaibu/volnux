@@ -1,122 +1,118 @@
-from typing import Optional
-from fastapi import Depends, Query, Body, Path, HTTPException
+from fastapi import Depends, Path, HTTPException
 
-from volnux.models import User, RoleAssignment
-from volnux.models.enums import AuditEventType
+from volnux.models import RoleAssignment, User
 from ..app import get_current_app
-from ..dependencies import get_org_id, Pagination, _serialize_model
+from ..dependencies import (
+    Pagination,
+    _serialize_model,
+    ensure_same_org,
+    meta,
+    page_args,
+)
 from ..permission import Permission
-from ..utils import require_permission, get_current_user
+from ..schemas import UserCreate, UserUpdate
+from ..security import hash_password
+from ..utils import RequestContext, get_current_user, require_permission
 
 app = get_current_app()
 
 
+async def _load_user(ctx: RequestContext, user_id: str) -> User:
+    user = await User.get_async(user_id)
+    ensure_same_org(ctx, user.organization.id, "User")
+    return user
+
+
 @app.post("/api/v1/users", status_code=201)
 async def create_user(
-    data: dict = Body(...),
-    org_id: str = Depends(get_org_id),
-    user: dict = Depends(get_current_user),
+    data: UserCreate,
+    ctx: RequestContext = Depends(get_current_user),
     _: None = Depends(require_permission(Permission.USER_CREATE)),
 ):
-    """Create a new user. Requires user-create permission."""
-    data["organization_id"] = org_id
-    new_user = User(**data)
-    new_user.save()
-    return {"status": "success", "data": _serialize_model(new_user)}
+    """Create a user in the caller's organization."""
+    if await User.filter_async(
+        email=data.email, organization__object_id=ctx.organization.id
+    ):
+        raise HTTPException(409, "A user with this email already exists")
+    user = User(
+        name=data.name,
+        email=data.email,
+        sso_identifier=data.sso_identifier,
+        password_hash=hash_password(data.password),
+        organization=ctx.organization,
+    )
+    await user.save_async()
+    return {"status": "success", "data": _serialize_model(user)}
 
 
 @app.get("/api/v1/users")
 async def list_users(
-    org_id: str = Depends(get_org_id),
     pagination: dict = Depends(Pagination),
-    is_active: Optional[bool] = Query(None),
-    user: dict = Depends(get_current_user),
+    ctx: RequestContext = Depends(get_current_user),
     _: None = Depends(require_permission(Permission.USER_READ)),
 ):
-    """List users in the organization. Requires user-read permission."""
-    filters = {"organization_id": org_id}
-    if is_active is not None:
-        filters["is_active"] = is_active
-
-    users = User.filter(
-        limit=pagination["page_size"],
-        offset=(pagination["page"] - 1) * pagination["page_size"],
-        **filters,
-    )
-    total = User.count(**filters)
-
+    """List users in the caller's organization."""
+    scope = {"organization__object_id": ctx.organization.id}
+    users = await User.filter_async(**page_args(pagination), **scope)
+    total = await User.count_async(**scope)
     return {
         "status": "success",
         "data": [_serialize_model(u) for u in users],
-        "meta": {
-            "page": pagination["page"],
-            "page_size": pagination["page_size"],
-            "total": total,
-        },
+        "meta": meta(pagination, total),
     }
 
 
 @app.get("/api/v1/users/{user_id}")
 async def get_user(
     user_id: str = Path(...),
-    user: dict = Depends(get_current_user),
+    ctx: RequestContext = Depends(get_current_user),
     _: None = Depends(require_permission(Permission.USER_READ)),
 ):
-    """Get user by ID. Requires user-read permission."""
-    target = User.get(user_id)
-    if (
-        target.organization_id != user["organization_id"]
-        and "super-admin" not in user["roles"]
-    ):
-        raise HTTPException(403, "Access denied")
-    return {"status": "success", "data": _serialize_model(target)}
+    return {
+        "status": "success",
+        "data": _serialize_model(await _load_user(ctx, user_id)),
+    }
 
 
 @app.put("/api/v1/users/{user_id}")
 async def update_user(
+    data: UserUpdate,
     user_id: str = Path(...),
-    data: dict = Body(...),
-    user: dict = Depends(get_current_user),
+    ctx: RequestContext = Depends(get_current_user),
     _: None = Depends(require_permission(Permission.USER_UPDATE)),
 ):
-    """Update a user. Requires user-update permission."""
-    target = User.get(user_id)
-    if target.organization_id != user["organization_id"]:
-        raise HTTPException(403, "Access denied")
-
-    immutable = ("id", "organization_id", "creation_time")
-    for key, value in data.items():
-        if hasattr(target, key) and key not in immutable:
-            setattr(target, key, value)
-    target.touch()
-    target.save()
+    target = await _load_user(ctx, user_id)
+    changes = data.model_dump(exclude_unset=True)
+    if "password" in changes:
+        target.password_hash = hash_password(changes.pop("password"))
+    for name, value in changes.items():
+        setattr(target, name, value)
+    await target.save_async()
     return {"status": "success", "data": _serialize_model(target)}
 
 
 @app.delete("/api/v1/users/{user_id}")
 async def delete_user(
     user_id: str = Path(...),
-    user: dict = Depends(get_current_user),
+    ctx: RequestContext = Depends(get_current_user),
     _: None = Depends(require_permission(Permission.USER_DELETE)),
 ):
-    """Delete a user. Requires user-delete permission."""
-    target = User.get(user_id)
-    if target.organization_id != user["organization_id"]:
-        raise HTTPException(403, "Access denied")
-    target.delete()
+    target = await _load_user(ctx, user_id)
+    if target.id == ctx.user.id:
+        raise HTTPException(400, "You cannot delete your own account")
+    await target.delete_async()
     return {"status": "success", "data": None}
 
 
 @app.get("/api/v1/users/{user_id}/roles")
 async def get_user_roles(
     user_id: str = Path(...),
-    user: dict = Depends(get_current_user),
+    ctx: RequestContext = Depends(get_current_user),
     _: None = Depends(require_permission(Permission.USER_READ)),
 ):
-    """Get role assignments for a user."""
-    target = User.get(user_id)
-    if target.organization_id != user["organization_id"]:
-        raise HTTPException(403, "Access denied")
-
-    assignments = RoleAssignment.filter(user_id=user_id)
-    return {"status": "success", "data": [_serialize_model(a) for a in assignments]}
+    target = await _load_user(ctx, user_id)
+    assignments = await RoleAssignment.filter_async(user__object_id=target.id)
+    return {
+        "status": "success",
+        "data": [_serialize_model(a) for a in assignments if a.revoked_at is None],
+    }

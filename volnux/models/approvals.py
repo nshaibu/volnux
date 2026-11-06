@@ -1,17 +1,13 @@
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from formax import BaseModel, MiniAnnotated, Attrib, InitStrategy
+from formax import MiniAnnotated, Attrib
 
-from volnux.backends.fields import (
-    ForeignKeyField,
-    FKConfig,
-    OnDelete,
-    FKConstraint,
-)
+from volnux.backends.fields import ForeignKeyField, FKConfig, OnDelete
 from volnux.models.enums import (
     WorkflowCategory,
     ApproverType,
     ApprovalStatus,
+    FailureBehavior,
 )
 
 from .base import GovernanceModel
@@ -36,18 +32,16 @@ class ApprovalChain(GovernanceModel):
         List[WorkflowCategory], Attrib(default_factory=list)
     ]
     is_active: MiniAnnotated[bool, Attrib(default=True)]
-    failure_behavior: MiniAnnotated[str, Attrib(default="reset_chain")]
+    failure_behavior: MiniAnnotated[
+        FailureBehavior, Attrib(default=FailureBehavior.RESET_CHAIN)
+    ]
     require_all_steps_in_order: MiniAnnotated[bool, Attrib(default=True)]
+    # Step definitions copied into ApprovalStep rows when a workflow is submitted.
+    steps_template: MiniAnnotated[List[Dict[str, Any]], Attrib(default_factory=list)]
     created_by: ForeignKeyField[
         User,
         FKConfig(reverse_name="created_approval_chains", on_delete=OnDelete.PROTECT),
     ]
-
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
 
 
 class ApprovalStep(GovernanceModel):
@@ -66,13 +60,17 @@ class ApprovalStep(GovernanceModel):
     role: ForeignKeyField[
         Role,
         FKConfig(
-            nullable=True, reverse_name="approval_steps", on_delete=OnDelete.SET_NULL
+            nullable=True,
+            default=None,
+            reverse_name="approval_steps",
+            on_delete=OnDelete.SET_NULL,
         ),
     ]
     individual: ForeignKeyField[
         User,
         FKConfig(
             nullable=True,
+            default=None,
             reverse_name="approval_steps_assigned",
             on_delete=OnDelete.SET_NULL,
         ),
@@ -80,29 +78,26 @@ class ApprovalStep(GovernanceModel):
     team: ForeignKeyField[
         Team,
         FKConfig(
-            nullable=True, reverse_name="approval_steps", on_delete=OnDelete.SET_NULL
+            nullable=True,
+            default=None,
+            reverse_name="approval_steps",
+            on_delete=OnDelete.SET_NULL,
         ),
     ]
-    required_count: MiniAnnotated[int, Attrib(default=1)]
+    required_count: MiniAnnotated[int, Attrib(default=1, ge=1)]
     is_mandatory: MiniAnnotated[bool, Attrib(default=True)]
-    timeout_hours: MiniAnnotated[Optional[int], Attrib(default=None)]
+    timeout_hours: MiniAnnotated[Optional[int], Attrib(default=None, ge=1)]
     description: MiniAnnotated[Optional[str], Attrib(default=None)]
     status: MiniAnnotated[ApprovalStatus, Attrib(default=ApprovalStatus.PENDING)]
     decided_by: ForeignKeyField[
         User,
         FKConfig(
             nullable=True,
+            default=None,
             reverse_name="decided_approval_steps",
             on_delete=OnDelete.SET_NULL,
         ),
     ]
-    decision: Optional[str] = None
     comments: Optional[str] = None
     decided_at: Optional[float] = None
     requires_human_readable_review: bool = False
-
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True

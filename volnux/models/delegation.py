@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional
 
-from formax import BaseModel, MiniAnnotated, Attrib, InitStrategy
+from formax import MiniAnnotated, Attrib
 
 from volnux.backends.fields.foreign_key import (
     ForeignKeyField,
@@ -13,7 +13,6 @@ from volnux.models.enums import EnvironmentType
 from .base import GovernanceModel
 from .users import User, Role, Organization, Team
 from .enums import DelegationStatus
-from .utils import pre_format_timestamps, post_format_timestamps
 
 
 class Delegation(GovernanceModel):
@@ -45,7 +44,10 @@ class Delegation(GovernanceModel):
     scope_team: ForeignKeyField[
         Team,
         FKConfig(
-            nullable=True, reverse_name="delegations", on_delete=OnDelete.SET_NULL
+            nullable=True,
+            default=None,
+            reverse_name="delegations",
+            on_delete=OnDelete.SET_NULL,
         ),
     ]
     scope_environment: MiniAnnotated[Optional[EnvironmentType], Attrib(default=None)]
@@ -54,24 +56,16 @@ class Delegation(GovernanceModel):
         User,
         FKConfig(
             nullable=True,
+            default=None,
             reverse_name="revoked_delegations",
             on_delete=OnDelete.SET_NULL,
         ),
     ]
-    revoked_at: MiniAnnotated[
-        Optional[float],
-        Attrib(
-            default=None,
-            pre_formatter=pre_format_timestamps,
-            post_formatter=post_format_timestamps,
-        ),
-    ]
+    revoked_at: Optional[float] = None
 
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
+    def validate(self) -> None:
+        if self.end_time <= self.start_time:
+            raise ValueError("Delegation end_time must be after start_time")
 
 
 class DelegationAction(GovernanceModel):
@@ -84,10 +78,4 @@ class DelegationAction(GovernanceModel):
     action_type: str
     target_type: str
     target_id: str
-    metadata: MiniAnnotated[Dict[str, Any], Attrib(default=dict)]
-
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
+    metadata: MiniAnnotated[Dict[str, Any], Attrib(default_factory=dict)]

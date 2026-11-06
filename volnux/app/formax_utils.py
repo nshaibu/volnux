@@ -1,7 +1,7 @@
 import dataclasses
 import inspect
 from enum import Enum
-from typing import Any, Dict, List, Type, get_args, get_origin
+from typing import Any, Dict, Type, get_origin
 
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
@@ -163,7 +163,7 @@ def patch_openapi_with_formax_constraints(
             # Also check if the schema name appears in the constraint map keys
             # (handles cases where FastAPI adds prefixes/suffixes)
             for model_name, field_constraints in constraint_map.items():
-                if model_name in schema_name:
+                if schema_name.startswith(f"{model_name}-"):
                     _apply_constraints_to_schema(schema, field_constraints)
                     break
 
@@ -171,7 +171,7 @@ def patch_openapi_with_formax_constraints(
         existing_schema_names = set(schemas.keys())
         for model_name, field_constraints in constraint_map.items():
             already_covered = any(
-                model_name == name or model_name in name
+                model_name == name or name.startswith(f"{model_name}-")
                 for name in existing_schema_names
             )
             if not already_covered:

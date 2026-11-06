@@ -8,6 +8,8 @@ ROLE_PERMISSIONS: Dict[str, List[Permission]] = {
         Permission.WORKFLOW_READ,
         Permission.WORKFLOW_UPDATE,
         Permission.WORKFLOW_SUBMIT,
+        Permission.WORKFLOW_DELETE,
+        Permission.WORKFLOW_PUBLISH,
         Permission.EVENT_READ,
     ],
     "workflow-reviewer": [
@@ -17,6 +19,8 @@ ROLE_PERMISSIONS: Dict[str, List[Permission]] = {
         Permission.APPROVAL_REJECT,
     ],
     "workflow-operator": [
+        Permission.WORKFLOW_READ,
+        Permission.WORKFLOW_EXECUTE,
         Permission.EXECUTION_READ,
         Permission.EXECUTION_CONTROL,
         Permission.EXECUTION_TRACE,
@@ -49,6 +53,7 @@ ROLE_PERMISSIONS: Dict[str, List[Permission]] = {
         Permission.EXECUTION_READ,
         Permission.EXECUTION_TRACE,
         Permission.HITL_READ,
+        Permission.BREAK_GLASS_REVIEW,
     ],
     "compliance-approver": [
         Permission.WORKFLOW_READ,
@@ -69,6 +74,7 @@ ROLE_PERMISSIONS: Dict[str, List[Permission]] = {
         Permission.TRIGGER_CREATE,
         Permission.TRIGGER_DELETE,
         Permission.NOTIFICATION_MANAGE,
+        Permission.APPROVAL_MANAGE,
     ],
     "super-admin": [Permission.SUPER_ADMIN],
 }

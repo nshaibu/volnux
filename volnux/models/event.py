@@ -1,19 +1,14 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from formax import MiniAnnotated, Attrib, InitStrategy
+from formax import MiniAnnotated, Attrib
 
-from volnux.backends.fields import (
-    ForeignKeyField,
-    FKConfig,
-    OnDelete,
-    FKConstraint,
-)
+from volnux.backends.fields import ForeignKeyField, FKConfig, OnDelete
 
 from .base import GovernanceModel
 from .users import Organization, Team, User
 from .enums import NamespaceType, EventStatus
-from .utils import pre_format_timestamps, post_format_timestamps
+from .utils import SEMVER
 
 
 class Event(GovernanceModel):
@@ -33,9 +28,14 @@ class Event(GovernanceModel):
     ]
     team: ForeignKeyField[
         Team,
-        FKConfig(nullable=True, reverse_name="events", on_delete=OnDelete.SET_NULL),
+        FKConfig(
+            nullable=True,
+            default=None,
+            reverse_name="events",
+            on_delete=OnDelete.SET_NULL,
+        ),
     ]
-    version: MiniAnnotated[str, Attrib(default="0.1.0")]
+    version: MiniAnnotated[str, Attrib(default="0.1.0", pattern=SEMVER)]
     status: MiniAnnotated[EventStatus, Attrib(default=EventStatus.PUBLISHED)]
     manifest: Dict[str, Any]
     publisher: ForeignKeyField[
@@ -43,11 +43,7 @@ class Event(GovernanceModel):
         FKConfig(reverse_name="published_events", on_delete=OnDelete.PROTECT),
     ]
 
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
+    unique_together = (("organization", "name", "version"),)
 
 
 class EventVersion(GovernanceModel):
@@ -57,7 +53,7 @@ class EventVersion(GovernanceModel):
         Event,
         FKConfig(reverse_name="versions", on_delete=OnDelete.CASCADE),
     ]
-    version_number: str
+    version_number: MiniAnnotated[str, Attrib(pattern=SEMVER)]
     manifest: Dict[str, Any]
     changelog: MiniAnnotated[Optional[str], Attrib(default=None)]
     compatibility_matrix: MiniAnnotated[Optional[Dict[str, Any]], Attrib(default=None)]
@@ -67,18 +63,8 @@ class EventVersion(GovernanceModel):
     ]
     published_at: MiniAnnotated[
         float,
-        Attrib(
-            default_factory=lambda: datetime.now(timezone.utc).timestamp(),
-            pre_formatter=pre_format_timestamps,
-            post_formatter=post_format_timestamps,
-        ),
+        Attrib(default_factory=lambda: datetime.now(timezone.utc).timestamp()),
     ]
-
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
 
 
 class EventDependency(GovernanceModel):
@@ -94,12 +80,6 @@ class EventDependency(GovernanceModel):
     ]
     version_constraint: MiniAnnotated[str, Attrib(default="*")]
 
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
-
 
 class Namespace(GovernanceModel):
     """EventHub namespace configuration."""
@@ -112,13 +92,14 @@ class Namespace(GovernanceModel):
     ]
     team: ForeignKeyField[
         Team,
-        FKConfig(nullable=True, reverse_name="namespaces", on_delete=OnDelete.SET_NULL),
+        FKConfig(
+            nullable=True,
+            default=None,
+            reverse_name="namespaces",
+            on_delete=OnDelete.SET_NULL,
+        ),
     ]
     config: MiniAnnotated[Dict[str, Any], Attrib(default_factory=dict)]
     is_private: bool = False
 
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
+    unique_together = (("organization", "name"),)

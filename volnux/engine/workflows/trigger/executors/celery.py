@@ -303,6 +303,8 @@ class CeleryWorkflowExecutor(WorkflowExecutor):
         self,
         workflow_name: str,
         params: Dict[str, Any],
+        *,
+        execution_id: Optional[str] = None,
     ) -> Any:
         """
         Dispatch a workflow to Celery and await its result.

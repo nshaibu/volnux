@@ -17,6 +17,10 @@ from .base import GovernanceModel
 class Organization(GovernanceModel):
     """Top-level organization entity for multi-tenancy.
 
+    An organization that has audit entries cannot be deleted: the audit trail is
+    never removed (``AuditEntry.organization`` is PROTECT). Deactivate it instead
+    (``is_active = False``).
+
     Reverse Relations:
         users — All users in this organization
         teams — All teams in this organization
@@ -26,10 +30,13 @@ class Organization(GovernanceModel):
     """
 
     name: MiniAnnotated[str, Attrib(min_length=1, max_length=255)]
-    slug: MiniAnnotated[str, Attrib(pattern=r"^[a-z0-9-]+$", metadata={"unique": True})]
+    slug: MiniAnnotated[str, Attrib(pattern=r"^[a-z0-9-]+$")]
     policies: MiniAnnotated[Dict[str, Any], Attrib(default_factory=dict)]
     is_active: bool = True
     sso_config: Optional[Dict[str, Any]] = None
+
+    unique_together = (("slug",),)
+    encrypted_fields = ("sso_config",)
 
 
 class User(GovernanceModel):
@@ -51,20 +58,22 @@ class User(GovernanceModel):
         role_assignments            — Role assignments for this user
     """
 
-    name: MiniAnnotated[
-        str, Attrib(min_length=1, max_length=255, metadata={"unique": True})
-    ]
+    name: MiniAnnotated[str, Attrib(min_length=1, max_length=255)]
     email: MiniAnnotated[
         str,
         Attrib(pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"),
     ]
     sso_identifier: MiniAnnotated[Optional[str], Attrib(default=None)]
+    password_hash: MiniAnnotated[Optional[str], Attrib(default=None)]
     is_active: MiniAnnotated[bool, Attrib(default=True)]
 
     organization: ForeignKeyField[
         Organization,
         FKConfig(reverse_name="users", on_delete=OnDelete.CASCADE),
     ]
+
+    # An email identifies one account within an organization.
+    unique_together = (("organization", "email"),)
 
 
 class Team(GovernanceModel):
@@ -85,6 +94,8 @@ class Team(GovernanceModel):
         FKConfig(reverse_name="teams", on_delete=OnDelete.CASCADE),
     ]
 
+    unique_together = (("organization", "slug"),)
+
 
 class TeamMember(GovernanceModel):
     """Many-to-many relationship between teams and users."""
@@ -98,6 +109,8 @@ class TeamMember(GovernanceModel):
         FKConfig(reverse_name="team_memberships", on_delete=OnDelete.CASCADE),
     ]
 
+    unique_together = (("team", "user"),)
+
 
 class Role(GovernanceModel):
     """Role definition with associated permissions.
@@ -107,9 +120,13 @@ class Role(GovernanceModel):
     """
 
     name: MiniAnnotated[str, Attrib(min_length=1, max_length=100)]
-    slug: MiniAnnotated[str, Attrib(pattern=r"^[a-z0-9-]+$", metadata={"unique": True})]
+    slug: MiniAnnotated[str, Attrib(pattern=r"^[a-z0-9-]+$")]
     description: MiniAnnotated[Optional[str], Attrib(default=None)]
+    # Permission values (e.g. "workflow.read") granted by this role, on top of what
+    # ROLE_PERMISSIONS gives its slug.
     permissions: MiniAnnotated[List[str], Attrib(default_factory=list)]
+
+    unique_together = (("slug",),)
 
 
 class RoleAssignment(GovernanceModel):
@@ -127,7 +144,10 @@ class RoleAssignment(GovernanceModel):
     team: ForeignKeyField[
         Team,
         FKConfig(
-            nullable=True, reverse_name="role_assignments", on_delete=OnDelete.SET_NULL
+            nullable=True,
+            default=None,
+            reverse_name="role_assignments",
+            on_delete=OnDelete.SET_NULL,
         ),
     ]
     environment: MiniAnnotated[Optional[EnvironmentType], Attrib(default=None)]

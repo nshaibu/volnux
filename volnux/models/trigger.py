@@ -1,15 +1,8 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from dataclasses import field
 
-from formax import InitStrategy
 
-from volnux.backends.fields.foreign_key import (
-    ForeignKeyField,
-    FKConfig,
-    ForeignKey,
-    OnDelete,
-    FKConstraint,
-)
+from volnux.backends.fields.foreign_key import ForeignKeyField, FKConfig, OnDelete
 from volnux.models.enums import TriggerType
 
 from .base import GovernanceModel
@@ -35,9 +28,9 @@ class TriggerConfig(GovernanceModel):
     ]
     config: Dict[str, Any] = field(default_factory=dict)
     is_active: bool = True
+    # The id of the live trigger this configuration is registered as in the
+    # TriggerEngine (None while it is not registered).
+    engine_trigger_id: Optional[str] = None
 
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
+    # (a webhook trigger's config holds its secret)
+    encrypted_fields = ("config",)

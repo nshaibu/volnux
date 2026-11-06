@@ -307,6 +307,8 @@ class KubernetesWorkflowExecutor(WorkflowExecutor):
         self,
         workflow_name: str,
         params: Dict[str, Any],
+        *,
+        execution_id: Optional[str] = None,
     ) -> Any:
         """
         Create a Kubernetes Job to execute a workflow and await its result.

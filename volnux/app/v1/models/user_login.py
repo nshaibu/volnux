@@ -3,8 +3,8 @@ from typing_extensions import TypedDict, Literal
 
 
 class UserProfileModel(TypedDict, total=False):
-    id: int
-    username: str
+    id: str
+    name: str
     email: str
 
 

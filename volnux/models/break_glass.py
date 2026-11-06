@@ -1,21 +1,15 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from formax import MiniAnnotated, Attrib, InitStrategy
+from formax import MiniAnnotated, Attrib
 
-from volnux.backends.fields import (
-    ForeignKeyField,
-    FKConfig,
-    OnDelete,
-    FKConstraint,
-)
+from volnux.backends.fields import ForeignKeyField, FKConfig, OnDelete
 
 from .base import GovernanceModel
 from .users import User, Organization
 from .workflows import Workflow
 from .execution import Execution
 from .enums import BreakGlassReviewStatus
-from .utils import pre_format_timestamps, post_format_timestamps
 
 
 class BreakGlassAccess(GovernanceModel):
@@ -37,6 +31,7 @@ class BreakGlassAccess(GovernanceModel):
         Workflow,
         FKConfig(
             nullable=True,
+            default=None,
             reverse_name="break_glass_accesses",
             on_delete=OnDelete.SET_NULL,
         ),
@@ -45,6 +40,7 @@ class BreakGlassAccess(GovernanceModel):
         Execution,
         FKConfig(
             nullable=True,
+            default=None,
             reverse_name="break_glass_accesses",
             on_delete=OnDelete.SET_NULL,
         ),
@@ -63,17 +59,12 @@ class BreakGlassAccess(GovernanceModel):
         User,
         FKConfig(
             nullable=True,
+            default=None,
             reverse_name="reviewed_break_glass",
             on_delete=OnDelete.SET_NULL,
         ),
     ]
     reviewed_at: Optional[float] = None
-
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
 
 
 class BreakGlassAction(GovernanceModel):
@@ -93,15 +84,5 @@ class BreakGlassAction(GovernanceModel):
     ]
     performed_at: MiniAnnotated[
         float,
-        Attrib(
-            default_factory=lambda: datetime.now(timezone.utc).timestamp(),
-            pre_formatter=pre_format_timestamps,
-            post_formatter=post_format_timestamps,
-        ),
+        Attrib(default_factory=lambda: datetime.now(timezone.utc).timestamp()),
     ]
-
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True

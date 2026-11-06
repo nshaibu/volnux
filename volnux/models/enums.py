@@ -156,6 +156,9 @@ class AuditEventType(str, Enum):
     NODE_DECOMMISSIONED = "node_decommissioned"
     EVENT_PUBLISHED = "event_published"
     EVENT_DEPRECATED = "event_deprecated"
+    TRIGGER_CREATED = "trigger_created"
+    TRIGGER_UPDATED = "trigger_updated"
+    TRIGGER_DELETED = "trigger_deleted"
 
 
 class NotificationChannel(str, Enum):
@@ -165,3 +168,22 @@ class NotificationChannel(str, Enum):
     WHATSAPP = "whatsapp"
     TEAMS = "teams"
     PAGERDUTY = "pagerduty"
+
+
+class FailureBehavior(str, Enum):
+    """What happens to an approval chain when a step is rejected."""
+
+    RESET_CHAIN = "reset_chain"
+    CONTINUE = "continue"
+
+
+class SLABreachAction(str, Enum):
+    ESCALATE_TO_SUPER_ADMIN = "escalate_to_super_admin"
+    ESCALATE_TO_TEAM = "escalate_to_team"
+    REROUTE = "reroute"
+    EXPIRE = "expire"
+
+
+class WorkflowMode(str, Enum):
+    CFG = "CFG"
+    DAG = "DAG"

@@ -75,6 +75,8 @@ class RequestContext:
     roles: List[str]
     client_type: Union[ClientType, str]
     client_id: Optional[str] = None
+    # Permission values granted by the user's custom ``Role.permissions``.
+    permissions: List[str] = dataclasses.field(default_factory=list)
 
 
 def create_jwt_token(user_id: str, org_id: str, roles: List[str]) -> str:
@@ -138,19 +140,91 @@ async def get_current_user(
 
     # Verify the user still exists and is active
     try:
-        user: User = User.get(payload["sub"])
-        if not user.is_active:
-            raise HTTPException(status_code=403, detail="User account is deactivated")
-    except ObjectDoesNotExist:
+        user: User = await User.get_async(payload["sub"])
+    except (KeyError, ObjectDoesNotExist):
         raise HTTPException(status_code=401, detail="User no longer exists")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="User account is deactivated")
+
+    organization = user.organization
+    org_id = payload.get("org")
+    if org_id != organization.id:
+        raise HTTPException(status_code=401, detail="Token does not match the user")
+    try:
+        organization = await Organization.get_async(org_id)
+    except ObjectDoesNotExist:
+        raise HTTPException(status_code=401, detail="Organization no longer exists")
+    if not organization.is_active:
+        raise HTTPException(status_code=403, detail="Organization is deactivated")
+
+    # The roles come from the database, not the token: a revoked role stops working
+    # at once instead of when the token expires.
+    roles, extra = await current_roles_and_permissions(user)
 
     return RequestContext(
         user=user,
-        organization=Organization.get(payload["org"]),
-        roles=payload["roles"],
+        organization=organization,
+        roles=roles,
         client_type=client_type,
         client_id=x_client_id,
+        permissions=extra,
     )
+
+
+async def current_roles_and_permissions(user: User) -> "tuple[List[str], List[str]]":
+    """The user's role slugs and the permissions stored on those roles.
+
+    Roles come from non-revoked assignments plus active delegations.
+    """
+    from volnux.models import Delegation, Role, RoleAssignment
+    from volnux.models.enums import DelegationStatus
+
+    slugs: List[str] = []
+    permissions: List[str] = []
+
+    async def add(role_id: str) -> None:
+        try:
+            role = await Role.get_async(role_id)
+        except ObjectDoesNotExist:
+            return
+        if role.slug not in slugs:
+            slugs.append(role.slug)
+        for p in role.permissions or []:
+            if p not in permissions:
+                permissions.append(p)
+
+    for assignment in await RoleAssignment.filter_async(user__object_id=user.id):
+        if assignment.revoked_at is None:
+            await add(assignment.role.id)
+
+    now = datetime.now(timezone.utc).timestamp()
+    for delegation in await Delegation.filter_async(
+        delegate__object_id=user.id, status=DelegationStatus.ACTIVE
+    ):
+        if delegation.start_time <= now <= delegation.end_time:
+            await add(delegation.role.id)
+    return slugs, permissions
+
+
+async def current_role_slugs(user: User) -> List[str]:
+    """Slugs of the user's roles."""
+    return (await current_roles_and_permissions(user))[0]
+
+
+def _roles_of(ctx: "RequestContext") -> List[str]:
+    return list(getattr(ctx, "roles", None) or [])
+
+
+def has_permission(
+    roles: List[str], permission: Permission, extra: Optional[List[str]] = None
+) -> bool:
+    if permission.value in (extra or ()):
+        return True
+    for role in roles:
+        role_perms = ROLE_PERMISSIONS.get(role, [])
+        if permission in role_perms or Permission.SUPER_ADMIN in role_perms:
+            return True
+    return False
 
 
 def require_permission(permission: Permission):
@@ -159,23 +233,14 @@ def require_permission(permission: Permission):
     Usage:
         @app.post("/workflows")
         async def create_workflow(
-            user: dict = Depends(get_current_user),
+            ctx: RequestContext = Depends(get_current_user),
             _: None = Depends(require_permission(Permission.WORKFLOW_CREATE)),
         ):
             ...
     """
 
-    async def check_permission(user: dict = Depends(get_current_user)):
-        user_roles = user.get("roles", [])
-        allowed = False
-
-        for role in user_roles:
-            role_perms = ROLE_PERMISSIONS.get(role, [])
-            if permission in role_perms or Permission.SUPER_ADMIN in role_perms:
-                allowed = True
-                break
-
-        if not allowed:
+    async def check_permission(ctx: RequestContext = Depends(get_current_user)):
+        if not has_permission(_roles_of(ctx), permission, ctx.permissions):
             raise HTTPException(
                 status_code=403, detail=f"Permission denied: {permission.value}"
             )
@@ -186,16 +251,10 @@ def require_permission(permission: Permission):
 def require_any_permission(*permissions: Permission):
     """Dependency factory: require at least one of the specified permissions."""
 
-    async def check_permissions(user: dict = Depends(get_current_user)):
-        user_roles = user.get("roles", [])
-
-        for role in user_roles:
-            role_perms = ROLE_PERMISSIONS.get(role, [])
-            if Permission.SUPER_ADMIN in role_perms:
-                return
-            if any(p in role_perms for p in permissions):
-                return
-
+    async def check_permissions(ctx: RequestContext = Depends(get_current_user)):
+        roles = _roles_of(ctx)
+        if any(has_permission(roles, p, ctx.permissions) for p in permissions):
+            return
         raise HTTPException(
             status_code=403,
             detail=f"Permission denied: requires one of {[p.value for p in permissions]}",
@@ -207,16 +266,24 @@ def require_any_permission(*permissions: Permission):
 def require_role(role_name: str):
     """Dependency factory: require a specific role."""
 
-    async def check_role(user: dict = Depends(get_current_user)):
-        if role_name not in user.get("roles", []) and "super-admin" not in user.get(
-            "roles", []
-        ):
+    async def check_role(ctx: RequestContext = Depends(get_current_user)):
+        roles = _roles_of(ctx)
+        if role_name not in roles and "super-admin" not in roles:
             raise HTTPException(status_code=403, detail=f"Role required: {role_name}")
 
     return check_role
 
 
-def audit_log(
+def is_super_admin(ctx: RequestContext) -> bool:
+    return "super-admin" in _roles_of(ctx)
+
+
+def primary_role(ctx: RequestContext) -> str:
+    roles = _roles_of(ctx)
+    return roles[0] if roles else "unknown"
+
+
+async def audit_log(
     organization: Organization,
     event_type: AuditEventType,
     actor: User,
@@ -225,22 +292,44 @@ def audit_log(
     target_id: str,
     action: str,
     metadata: Optional[dict] = None,
-) -> None:
-    """Create an immutable audit log entry."""
-    try:
-        entry = AuditEntry(
-            organization=organization,
-            event_type=event_type,
-            actor=actor,
-            actor_role=actor_role,
-            target_type=target_type,
-            target_id=target_id,
-            action=action,
-            metadata=metadata or {},
-        )
-        entry.save()
-    except Exception as e:
-        logger.error(f"Failed to create audit entry: {e}")
+) -> AuditEntry:
+    """Append an entry to the organization's audit chain (see ``AuditEntry.append``)."""
+    return await AuditEntry.append(
+        organization=organization,
+        event_type=event_type,
+        actor=actor,
+        actor_role=actor_role,
+        target_type=target_type,
+        target_id=target_id,
+        action=action,
+        metadata=metadata,
+    )
+
+
+async def audit(
+    ctx: RequestContext,
+    event_type: AuditEventType,
+    target_type: str,
+    target_id: str,
+    action: str,
+    metadata: Optional[dict] = None,
+) -> AuditEntry:
+    """``audit_log`` for the authenticated caller."""
+    return await audit_log(
+        organization=ctx.organization,
+        event_type=event_type,
+        actor=ctx.user,
+        actor_role=primary_role(ctx),
+        target_type=target_type,
+        target_id=target_id,
+        action=action,
+        metadata=metadata,
+    )
+
+
+async def verify_audit_chain(organization_id: str) -> bool:
+    """True when every entry of the organization links to the one before it."""
+    return await AuditEntry.verify_chain(organization_id)
 
 
 def formax_jsonable_encoder(obj):

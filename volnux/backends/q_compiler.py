@@ -96,6 +96,36 @@ def parse_lookup(field_spec: str) -> Tuple[str, str]:
     return field_spec, "exact"
 
 
+_NO_ALIAS = object()
+_FK_ID_SUFFIX = "_object_id"
+
+
+def _foreign_key_id(record: Any, part: str) -> Any:
+    """``<field>_object_id`` on a record that has a foreign key ``<field>``.
+
+    SQL stores keep the id of a reference in a ``<field>_object_id`` column, so that
+    is the name filters use for it (``OnDelete`` handling, migrations). A record held
+    in memory has the reference itself under ``<field>``; this gives its id, so the
+    same filter works on both. Returns ``_NO_ALIAS`` when ``part`` is not such a name.
+    """
+    if not part.endswith(_FK_ID_SUFFIX) or len(part) == len(_FK_ID_SUFFIX):
+        return _NO_ALIAS
+    name = part[: -len(_FK_ID_SUFFIX)]
+    if isinstance(record, dict):
+        if name not in record:
+            return _NO_ALIAS
+        reference = record[name]
+    elif hasattr(record, name):
+        reference = getattr(record, name)
+    else:
+        return _NO_ALIAS
+    if reference is None:
+        return None
+    if isinstance(reference, dict):
+        return reference.get("object_id", _NO_ALIAS)
+    return getattr(reference, "object_id", getattr(reference, "id", _NO_ALIAS))
+
+
 def resolve_field_value(record: Any, field_path: str) -> Tuple[Any, bool]:
     """Traverse nested attributes AND dict keys on a record.
 
@@ -112,11 +142,20 @@ def resolve_field_value(record: Any, field_path: str) -> Tuple[Any, bool]:
             if part in current:
                 current = current[part]
                 continue
+            alias = _foreign_key_id(current, part)
+            if alias is not _NO_ALIAS:
+                current = alias
+                continue
             return None, False
 
         # Try object attribute access
         if hasattr(current, part):
             current = getattr(current, part)
+            continue
+
+        alias = _foreign_key_id(current, part)
+        if alias is not _NO_ALIAS:
+            current = alias
             continue
 
         return None, False

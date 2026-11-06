@@ -524,6 +524,17 @@ CELERY_EXECUTOR_QUEUE = "volnux_workflows"
 CELERY_EXECUTOR_POLL_INTERVAL = 0.5
 
 # -----------------------------------------------------------------------------
+# CELERY_APP
+#   What:        Dotted path of the Celery application used for schedule triggers
+#                created through the REST API (``POST /api/v1/triggers`` with
+#                trigger_type "schedule"). Without it such triggers are refused.
+#   Used by:     volnux/app/trigger_factory.py
+#   Env:         VOLNUX_CELERY_APP
+#   Production:
+#       CELERY_APP = "myproject.celery.app"
+CELERY_APP = None
+
+# -----------------------------------------------------------------------------
 # CELERY_EXECUTOR_SOFT_TIME_LIMIT
 #   What:        Seconds after which a Celery workflow task is asked to stop (it can
 #                clean up). None means no limit.

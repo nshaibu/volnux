@@ -1,64 +1,63 @@
-from typing import Optional
-from fastapi import Depends, Body, Path, HTTPException
+from fastapi import Depends, Path
 
 from volnux.models import Organization
-from volnux.models.enums import AuditEventType
 from ..app import get_current_app
-from ..dependencies import get_org_id, Pagination, _serialize_model
+from ..dependencies import _serialize_model, not_found
 from ..permission import Permission
-from ..utils import require_permission, get_current_user
+from ..schemas import OrganizationCreate, OrganizationUpdate
+from ..utils import RequestContext, get_current_user, is_super_admin, require_permission
 
 app = get_current_app()
 
 
+def _visible(ctx: RequestContext, org_id: str) -> None:
+    if org_id != ctx.organization.id and not is_super_admin(ctx):
+        raise not_found("Organization")
+
+
 @app.post("/api/v1/organizations", status_code=201)
 async def create_organization(
-    data: dict = Body(...),
-    user: dict = Depends(get_current_user),
+    data: OrganizationCreate,
+    ctx: RequestContext = Depends(get_current_user),
     _: None = Depends(require_permission(Permission.SUPER_ADMIN)),
 ):
     """Create a new organization. Requires super-admin."""
-    org = Organization(**data)
+    org = Organization(**data.model_dump())
     await org.save_async()
-    return {"status": "success", "data": _serialize_model(org)}
+    return {"status": "success", "data": _serialize_model(org, redact=("sso_config",))}
 
 
 @app.get("/api/v1/organizations/{org_id}")
 async def get_organization(
     org_id: str = Path(...),
-    user: dict = Depends(get_current_user),
+    ctx: RequestContext = Depends(get_current_user),
 ):
-    """Get organization by ID. User must belong to the organization."""
+    """Get an organization. The caller must belong to it (or be a super-admin)."""
+    _visible(ctx, org_id)
     org = await Organization.get_async(org_id)
-    if org_id != user["organization_id"] and "super-admin" not in user["roles"]:
-        raise HTTPException(403, "Access denied to this organization")
-    return {"status": "success", "data": _serialize_model(org)}
+    return {"status": "success", "data": _serialize_model(org, redact=("sso_config",))}
 
 
 @app.put("/api/v1/organizations/{org_id}")
 async def update_organization(
+    data: OrganizationUpdate,
     org_id: str = Path(...),
-    data: dict = Body(...),
-    user: dict = Depends(get_current_user),
+    ctx: RequestContext = Depends(get_current_user),
     _: None = Depends(require_permission(Permission.ORG_MANAGE)),
 ):
-    """Update an organization. Requires org-admin."""
+    """Update the caller's organization."""
+    _visible(ctx, org_id)
     org = await Organization.get_async(org_id)
-    if org_id != user["organization_id"]:
-        raise HTTPException(403, "Access denied to this organization")
-
-    for key, value in data.items():
-        if hasattr(org, key) and key not in ("id", "creation_time"):
-            setattr(org, key, value)
-    org.touch()
+    for name, value in data.model_dump(exclude_unset=True).items():
+        setattr(org, name, value)
     await org.save_async()
-    return {"status": "success", "data": _serialize_model(org)}
+    return {"status": "success", "data": _serialize_model(org, redact=("sso_config",))}
 
 
 @app.delete("/api/v1/organizations/{org_id}")
 async def delete_organization(
     org_id: str = Path(...),
-    user: dict = Depends(get_current_user),
+    ctx: RequestContext = Depends(get_current_user),
     _: None = Depends(require_permission(Permission.SUPER_ADMIN)),
 ):
     """Delete an organization. Requires super-admin."""

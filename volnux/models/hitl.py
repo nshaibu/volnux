@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 
-from formax import MiniAnnotated, Attrib, InitStrategy
+from formax import MiniAnnotated, Attrib
 
 from volnux.backends.fields import (
     ForeignKeyField,
@@ -12,8 +12,7 @@ from .base import GovernanceModel
 from .workflows import Workflow
 from .users import User, Team
 from .execution import Execution, ExecutionTrace
-from .utils import pre_format_timestamps, post_format_timestamps
-from .enums import HITLStatus, HITLPriority
+from .enums import HITLStatus, HITLPriority, SLABreachAction
 
 
 class HITLRequest(GovernanceModel):
@@ -29,7 +28,7 @@ class HITLRequest(GovernanceModel):
     ]
     workflow: ForeignKeyField[
         Workflow,
-        FKConfig(reverse_name="hitl_requests", on_delete=OnDelete.PROTECT),
+        FKConfig(reverse_name="hitl_requests", on_delete=OnDelete.CASCADE),
     ]
     node_id: str
     status: MiniAnnotated[HITLStatus, Attrib(default=HITLStatus.PENDING)]
@@ -38,46 +37,39 @@ class HITLRequest(GovernanceModel):
     assigned_team: ForeignKeyField[
         Team,
         FKConfig(
-            nullable=True, reverse_name="hitl_requests", on_delete=OnDelete.SET_NULL
+            nullable=True,
+            default=None,
+            reverse_name="hitl_requests",
+            on_delete=OnDelete.SET_NULL,
         ),
     ]
     assigned_user: ForeignKeyField[
         User,
         FKConfig(
             nullable=True,
+            default=None,
             reverse_name="assigned_hitl_requests",
             on_delete=OnDelete.SET_NULL,
         ),
     ]
-    eligible_users: MiniAnnotated[List[str], Attrib(default=list)]
+    eligible_users: MiniAnnotated[List[str], Attrib(default_factory=list)]
     prompt: str
-    context_data: MiniAnnotated[Dict[str, Any], Attrib(default=dict)]
-    available_actions: MiniAnnotated[List[str], Attrib(default=list)]
-    required_inputs: MiniAnnotated[List[Dict[str, Any]], Attrib(default=list)]
+    context_data: MiniAnnotated[Dict[str, Any], Attrib(default_factory=dict)]
+    available_actions: MiniAnnotated[List[str], Attrib(default_factory=list)]
+    required_inputs: MiniAnnotated[List[Dict[str, Any]], Attrib(default_factory=list)]
     sla_deadline: MiniAnnotated[Optional[float], Attrib(default=None)]
-    sla_warning_threshold: MiniAnnotated[float, Attrib(default=0.8)]
-    sla_breach_action: MiniAnnotated[str, Attrib(default="escalate_to_super_admin")]
-    responded_at: MiniAnnotated[
-        Optional[float],
-        Attrib(
-            default=None,
-            pre_formatter=pre_format_timestamps,
-            post_formatter=post_format_timestamps,
-        ),
+    sla_warning_threshold: MiniAnnotated[float, Attrib(default=0.8, ge=0.0, le=1.0)]
+    sla_breach_action: MiniAnnotated[
+        SLABreachAction, Attrib(default=SLABreachAction.ESCALATE_TO_SUPER_ADMIN)
     ]
-    escalated_at: MiniAnnotated[
-        Optional[float],
-        Attrib(
-            default=None,
-            pre_formatter=pre_format_timestamps,
-            post_formatter=post_format_timestamps,
-        ),
-    ]
+    responded_at: Optional[float] = None
+    escalated_at: Optional[float] = None
     escalated_to: MiniAnnotated[Optional[str], Attrib(default=None)]
     escalated_by: ForeignKeyField[
         User,
         FKConfig(
             nullable=True,
+            default=None,
             reverse_name="escalated_hitl_requests",
             on_delete=OnDelete.SET_NULL,
         ),
@@ -86,17 +78,12 @@ class HITLRequest(GovernanceModel):
         User,
         FKConfig(
             nullable=True,
+            default=None,
             reverse_name="resolved_hitl_requests",
             on_delete=OnDelete.SET_NULL,
         ),
     ]
     decision: MiniAnnotated[Optional[str], Attrib(default=None)]
-    decision_metadata: MiniAnnotated[Dict[str, Any], Attrib(default=dict)]
-    escalation_count: MiniAnnotated[int, Attrib(default=0)]
-    notification_channels: MiniAnnotated[List[str], Attrib(default=list)]
-
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
+    decision_metadata: MiniAnnotated[Dict[str, Any], Attrib(default_factory=dict)]
+    escalation_count: MiniAnnotated[int, Attrib(default=0, ge=0)]
+    notification_channels: MiniAnnotated[List[str], Attrib(default_factory=list)]
