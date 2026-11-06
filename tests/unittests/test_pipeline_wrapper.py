@@ -1,271 +1,255 @@
+"""PipelineWrapper: runs one pipeline in a worker and reports through a queue."""
+
 import logging
-import time
-from multiprocessing.queues import Queue
-from unittest.mock import Mock, patch
+import queue
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from volnux import EventBase
-from volnux.fields import InputDataField
-from volnux.pipeline import Pipeline
-from volnux.pipeline_wrapper import PipelineExecutionState, PipelineWrapper
+from volnux.exceptions import PipelineExecutionError
+from volnux.execution.context import ExecutionContext
+from volnux.execution.pipeline import Pipeline
+from volnux.execution.pipeline.fields import InputDataField
+from volnux.execution.pipeline.wrapper import PipelineExecutionState, PipelineWrapper
+from volnux.execution.status import ExecutionStatus
 
 
-class Fetch(EventBase):
-    def process(self, name, data):
-        return True, "Fetch"
+class WrapFetch(EventBase):
+    def process(self, *args, **kwargs):
+        return True, "fetched"
 
 
-class Process(EventBase):
-    def process(self, name, data):
-        return True, "Process"
+class WrapSave(EventBase):
+    def process(self, *args, **kwargs):
+        return True, "saved"
 
 
-class Save(EventBase):
-    def process(self, name, data):
-        return True, "Save"
-
-
-class DummyPipeline(Pipeline):
+class WrapPipeline(Pipeline):
     numbers = InputDataField()
 
     class Meta:
-        pointy = "Fetch -> Process -> Save"
+        pointy = "WrapFetch -> WrapSave"
+
+
+def drain(q):
+    items = []
+    while True:
+        try:
+            items.append(q.get_nowait())
+        except queue.Empty:
+            return items
+
+
+def lifecycle(q):
+    return [m for m in drain(q) if m.get("message_type") == "wrapper_lifecycle"]
 
 
 @pytest.fixture
-def mock_logger():
-    return Mock(spec=logging.Logger)
+def signals_queue():
+    return queue.Queue()
 
 
 @pytest.fixture
-def mock_queue():
-    return Mock(spec=Queue)
-
-
-@pytest.fixture
-def basic_wrapper(mock_logger, mock_queue):
-    pipeline = DummyPipeline(numbers=[1, 2, 3])
+def wrapper(signals_queue):
     return PipelineWrapper(
-        pipeline=pipeline,
-        focus_on_signals=[
-            "volnux.signal.signals.pipeline_execution_start",
-            "volnux.signal.signals.pipeline_execution_end",
-        ],
-        signals_queue=mock_queue,
-        import_string_fn=lambda x: Mock(),
-        logger=mock_logger,
+        WrapPipeline(numbers=[1, 2, 3]),
+        focus_on_signals=[],
+        signals_queue=signals_queue,
+        import_string_fn=lambda path: Mock(),
+        logger=Mock(spec=logging.Logger),
         wrapper_id="test_wrapper",
     )
 
 
-class TestPipelineWrapper:
-    def test_initialization(self, basic_wrapper):
-        """Test proper initialization of PipelineWrapper"""
-        assert basic_wrapper.execution_state == PipelineExecutionState.INITIALIZED
-        assert basic_wrapper.start_time is None
-        assert basic_wrapper.end_time is None
-        assert basic_wrapper.exception is None
-        assert basic_wrapper.wrapper_id == "test_wrapper"
+def test_initialization(wrapper):
+    assert wrapper.execution_state == PipelineExecutionState.INITIALIZED
+    assert wrapper.start_time is None and wrapper.end_time is None
+    assert wrapper.exception is None
+    assert wrapper.wrapper_id == "test_wrapper"
 
-    def test_connect_signals(self, basic_wrapper, mock_queue):
-        """Test signal connection functionality"""
-        basic_wrapper._connect_signals()
-        assert len(basic_wrapper._connected_signals) > 0
 
-        # Test signal handler by simulating a signal
-        signal_handler = basic_wrapper._connected_signals[0].connect.call_args[1][
-            "listener"
+def test_a_real_pipeline_run_is_reported_as_a_success(wrapper, signals_queue):
+    """Used to fail: the wrapper called ExecutionContext methods that did not
+    exist, so every successful run ended in the except path."""
+    pipeline, exception = wrapper.run()
+
+    assert exception is None
+    assert pipeline is wrapper.pipeline
+    assert wrapper.execution_state == PipelineExecutionState.FINISHED
+
+    events = lifecycle(signals_queue)
+    assert [e["event_type"] for e in events] == [
+        "wrapper_started",
+        "pipeline_execution_start",
+        "pipeline_execution_end",
+        "wrapper_finished",
+    ]
+    end = events[2]
+    assert end["success"] is True
+    assert not any(e["event_type"] == "wrapper_failed" for e in events)
+
+
+def test_the_end_event_carries_a_summary_not_the_execution_context(
+    wrapper, signals_queue
+):
+    wrapper.run()
+    end = [
+        e
+        for e in lifecycle(signals_queue)
+        if e["event_type"] == "pipeline_execution_end"
+    ][0]
+    assert "execution_context" not in end
+    assert end["status"] == ExecutionStatus.COMPLETED.value
+
+
+@pytest.mark.parametrize(
+    "status,failed",
+    [
+        (ExecutionStatus.COMPLETED, False),
+        (ExecutionStatus.RUNNING, False),
+        (ExecutionStatus.PAUSED, False),
+        (ExecutionStatus.FAILED, True),
+        (ExecutionStatus.ABORTED, True),
+        (ExecutionStatus.CANCELLED, True),
+    ],
+)
+def test_execution_failed_reflects_the_context_status(status, failed):
+    context = SimpleNamespace(status=status)
+    assert ExecutionContext.execution_failed(context) is failed
+
+
+def _context_with_status(status):
+    context = Mock()
+    context.get_latest_context.return_value = context
+    context.execution_failed.return_value = status != ExecutionStatus.COMPLETED
+    context.status = status
+    return context
+
+
+def test_a_failed_context_is_returned_as_an_exception_and_reported(
+    wrapper, signals_queue
+):
+    """A failed run used to come back as (pipeline, None) - indistinguishable
+    from success to the batch."""
+    failed = _context_with_status(ExecutionStatus.FAILED)
+    with patch.object(
+        wrapper.pipeline, "get_first_error_execution_node", return_value=None
+    ), patch.object(wrapper.pipeline, "start", AsyncMock(return_value=failed)):
+        pipeline, exception = wrapper.run()
+
+    assert isinstance(exception, PipelineExecutionError)
+    assert wrapper.execution_state == PipelineExecutionState.FAILED
+
+    events = lifecycle(signals_queue)
+    end = [e for e in events if e["event_type"] == "pipeline_execution_end"][0]
+    assert end["success"] is False
+    assert end["status"] == ExecutionStatus.FAILED.value
+    assert events[-1]["event_type"] == "wrapper_finished"
+    assert events[-1]["final_state"] == PipelineExecutionState.FAILED.value
+
+
+def test_an_exception_from_start_is_returned_and_reported(wrapper, signals_queue):
+    boom = ValueError("Test error")
+    with patch.object(wrapper.pipeline, "start", AsyncMock(side_effect=boom)):
+        pipeline, exception = wrapper.run()
+
+    assert exception is boom
+    assert pipeline is wrapper.pipeline
+    assert wrapper.execution_state == PipelineExecutionState.FAILED
+
+    events = lifecycle(signals_queue)
+    types = [e["event_type"] for e in events]
+    assert types.count("wrapper_failed") == 1
+    assert (
+        "Test error"
+        in [e for e in events if e["event_type"] == "wrapper_failed"][0][
+            "error_message"
         ]
-        signal_handler(sender=DummyPipeline, pipeline=basic_wrapper.pipeline)
-
-        # Verify queue message format
-        mock_queue.put.assert_called_once()
-        message = mock_queue.put.call_args[0][0]
-        assert message["message_type"] == "pipeline_signal"
-        assert "wrapper_id" in message
-        assert "timestamp" in message
-        assert message["version"] == "1"
-
-    def test_disconnect_signals(self, basic_wrapper):
-        """Test signal disconnection"""
-        mock_signal = Mock()
-        basic_wrapper._connected_signals = [mock_signal]
-        basic_wrapper._disconnect_signals()
-
-        mock_signal.disconnect.assert_called_once()
-        assert len(basic_wrapper._connected_signals) == 0
-
-    def test_successful_pipeline_execution(self, basic_wrapper, mock_queue):
-        """Test successful pipeline execution flow"""
-        mock_context = Mock()
-        mock_context.execution_failed.return_value = False
-        mock_context.get_latest_execution_context.return_value = mock_context
-
-        with patch.object(basic_wrapper.pipeline, "start") as mock_start:
-            mock_start.return_value = mock_context
-
-            pipeline, exception = basic_wrapper.run()
-
-            assert pipeline == basic_wrapper.pipeline
-            assert exception is None
-            assert basic_wrapper.execution_state == PipelineExecutionState.FINISHED
-
-            mock_start.assert_called_once()
-
-            expected_events = [
-                "wrapper_started",
-                "pipeline_execution_start",
-                "pipeline_execution_end",
-                "wrapper_finished",
-            ]
-
-            # Verify lifecycle events were sent
-            lifecycle_events = [
-                call[0][0]["event_type"]
-                for call in mock_queue.put.call_args_list
-                if call[0][0].get("message_type") == "wrapper_lifecycle"
-            ]
-            assert all(event in lifecycle_events for event in expected_events)
-            # Verify events occurred in correct order
-            assert [
-                e for e in lifecycle_events if e in expected_events
-            ] == expected_events
-
-    def test_failed_pipeline_execution(self, basic_wrapper, mock_queue):
-        """Test pipeline execution failure handling"""
-        test_exception = ValueError("Test error")
-
-        with patch.object(basic_wrapper.pipeline, "start", side_effect=test_exception):
-            pipeline, exception = basic_wrapper.run()
-
-            assert pipeline == basic_wrapper.pipeline
-            assert exception == test_exception
-            assert basic_wrapper.execution_state == PipelineExecutionState.FINISHED
-
-            # Verify error event was sent
-            error_events = [
-                call[0][0]
-                for call in mock_queue.put.call_args_list
-                if call[0][0].get("event_type") == "wrapper_failed"
-            ]
-            assert len(error_events) == 1
-            assert "error_message" in error_events[0]
-            assert "Test error" in error_events[0]["error_message"]
-
-    def test_execution_timing(self, basic_wrapper):
-        """Test execution timing measurement"""
-        with patch.object(basic_wrapper.pipeline, "start"):
-            start_time = time.time()
-            basic_wrapper.run()
-
-            assert basic_wrapper.start_time >= start_time
-            assert basic_wrapper.end_time >= basic_wrapper.start_time
-
-            # Verify execution duration in wrapper_finished event
-            finished_event = [
-                call[0][0]
-                for call in basic_wrapper.signals_queue.put.call_args_list
-                if call[0][0].get("event_type") == "wrapper_finished"
-            ][0]
-            assert "execution_duration" in finished_event
-            assert finished_event["execution_duration"] >= 0
-
-    def test_pipeline_execution_state_transitions(self, basic_wrapper):
-        """Test state transitions during pipeline execution"""
-        states = []
-
-        def record_state_change():
-            states.append(basic_wrapper.execution_state)
-
-        def mock_handle_execution():
-            basic_wrapper.execution_state = PipelineExecutionState.RUNNING
-            states.append(basic_wrapper.execution_state)
-
-        with patch.object(basic_wrapper.pipeline, "start"):
-            states.append(basic_wrapper.execution_state)  # Initial state
-
-            with patch.object(
-                basic_wrapper, "_connect_signals", side_effect=record_state_change
-            ), patch.object(
-                basic_wrapper, "_send_wrapper_lifecycle_event", return_value=None
-            ), patch.object(
-                basic_wrapper,
-                "_handle_pipeline_execution",
-                side_effect=mock_handle_execution,
-            ):
-                basic_wrapper.run()
-        assert states == [
-            PipelineExecutionState.INITIALIZED,
-            PipelineExecutionState.INITIALIZING,
-            PipelineExecutionState.RUNNING,
-        ]
-        assert basic_wrapper.execution_state == PipelineExecutionState.FINISHED
-
-    @pytest.mark.parametrize(
-        "signal_import_error", [ImportError, AttributeError, TypeError]
     )
-    def test_signal_connection_error_handling(self, basic_wrapper, signal_import_error):
-        """Test handling of various signal connection errors"""
+    end = [e for e in events if e["event_type"] == "pipeline_execution_end"][0]
+    assert end["success"] is False  # the end event is always sent
 
-        def raise_error(x):
-            raise signal_import_error("Test error")
 
-        wrapper = PipelineWrapper(
-            pipeline=basic_wrapper.pipeline,
-            focus_on_signals=["invalid.signal.path"],
-            signals_queue=Mock(),
-            import_string_fn=raise_error,
-            logger=Mock(),
-        )
+def test_execution_timing_is_reported(wrapper, signals_queue):
+    wrapper.run()
+    assert wrapper.end_time >= wrapper.start_time
+    finished = [
+        e for e in lifecycle(signals_queue) if e["event_type"] == "wrapper_finished"
+    ][0]
+    assert finished["execution_duration"] >= 0
+    assert finished["had_exception"] is False
 
-        # Should not raise exception
-        wrapper._connect_signals()
 
-        # Verify warning was logged
-        wrapper._logger.warning.assert_called_once()
-        assert "Signal import failed" in wrapper._logger.warning.call_args[0][0]
+def test_signals_are_forwarded_with_their_signal_reference(signals_queue):
+    fake_signal = Mock()
+    wrapper = PipelineWrapper(
+        WrapPipeline(numbers=[1]),
+        focus_on_signals=["some.signal"],
+        signals_queue=signals_queue,
+        import_string_fn=lambda path: fake_signal,
+        logger=Mock(),
+        wrapper_id="w",
+    )
+    wrapper._connect_signals()
+    assert len(wrapper._connected_signals) == 1
 
-    def test_queue_put_timeout_handling(self, basic_wrapper):
-        """Test handling of queue.put timeout"""
-        mock_queue = Mock(spec=Queue)
-        mock_queue.put.side_effect = TimeoutError("Queue full")
+    handler = fake_signal.connect.call_args.kwargs["listener"]
+    handler(sender=WrapPipeline, pipeline=wrapper.pipeline)
 
-        wrapper = PipelineWrapper(
-            pipeline=basic_wrapper.pipeline,
-            focus_on_signals=["volnux.signal.signals.pipeline_execution_start"],
-            signals_queue=mock_queue,
-            import_string_fn=lambda x: Mock(),
-            logger=Mock(),
-        )
+    message = signals_queue.get_nowait()
+    assert message["message_type"] == "pipeline_signal"
+    assert message["kwargs"]["signal"] is fake_signal
+    assert message["wrapper_id"] == "w" and message["version"] == "1"
 
-        # Should not raise exception
-        wrapper._send_wrapper_lifecycle_event("test_event")
+    wrapper._disconnect_signals()
+    fake_signal.disconnect.assert_called_once()
+    assert wrapper._connected_signals == []
 
-        # Verify error was logged
-        wrapper._logger.error.assert_called_once()
-        assert (
-            "Failed to send wrapper lifecycle event"
-            in wrapper._logger.error.call_args[0][0]
-        )
 
-    def test_pipeline_state_info_collection(self, basic_wrapper):
-        """Test collection of pipeline state information"""
-        state_info = basic_wrapper._get_pipeline_state_info()
+@pytest.mark.parametrize("error", [ImportError, AttributeError, TypeError])
+def test_signal_import_errors_are_logged_not_raised(signals_queue, error):
+    def fail(path):
+        raise error("nope")
 
-        assert isinstance(state_info, dict)
-        assert "pipeline_id" in state_info
-        assert "pipeline_class" in state_info
-        assert "execution_context_exists" in state_info
-        assert "has_cache" in state_info
+    wrapper = PipelineWrapper(
+        WrapPipeline(numbers=[1]),
+        focus_on_signals=["invalid.signal.path"],
+        signals_queue=signals_queue,
+        import_string_fn=fail,
+        logger=Mock(),
+    )
+    wrapper._connect_signals()
+    wrapper._logger.warning.assert_called_once()
+    assert "Signal import failed" in wrapper._logger.warning.call_args[0][0]
 
-    def test_exception_traceback_formatting(self, basic_wrapper):
-        """Test exception traceback formatting"""
-        try:
-            raise ValueError("Test error")
-        except ValueError as e:
-            formatted = basic_wrapper._format_exception_traceback(e)
 
-        assert isinstance(formatted, str)
-        assert "ValueError" in formatted
-        assert "Test error" in formatted
+def test_a_full_or_broken_queue_never_stops_the_worker(wrapper):
+    wrapper.signals_queue = Mock()
+    wrapper.signals_queue.put_nowait.side_effect = queue.Full()
+    wrapper._send_wrapper_lifecycle_event("anything")  # must not raise
+    wrapper._logger.error.assert_called_once()
+    assert "Failed to send wrapper lifecycle event" in (
+        wrapper._logger.error.call_args[0][0]
+    )
+
+
+def test_additional_data_cannot_overwrite_protocol_keys(wrapper, signals_queue):
+    wrapper._send_wrapper_lifecycle_event(
+        "custom", {"wrapper_id": "evil", "event_type": "evil", "extra": 1}
+    )
+    message = signals_queue.get_nowait()
+    assert message["wrapper_id"] == "test_wrapper"
+    assert message["event_type"] == "custom"
+    assert message["extra"] == 1
+
+
+def test_state_info_and_traceback_helpers(wrapper):
+    info = wrapper._get_pipeline_state_info()
+    assert {"pipeline_id", "pipeline_class", "execution_context_exists"} <= set(info)
+    try:
+        raise ValueError("Test error")
+    except ValueError as exc:
+        text = wrapper._format_exception_traceback(exc)
+    assert "ValueError" in text and "Test error" in text

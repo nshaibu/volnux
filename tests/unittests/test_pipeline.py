@@ -8,12 +8,15 @@ from treelib import Tree
 from volnux import EventBase, Pipeline
 from volnux.constants import PIPELINE_FIELDS, PIPELINE_STATE
 from volnux.exceptions import EventDoesNotExist, EventDone
-from volnux.fields import FileInputDataField, InputDataField
+from volnux.execution.pipeline.fields import FileInputDataField, InputDataField
 
 # fix deadlock in python3.11 for state management
 multiprocessing.set_start_method("spawn", force=True)
 
 
+# Running, rerunning, stopping and shutting a pipeline down are tested for real in
+# tests/unittests/execution/pipeline/test_pipeline_lifecycle.py (the async tests that
+# were here were never awaited by unittest.TestCase, so they tested nothing).
 class PipelineTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -67,29 +70,6 @@ class PipelineTest(unittest.TestCase):
 
         with pytest.raises(TypeError):
             self.pipeline_klass()
-
-    def test_pipeline_start(self):
-        pipe = self.pipeline_klass(name="test_name")
-        try:
-            pipe.start()
-        except EventDone:
-            self.fail("Pipeline raised EventDone unexpectedly!")
-
-    def test_pipeline_shutdown(self):
-        pipe = self.pipeline_klass(name="test_name")
-        pipe.start()
-        try:
-            pipe.shutdown()
-        except Exception as e:
-            self.fail(f"Pipeline shutdown raised an exception: {e}")
-
-    def test_pipeline_stop(self):
-        pipe = self.pipeline_klass(name="test_name")
-        pipe.start()
-        try:
-            pipe.stop()
-        except Exception as e:
-            self.fail(f"Pipeline stop raised an exception: {e}")
 
     def test_pipeline_get_cache_key(self):
         pipe = self.pipeline_klass(name="test_name")
@@ -146,18 +126,6 @@ class PipelineTest(unittest.TestCase):
 
         self.assertIsNotNone(pipe._state)
         self.assertIsNotNone(pipe._state.pipeline_cache)
-
-    def test_pipeline_rerun(self):
-        pipe = self.pipeline_klass(name="test")
-        pipe.start()
-
-        with pytest.raises(EventDone):
-            pipe.start()  # Should raise without force_rerun
-
-        try:
-            pipe.start(force_rerun=True)  # Should work with force_rerun
-        except EventDone:
-            self.fail("Pipeline start with force_rerun raised EventDone!")
 
     def test_pipeline_get_non_batch_fields(self):
         fields = list(self.pipeline_klass.get_non_batch_fields())
@@ -216,22 +184,50 @@ class PipelineTest(unittest.TestCase):
         except Exception as e:
             self.fail(f"PipelineMeta initialization raised an exception: {e}")
 
-    def test_pipeline_shutdown_without_start(self):
-        pipe = self.pipeline_klass(name="test_name")
-        try:
-            pipe.shutdown()
-        except Exception as e:
-            self.fail(f"Pipeline shutdown without start raised an exception: {e}")
-
-    def test_pipeline_stop_without_start(self):
-        pipe = self.pipeline_klass(name="test_name")
-        try:
-            pipe.stop()
-        except Exception as e:
-            self.fail(f"Pipeline stop without start raised an exception: {e}")
-
     @classmethod
     def tearDownClass(cls):
         del cls.M
         del cls.N
         del cls.pipeline_klass
+
+
+class _InheritEvent(EventBase):
+    def process(self, *args, **kwargs):
+        return True, "ok"
+
+
+class _BasePipeline(Pipeline):
+    first = InputDataField(data_type=str, required=True)
+    shared = InputDataField(data_type=int, default=1)
+
+    class Meta:
+        pointy = "_InheritEvent"
+
+
+class _ChildPipeline(_BasePipeline):
+    second = InputDataField(data_type=str, default="b")
+    shared = InputDataField(data_type=int, default=2)  # overrides the parent's
+
+    class Meta:
+        pointy = "_InheritEvent"
+
+
+def test_a_subclassed_pipeline_inherits_its_parents_fields():
+    """The metaclass collected only the class's own namespace, so a subclass
+    silently lost every field of its parent."""
+    names = [name for name, _ in _ChildPipeline.get_fields()]
+    assert set(names) == {"first", "shared", "second"}
+    assert [name for name, _ in _BasePipeline.get_fields()] == ["first", "shared"]
+
+
+def test_a_child_field_overrides_the_parents_field_of_the_same_name():
+    fields = dict(_ChildPipeline.get_fields())
+    assert fields["shared"].default == 2
+    assert dict(_BasePipeline.get_fields())["shared"].default == 1
+
+
+def test_a_subclassed_pipeline_accepts_and_requires_inherited_fields():
+    child = _ChildPipeline(first="x")
+    assert (child.first, child.second, child.shared) == ("x", "b", 2)
+    with pytest.raises(TypeError):
+        _ChildPipeline()  # the parent's required field is still required

@@ -1,0 +1,238 @@
+---
+#
+# OpenTelemetry Collector — receives traces and metrics from all Volnux pods,
+# batches them, and exports to Tempo (traces) and Prometheus (metrics).
+#
+# Fixes vs original:
+#   - OTel collector image pinned to specific version (not :latest)
+#   - memory_limiter processor added to prevent OOM
+#   - Tempo service DNS included in the same namespace
+#   - securityContext added
+#   - Resource limits properly sized
+#   - Prometheus scrape endpoint separated from OTLP receiver
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: volnux
+  labels:
+    app: otel-collector
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: volnux
+  labels:
+    app:                            otel-collector
+    app.kubernetes.io/component:    observability
+    app.kubernetes.io/part-of:      volnux
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "8889"
+        prometheus.io/path:   "/metrics"
+    spec:
+      serviceAccountName: otel-collector
+      securityContext:
+        runAsNonRoot: true
+        runAsUser:    65534
+        fsGroup:      65534
+
+      containers:
+        - name: otel-collector
+          # Pin to a specific version — never use :latest in production.
+          # Breaking config changes between collector versions are common.
+          image: otel/opentelemetry-collector-contrib:0.96.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--config=/etc/otel/config.yaml"
+          ports:
+            # OTLP gRPC — receives traces and metrics from Volnux pods
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+            # OTLP HTTP — alternative receiver
+            - name: otlp-http
+              containerPort: 4318
+              protocol: TCP
+            # Prometheus scrape endpoint — exposes aggregated metrics
+            - name: metrics
+              containerPort: 8889
+              protocol: TCP
+            # Collector self-telemetry
+            - name: zpages
+              containerPort: 55679
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+              readOnly: true
+          resources:
+            requests:
+              cpu:    "250m"
+              memory: "256Mi"
+            limits:
+              cpu:    "1"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133   # health_check extension
+            initialDelaySeconds: 10
+            periodSeconds:       15
+            timeoutSeconds:      5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds:       5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem:   true
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: config
+          configMap:
+            name: otel-config
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-config
+  namespace: volnux
+data:
+  config.yaml: |
+    # ── Receivers ──────────────────────────────────────────────────────────
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+            max_recv_msg_size_mib: 32
+          http:
+            endpoint: 0.0.0.0:4318
+
+    # ── Processors ─────────────────────────────────────────────────────────
+    processors:
+      # memory_limiter MUST be first in the pipeline.
+      # Prevents OOM by dropping data when memory pressure is high.
+      # Configured at 80% of the container memory limit.
+      memory_limiter:
+        check_interval:         1s
+        limit_percentage:       80
+        spike_limit_percentage: 25
+
+      # Batch processor reduces export frequency and network overhead.
+      # Volnux emits a span per event phase — batching is important.
+      batch:
+        timeout:          5s
+        send_batch_size:  512
+        send_batch_max_size: 1024
+
+      # Add resource attributes for service identification in Grafana
+      resource:
+        attributes:
+          - action: insert
+            key:    deployment.environment
+            value:  production
+
+    # ── Exporters ───────────────────────────────────────────────────────────
+    exporters:
+      # Tempo — receives traces
+      # Tempo must be deployed in the same namespace or accessible via DNS.
+      # Install Tempo: helm install tempo grafana/tempo -n volnux
+      otlp/tempo:
+        endpoint: "tempo.volnux.svc.cluster.local:4317"
+        tls:
+          insecure: true        # Set false and configure certs for production
+        retry_on_failure:
+          enabled:              true
+          initial_interval:     5s
+          max_interval:         30s
+          max_elapsed_time:     300s
+        sending_queue:
+          enabled:              true
+          num_consumers:        10
+          queue_size:           1000
+
+      # Prometheus — exposes metrics for Prometheus scraping
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+        resource_to_telemetry_conversion:
+          enabled: true
+
+      # Debug exporter — writes to stdout (disable in production)
+      # debug:
+      #   verbosity: detailed
+
+    # ── Extensions ──────────────────────────────────────────────────────────
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+      zpages:
+        endpoint: 0.0.0.0:55679
+
+    # ── Service pipelines ───────────────────────────────────────────────────
+    service:
+      extensions: [health_check, zpages]
+
+      pipelines:
+        # Traces: Volnux events → Tempo
+        traces:
+          receivers:  [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters:  [otlp/tempo]
+
+        # Metrics: Volnux Prometheus metrics + OTel metrics → Prometheus
+        metrics:
+          receivers:  [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters:  [prometheus]
+
+      telemetry:
+        logs:
+          level: warn
+        metrics:
+          level: basic
+
+---
+# Service for OTel collector
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: volnux
+  labels:
+    app: otel-collector
+spec:
+  type: ClusterIP
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      port:       4317
+      targetPort: 4317
+      protocol:   TCP
+    - name: otlp-http
+      port:       4318
+      targetPort: 4318
+      protocol:   TCP
+    - name: metrics
+      port:       8889
+      targetPort: 8889
+      protocol:   TCP

@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
+
+CLAUDE.md
 
 # C extensions
 *.so
@@ -182,3 +185,6 @@ manager_test.py
 
 refactor-plan.md
 executor.md
+# PLY generated files
+volnux/parser/parser.out
+volnux/parser/parsetab.py

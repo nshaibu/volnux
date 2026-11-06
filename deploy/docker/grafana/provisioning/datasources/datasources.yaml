@@ -1,0 +1,33 @@
+# deploy/docker/grafana/provisioning/datasources/datasources.yaml
+# Grafana datasource provisioning — auto-configures on startup.
+
+apiVersion: 1
+
+datasources:
+
+  - name:      Prometheus
+    type:      prometheus
+    access:    proxy
+    url:       http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval:          "15s"
+      exemplarTraceIdDestinations:
+        - name:         traceID
+          datasourceUid: tempo
+
+  - name:      Tempo
+    type:      tempo
+    access:    proxy
+    url:       http://tempo:3200
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: ""
+      serviceMap:
+        datasourceUid: Prometheus
+      nodeGraph:
+        enabled: true
+      lokiSearch:
+        datasourceUid: ""
+      spanBar:
+        type: "None"

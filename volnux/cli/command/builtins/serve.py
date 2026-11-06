@@ -1,0 +1,426 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import os
+import signal
+import sys
+from pathlib import Path
+from typing import Optional
+
+from volnux.config import setting
+
+from ..base import BaseCommand, CommandCategory, CommandError
+from ..mixins import ProjectMixin
+
+logger = logging.getLogger(__name__)
+
+
+async def _check_broker(url: str):
+    """Whether the Celery broker answers: ``(ok, message)``. Celery's own
+    connection does the checking, so any broker Celery supports works."""
+    from volnux.concurrency.async_utils import to_thread
+
+    def _ping():
+        from kombu import Connection
+
+        with Connection(url, connect_timeout=3) as connection:
+            connection.ensure_connection(max_retries=1)
+        return url
+
+    try:
+        return True, await to_thread(_ping)
+    except ImportError:
+        return False, "celery (kombu) is not installed"
+    except Exception as exc:
+        return False, str(exc)
+
+
+class ServeCommand(ProjectMixin, BaseCommand):
+    """
+    Start the Volnux production server.
+
+    Runs as one of two roles determined by --role:
+
+        api     REST API + TriggerEngine + RehydrationManager
+                Accepts workflow execution requests and fires triggers.
+                Recommended replicas: 2-5.
+
+        worker  Workflow execution engine + CheckpointManager + RemoteManager
+                Executes events, manages resources, checkpoints state.
+                Recommended replicas: 3-20 (auto-scaled by HPA).
+
+    Usage:
+        volnux serve --role api
+        volnux serve --role worker
+        volnux serve --role api --host 0.0.0.0 --port 8080
+        volnux serve --role worker --log-level INFO
+
+    In Kubernetes, the role is set by the container CMD:
+        command: ["volnux", "serve", "--role", "api"]
+        command: ["volnux", "serve", "--role", "worker"]
+    """
+
+    help = "Start the production API or worker server"
+    name = "serve"
+    category = CommandCategory.EXECUTION
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--role",
+            choices=["api", "worker"],
+            default=os.environ.get("VOLNUX_ROLE", "api"),
+            help="Server role: 'api' or 'worker' (default: api)",
+        )
+        parser.add_argument(
+            "--host",
+            default=setting("API_HOST", "0.0.0.0"),
+            help="Bind address (default: the API_HOST setting, 0.0.0.0)",
+        )
+        parser.add_argument(
+            "--port",
+            type=int,
+            default=int(setting("API_PORT", 8080)),
+            help="Bind port for API role (default: 8080)",
+        )
+        parser.add_argument(
+            "--worker-port",
+            type=int,
+            default=int(setting("WORKER_PORT", 9090)),
+            dest="worker_port",
+            help="Bind port for worker health endpoint (default: 9090)",
+        )
+        parser.add_argument(
+            "--metrics-port",
+            type=int,
+            default=int(setting("PROMETHEUS_PORT", 9464)),
+            dest="metrics_port",
+            help="Prometheus metrics port (default: 9464)",
+        )
+        parser.add_argument(
+            "--log-level",
+            default=str(setting("LOG_LEVEL", "INFO")).upper(),
+            choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+            dest="log_level",
+            help="Log level (default: INFO)",
+        )
+        parser.add_argument(
+            "--project-dir",
+            default=None,
+            dest="project_dir",
+            help="Project directory (default: auto-detect from cwd)",
+        )
+        parser.add_argument(
+            "--drain-timeout",
+            type=float,
+            default=float(setting("CHECKPOINT_DRAIN_TIMEOUT", 120.0)),
+            dest="drain_timeout",
+            help=(
+                "Seconds to wait for checkpoint queue to drain on shutdown "
+                "(default: 120). Must be less than K8s terminationGracePeriodSeconds."
+            ),
+        )
+
+    def handle(self, *args, **options) -> Optional[str]:  # noqa: C901
+        role = options["role"]
+        host = options["host"]
+        port = options["port"]
+        worker_port = options["worker_port"]
+        metrics_port = options["metrics_port"]
+        log_level = options["log_level"]
+        drain_timeout = options["drain_timeout"]
+        project_dir = (
+            Path(options["project_dir"]) if options.get("project_dir") else None
+        )
+
+        # ── Validate environment ───────────────────────────────────────────
+        if setting("DEBUG", False):
+            self.warning(
+                "Running 'volnux serve' in development mode. "
+                "Consider using 'volnux dev' instead."
+            )
+
+        # ── Resolve project ────────────────────────────────────────────────
+        if project_dir is None:
+            try:
+                project_dir = self.resolve_project_dir()
+            except CommandError as exc:
+                self.error(str(exc))
+                sys.exit(1)
+
+        # ── Configure logging ──────────────────────────────────────────────
+        log_format = setting("LOG_FORMAT", "json")
+        if log_format == "json":
+            self._configure_json_logging(log_level)
+        else:
+            logging.basicConfig(
+                level=getattr(logging, log_level),
+                format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            )
+
+        # ── Load project ───────────────────────────────────────────────────
+        # The role reaches initialise_workflows (and its telemetry) as the ROLE
+        # setting, whether it came from --role or from VOLNUX_ROLE.
+        os.environ["VOLNUX_ROLE"] = role
+        logger.info(
+            "Loading project", extra={"project_dir": str(project_dir), "role": role}
+        )
+        try:
+            engine = self.initialise_workflows(project_dir)
+        except CommandError as exc:
+            self.error(str(exc))
+            sys.exit(1)
+
+        project_name = getattr(engine, "project_name", project_dir.name)
+        logger.info("Project loaded", extra={"project": project_name, "role": role})
+
+        # ── Print startup summary ──────────────────────────────────────────
+        self._print_startup_summary(
+            role=role,
+            host=host,
+            port=port if role == "api" else worker_port,
+            metrics_port=metrics_port,
+            drain_timeout=drain_timeout,
+            project_name=project_name,
+            log_level=log_level,
+        )
+
+        # ── Run pre-flight validation ──────────────────────────────────────
+        try:
+            asyncio.run(self._preflight(engine, role))
+        except CommandError as exc:
+            self.error(f"Pre-flight check failed: {exc}")
+            sys.exit(1)
+        except Exception as exc:
+            self.error(f"Pre-flight check error: {exc}")
+            logger.exception("Pre-flight check error")
+            sys.exit(1)
+
+        # ── Start the server ───────────────────────────────────────────────
+        try:
+            asyncio.run(
+                self._run_server(
+                    engine=engine,
+                    role=role,
+                    host=host,
+                    port=port,
+                    worker_port=worker_port,
+                    metrics_port=metrics_port,
+                    log_level=log_level,
+                    drain_timeout=drain_timeout,
+                )
+            )
+        except KeyboardInterrupt:
+            logger.info("Received KeyboardInterrupt — shutting down")
+        except SystemExit:
+            pass
+        except Exception as exc:
+            self.error(f"Server crashed: {exc}")
+            logger.exception("Server error")
+            sys.exit(1)
+
+        return None
+
+    # ── Internal helpers ───────────────────────────────────────────────────
+
+    def _print_startup_summary(
+        self,
+        role: str,
+        host: str,
+        port: int,
+        metrics_port: int,
+        drain_timeout: float,
+        project_name: str,
+        log_level: str,
+    ) -> None:
+        node_id = setting("NODE_ID", "local")
+        self.stdout.write(
+            f"\n{self.style.BOLD('  Volnux')}  "
+            f"{self.style.NOTICE(role.upper())}  "
+            f"node={self.style.BOLD(node_id)}"
+        )
+        self.stdout.write(f"  project={project_name}  log={log_level}")
+        if role == "api":
+            self.stdout.write(
+                f"  {self.style.SUCCESS('→')} "
+                f"http://{host}:{port}  "
+                f"metrics={metrics_port}  "
+                f"drain={drain_timeout:.0f}s"
+            )
+        else:
+            self.stdout.write(
+                f"  {self.style.SUCCESS('→')} "
+                f"metrics={metrics_port}  "
+                f"grpc={setting('GRPC_PORT', 45545)}  "
+                f"drain={drain_timeout:.0f}s"
+            )
+        self.stdout.write("")
+
+    async def _preflight(self, engine, role: str) -> None:
+        """
+        Validate that required backends are reachable before starting.
+        Fails fast with a clear error on any critical dependency failure.
+
+        Every database of ``DATABASES`` must answer (the same check as
+        ``volnux check``, through the configured backends, so the connection
+        settings live in one place). The Celery broker is Celery's own
+        configuration and is checked with Celery's connection: required when the
+        API role has a schedule trigger (Celery beat fires it), advisory otherwise.
+        """
+        from volnux.cli.command.mixins.check import _check_backends
+
+        errors = []
+        warnings = []
+
+        for alias, ok, message in await _check_backends(engine):
+            if not ok:
+                errors.append(
+                    f"Database '{alias}' unreachable ({message}). "
+                    "Check DATABASES in your settings."
+                )
+            else:
+                logger.info("Pre-flight: database '%s' OK — %s", alias, message)
+
+        broker_url = setting("REDIS_BROKER_URL", "redis://localhost:6380/0")
+        br_ok, br_msg = await _check_broker(broker_url)
+        if not br_ok:
+            # Only a schedule trigger needs the broker (Celery beat fires it): the
+            # API role fails without it when it has one, and otherwise a project
+            # that has none could not be served without a Redis it never uses.
+            from volnux.engine.workflows.trigger.triggers.base import TriggerType
+
+            needs_broker = role == "api" and any(
+                getattr(t, "trigger_type", None) is TriggerType.SCHEDULE
+                for t in getattr(engine, "triggers", {}).values()
+            )
+            if needs_broker:
+                errors.append(
+                    f"Celery broker unreachable at {broker_url} ({br_msg}). "
+                    "Set VOLNUX_REDIS_BROKER_URL."
+                )
+            else:
+                warnings.append(
+                    "Celery broker unreachable — a ScheduleTrigger would not fire."
+                )
+        else:
+            logger.info("Pre-flight: Celery broker OK — %s", br_msg)
+
+        # Log warnings
+        for w in warnings:
+            logger.warning("Pre-flight warning: %s", w)
+
+        # Raise on errors
+        if errors:
+            raise CommandError(
+                "Pre-flight checks failed:\n" + "\n".join(f"  • {e}" for e in errors)
+            )
+
+    async def _run_server(
+        self,
+        engine,
+        role: str,
+        host: str,
+        port: int,
+        worker_port: int,
+        metrics_port: int,
+        log_level: str,
+        drain_timeout: float,
+    ) -> None:
+        """
+        Start the server for the given role and handle graceful shutdown.
+
+        Graceful shutdown sequence on SIGTERM:
+            1. Stop accepting new workflow dispatches
+            2. Complete in-flight events at the next safe phase boundary
+            3. Drain checkpoint queue (up to drain_timeout seconds)
+            4. Stop Prometheus and OTel exporters
+            5. Exit cleanly
+        """
+        stop_event = asyncio.Event()
+        drain_complete = asyncio.Event()
+
+        def _handle_sigterm(sig, _frame):
+            logger.info(
+                "Received %s — initiating graceful shutdown", signal.Signals(sig).name
+            )
+            stop_event.set()
+
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+        signal.signal(signal.SIGINT, _handle_sigterm)
+
+        try:
+            from volnux.server import start_api_server, start_worker_server
+        except ImportError as exc:
+            # (this used to fall back to a loop that did nothing and looked like a
+            # running server)
+            raise CommandError(
+                f"Cannot start the {role} server: {exc}. The API needs "
+                "'fastapi' and 'uvicorn' (pip install fastapi uvicorn)."
+            ) from exc
+
+        if role == "api":
+            await start_api_server(
+                engine=engine,
+                host=host,
+                port=port,
+                metrics_port=metrics_port,
+                log_level=log_level,
+                reload=False,
+                dev_mode=False,
+                stop_event=stop_event,
+            )
+        else:
+            await start_worker_server(
+                engine=engine,
+                host=host,
+                port=worker_port,
+                metrics_port=metrics_port,
+                log_level=log_level,
+                stop_event=stop_event,
+            )
+
+        # ── Graceful shutdown ──────────────────────────────────────────────
+        logger.info("Draining checkpoint queue (timeout=%.0fs)", drain_timeout)
+        try:
+            checkpoint_manager = getattr(engine, "checkpoint_manager", None)
+            if checkpoint_manager and hasattr(checkpoint_manager, "drain"):
+                await asyncio.wait_for(
+                    checkpoint_manager.drain(),
+                    timeout=drain_timeout,
+                )
+            drain_complete.set()
+            logger.info("Checkpoint drain complete")
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Checkpoint drain timed out after %.0fs — "
+                "some in-flight events may resume from an earlier checkpoint",
+                drain_timeout,
+            )
+        except Exception as exc:
+            logger.error("Checkpoint drain error: %s", exc)
+
+    @staticmethod
+    def _configure_json_logging(log_level: str) -> None:
+        """
+        Configure structured JSON logging for production.
+        Falls back to standard logging if python-json-logger is not installed.
+        """
+        try:
+            from pythonjsonlogger import jsonlogger
+
+            handler = logging.StreamHandler(sys.stdout)
+            formatter = jsonlogger.JsonFormatter(
+                fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%S",
+            )
+            handler.setFormatter(formatter)
+            root = logging.getLogger()
+            root.setLevel(getattr(logging, log_level))
+            root.addHandler(handler)
+        except ImportError:
+            logging.basicConfig(
+                level=getattr(logging, log_level),
+                format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                stream=sys.stdout,
+            )

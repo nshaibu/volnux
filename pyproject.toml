@@ -16,20 +16,27 @@ dependencies = [
     "ply==3.11",
     "six==1.17.0",
     "treelib==1.7.0",
-    "graphviz==0.20.3",
+    "graphviz>=0.20.3",
+    "httpx>=0.28.1",
+    "PyJWT>=2.13.0",
     "more-itertools>=8.10.0",
-    "pydantic_mini>=1.1.6",
+    "formax-py",
+    "orjson>=3.11.7",
+    "jsonschema>=4.26.0",
     "apscheduler<=3.11.0",
-    "typing-extensions==4.12.2",
+    "typing-extensions>=4.12.2",
+    "asgiref>=3.11.0",
     "cloudpickle>=3.0.0",
-    "redis==5.2.1",
+    "redis>=5.2.1",
     "cryptography>=41.0.0",
     "grpcio>=1.60.0",
     "grpcio-tools<=1.70.0",   # >=1.60.0
     "psycopg==3.2.5",
     "psycopg-binary==3.2.5",
     "psycopg-pool==3.2.6",
-    "psutil==7.1.0",
+    "psutil>=7.1.0",
+    "yoyo-migrations>=9.0.0",
+    "celery>=5.6.2",
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -73,9 +80,13 @@ metrics = [
     "prometheus-client>=0.20.0",
     "requests>=2.31.0"
 ]
+kafka = [
+    "confluent-kafka>=2.5.0"
+]
 [tool.setuptools]
 packages = [
     "volnux",
+    "volnux.conf",
     "volnux.translator",
     "volnux.protos",
     "volnux.parser",
@@ -85,16 +96,26 @@ packages = [
     "volnux.mixins",
     "volnux.mixins.utils",
     "volnux.signal",
+    "volnux.signal.handlers",
     "volnux.backends",
     "volnux.backends.stores",
     "volnux.backends.connectors",
+    "volnux.backends.messaging",
+    "volnux.backends.messaging.stores",
     "volnux.telemetry",
     "volnux.execution",
+    "volnux.execution.pipeline",
+    "volnux.execution.pipeline.fields",
     "volnux.engine",
     "volnux.task",
     "volnux.flows",
     "volnux.concurrency",
+    "volnux.manifest",
 ]
+
+[tool.setuptools.package-data]
+# the JSON schemas the loaders and the CLI validate manifests against
+"volnux.manifest" = ["schema/event/*.json", "schema/workflow/*.json"]
 
 [tool.coverage.run]
 branch = true
@@ -168,3 +189,5 @@ ignore_errors = true
 # Define the command name and its Python entry function
 # Format: command_name = "module.submodule:function_name"
 volnux = "volnux.cli:main.main"
+# Runs a workflow inside a Kubernetes Job pod (see KubernetesWorkflowExecutor)
+volnux-job-runner = "volnux.engine.workflows.trigger.executors.kubernetes:job_runner_main"

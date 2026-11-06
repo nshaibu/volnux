@@ -1,19 +1,25 @@
 ply==3.11
 six==1.17.0
 treelib==1.7.0
-typing-extensions==4.12.2
+asgiref>=3.11.0
+httpx>=0.28.1
+typing-extensions>=4.12.2
 more-itertools>=8.10.0
 apscheduler<=3.11.0
-pydantic_mini==1.1.6
-# graph
+formax-py
+fastapi==0.125.0
+PyJWT>=2.13.0
+orjson>=3.11.7
+jsonschema>=4.26.0
+yoyo-migrations>=9.0.0
+celery>=5.6.2
+# [graph]
 graphviz==0.20.3
-# [optional]
+# [backends]
 redis==5.2.1
 cryptography>=41.0.0
-hdfs>=2.7.0
 grpcio>=1.60.0
 grpcio-tools<=1.70.0   # >=1.60.0
-cloudpickle>=3.0.0
 psutil==7.1.0
 psycopg==3.2.5
 psycopg-binary==3.2.5

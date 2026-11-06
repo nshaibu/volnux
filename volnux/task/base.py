@@ -2,6 +2,7 @@ import typing
 from collections import deque
 
 from volnux.mixins import ObjectIdentityMixin
+from volnux.parser.ast import BUILTIN_DESCRIPTORS
 from volnux.parser.conditional import ConditionalNode
 from volnux.parser.operator import PipeType
 from volnux.parser.options import Options
@@ -12,10 +13,24 @@ class TaskBase(ObjectIdentityMixin):
     def __init__(
         self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
     ) -> None:
-        super().__init__(*args, **kwargs)  # type: ignore
+        super().__init__()  # type: ignore
 
         # options specified in pointy scripts for tasks are kept here
         self.options: typing.Optional[Options] = None
+
+        # Namespace the task was written in (``billing::ChargeCard``). Namespaces
+        # are user defined and resolved at runtime.
+        self.namespace: str = "local"
+
+        # Custom descriptor label -> value, copied from the program's
+        # ``@descriptor`` directive so the orchestrator can translate in both
+        # directions. The built-in ``failure``/``success`` are not stored here;
+        # use ``get_descriptor_name`` / ``get_descriptor_value``.
+        self.descriptors: typing.Dict[str, int] = {}
+
+        # Use for identify the order of a task.
+        # This will be passed to events during initialization
+        self.sequence_number: typing.Optional[int] = None
 
         # attributes for when a task is created from a descriptor
         self._descriptor: typing.Optional[int] = None
@@ -50,8 +65,8 @@ class TaskBase(ObjectIdentityMixin):
             raise ValueError("Descriptor cannot be None")
         if not isinstance(value, int):
             raise TypeError("Descriptor must be an integer")
-        if 0 > value or value > 9:
-            raise ValueError("Descriptor must be between 0 and 9")
+        if isinstance(value, bool) or value < 0:
+            raise ValueError("Descriptor must be a non-negative integer")
         self._descriptor = value
 
     @property
@@ -63,8 +78,19 @@ class TaskBase(ObjectIdentityMixin):
         self._descriptor_pipe = value
 
     @property
+    def is_grouping(self) -> bool:
+        """True for task groupings, which have chains instead of an event."""
+        return False
+
+    @property
     def is_conditional(self) -> bool:
-        return len(self.condition_node.get_descriptors()) > 1
+        """True when what runs next depends on the result: more than one branch, or
+        a failure branch on its own (``A (failure -> X)``). A lone success branch is
+        what ``A -> B`` is, and is not conditional."""
+        return (
+            len(self.condition_node.get_descriptors()) > 1
+            or self.condition_node.on_failure_event is not None
+        )
 
     @property
     def is_descriptor_task(self) -> bool:
@@ -118,6 +144,19 @@ class TaskBase(ObjectIdentityMixin):
         )
 
     def get_pointer_to_task(self) -> typing.Optional["PipeType"]:
+        """
+        Determines and retrieves the appropriate pipe type associated with the current task.
+
+        This method evaluates various conditions and attributes of the `parent_node` and its
+        corresponding nodes to decide which pipe type, if any, should be returned. The pipe
+        type is determined based on the relationship between the current task and its
+        associated condition or sink nodes. If no pipe type can be resolved from these checks,
+        the method attempts to use a custom descriptor configuration to derive a pipe type.
+
+        :return: The resolved pipe type associated with the current task, or None if no
+            applicable pipe type can be determined.
+        :rtype: typing.Optional[PipeType]
+        """
         pipe_type = None
         if self.parent_node is not None:
             if (
@@ -150,6 +189,81 @@ class TaskBase(ObjectIdentityMixin):
 
         return pipe_type
 
+    def get_parallel_group(self) -> typing.List[TaskType]:
+        """The tasks joined to this one by ``||``, in order, this task last.
+
+        ``B`` in ``A || B`` gives ``[A, B]``; a task that is not part of a parallel
+        group gives just itself. For ``(A || B) |-> C`` this is how the producers
+        of ``C`` are found from the tail ``B``.
+        """
+        group = [typing.cast(TaskType, self)]
+        current = self
+        while (
+            current.parent_node is not None
+            and current.get_pointer_to_task() == PipeType.PARALLELISM
+        ):
+            current = current.parent_node
+            group.insert(0, typing.cast(TaskType, current))
+        return group
+
+    def get_chain_tails(self) -> typing.List[TaskType]:
+        """The task(s) the chain that starts here ends on.
+
+        Follows ``->``/``|->`` to the end; a ``||`` group at the end contributes all
+        its members, and a ``{}`` group contributes the tails of each of its chains.
+        This is what a ``{ A, B -> C } |-> D`` consumer reads from: ``A`` and ``C``.
+        """
+        current: typing.Any = self
+        while True:
+            group = [current]
+            while (
+                group[-1].condition_node.on_success_pipe == PipeType.PARALLELISM
+                and group[-1].condition_node.on_success_event is not None
+            ):
+                group.append(group[-1].condition_node.on_success_event)
+            following = group[-1].condition_node.on_success_event
+            if following is None:
+                break
+            current = following
+
+        tails: typing.List[TaskType] = []
+        for task in group:
+            if task.is_grouping:
+                for chain in task.chains:
+                    tails.extend(chain.get_chain_tails())
+            else:
+                tails.append(task)
+        return tails
+
+    def get_stream_producers(self) -> typing.List[TaskType]:
+        """The tasks whose streams this task reads (empty if it reads none).
+
+        * ``B`` in ``A |-> B`` reads ``A``.
+        * ``C`` in ``A |-> (B || C)`` was entered by ``||`` from ``B``, so the group is
+          traced back to ``B`` and from there to ``A``.
+        * ``D`` in ``(A || B) |-> D`` reads both ``A`` and ``B`` (fan-in).
+        * ``D`` in ``{ A, B -> C } |-> D`` reads the tail of each chain: ``A`` and ``C``.
+        """
+        current: typing.Any = self
+        while current.get_pointer_to_task() == PipeType.PARALLELISM:
+            if current.parent_node is None:
+                return []
+            current = current.parent_node
+        if current.get_pointer_to_task() != PipeType.PIPE_POINTER:
+            return []
+        tail = current.parent_node
+        if tail is None:
+            return []
+
+        producers: typing.List[TaskType] = []
+        for member in tail.get_parallel_group():
+            if member.is_grouping:
+                for chain in member.chains:
+                    producers.extend(chain.get_chain_tails())
+            else:
+                producers.append(member)
+        return producers
+
     def get_children(self) -> typing.List[TaskType]:
         children = []
         if self.sink_node:
@@ -160,7 +274,7 @@ class TaskBase(ObjectIdentityMixin):
 
     def get_root(self) -> TaskType:
         if self.parent_node is None:
-            node = self
+            node = typing.cast(object, self)
             node = typing.cast(TaskType, node)
             return node
         return self.parent_node.get_root()
@@ -170,8 +284,24 @@ class TaskBase(ObjectIdentityMixin):
 
     def get_task_count(self) -> int:
         root = self.get_root()
-        nodes = list(self.bf_traversal(root))
+        nodes = list(self.df_traversal(root))
         return len(nodes)
+
+    def get_descriptor_name(self, value: int) -> typing.Optional[str]:
+        """Label for a descriptor value (``0`` -> ``failure``), or None if unnamed."""
+        for label, builtin in BUILTIN_DESCRIPTORS.items():
+            if builtin == value:
+                return label
+        for label, custom in self.descriptors.items():
+            if custom == value:
+                return label
+        return None
+
+    def get_descriptor_value(self, label: str) -> typing.Optional[int]:
+        """Value for a descriptor label (``failure`` -> ``0``), or None if unknown."""
+        if label in BUILTIN_DESCRIPTORS:
+            return BUILTIN_DESCRIPTORS[label]
+        return self.descriptors.get(label)
 
     def get_descriptor(self, descriptor: int) -> typing.Optional[TaskType]:
         target = self.condition_node.get_descriptor_config(descriptor)
@@ -184,22 +314,41 @@ class TaskBase(ObjectIdentityMixin):
         cls, node: typing.Optional[TaskType]
     ) -> typing.Generator[TaskType, None, None]:
         """
-        Performs a breadth-first traversal of the task tree starting from the given node.
-
-        Despite the method name, this traversal is depth-first, not breadth-first.
-        Yields each node in the tree.
+        Breadth-first traversal of the task tree starting from the given node.
+        Yields nodes level by level, left to right.
         """
-        if node:
-            yield node
+        if not node:
+            return
 
-            for child in node.get_children():
-                yield from cls.bf_traversal(child)
+        queue: typing.Deque[TaskType] = deque([node])
+        while queue:
+            current = queue.popleft()
+            yield current
+            queue.extend(current.get_children())
+
+    @classmethod
+    def df_traversal(
+        cls, node: typing.Optional[TaskType]
+    ) -> typing.Generator[TaskType, None, None]:
+        """
+        Depth-first (pre-order) traversal of the task tree starting from the given node.
+        Yields each node before its children.
+        """
+        if not node:
+            return
+
+        stack: typing.List[TaskType] = [node]
+        while stack:
+            current = stack.pop()
+            yield current
+            # Extend in reverse so leftmost child is processed first.
+            stack.extend(reversed(current.get_children()))
 
     def get_parallel_nodes(
         self,
     ) -> typing.Deque[TaskType]:
         parallel_tasks: typing.Deque[TaskType] = deque()
-        task = self
+        task = typing.cast(object, self)
         task = typing.cast(TaskType, task)
         while task and task.condition_node.on_success_pipe == PipeType.PARALLELISM:
             parallel_tasks.append(task)
@@ -219,7 +368,7 @@ class TaskBase(ObjectIdentityMixin):
             ):
                 return self.parent_node.get_first_task_in_parallel_execution_mode()
             else:
-                return self
+                return typing.cast(TaskType, self)
         return None
 
     def get_last_task_in_parallel_execution_mode(

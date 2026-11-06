@@ -3,7 +3,7 @@ import threading
 import grpc
 import cloudpickle
 from unittest.mock import Mock, patch, MagicMock
-from volnux.executors.grpc_executor import GRPCExecutor
+from volnux.executors.grpc import GRPCExecutor
 from volnux.manager.grpc_manager import GRPCManager, TaskExecutorServicer
 from volnux.protos import task_pb2, task_pb2_grpc
 

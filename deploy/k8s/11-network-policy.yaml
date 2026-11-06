@@ -1,0 +1,463 @@
+---
+#
+# NetworkPolicies for all Volnux components.
+#
+# Fixes vs original:
+#   - DNS egress (UDP+TCP port 53) added to ALL policies with egress rules.
+#     Without DNS, pods with restrictive egress cannot resolve any service names.
+#   - External HTTPS egress (port 443) added to API and worker policies.
+#     Required for: LLM providers, EventHub, Slack HITL adapter, email SMTP.
+#   - redis-broker NetworkPolicy added (was missing in original).
+#   - Ingress from Prometheus scraper added to allow metrics collection.
+#   - OTel collector egress to Tempo added.
+#
+# Default deny:
+#   All ingress and egress is denied by default once any NetworkPolicy
+#   selects a pod. Rules below explicitly allow only required traffic.
+
+# ── DNS egress — required by ALL pods with egress restrictions ────────────────
+# Defined once as a separate policy applied via podSelector: {}
+# (matches all pods in the namespace). Individual policies also repeat
+# the DNS rule as some CNI plugins require it per-policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: volnux
+spec:
+  podSelector: {}   # Applies to ALL pods in the namespace
+  policyTypes:
+    - Egress
+  egress:
+    # kube-dns — required for service name resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+
+---
+# ── Volnux API ────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: volnux-api
+  namespace: volnux
+spec:
+  podSelector:
+    matchLabels:
+      app: volnux-api
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # HTTP traffic from ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8080
+          protocol: TCP
+
+    # Prometheus metrics scraping from monitoring namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9464
+          protocol: TCP
+
+    # Internal metrics scraping from OTel collector in same namespace
+    - from:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - port: 9464
+          protocol: TCP
+
+  egress:
+    # DNS resolution (kube-dns)
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+    # PostgreSQL — governance data, audit trail, asset catalog
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+
+    # Redis checkpoints — HITL queue, command channel, task location
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis-checkpoints
+      ports:
+        - port: 6379
+          protocol: TCP
+
+    # Redis broker — Celery task queue (ScheduleTrigger)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis-broker
+      ports:
+        - port: 6379
+          protocol: TCP
+
+    # OTel collector — traces and metrics export
+    - to:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - port: 4317
+          protocol: TCP
+
+    # Worker pods — API forwards some commands to workers via gRPC
+    - to:
+        - podSelector:
+            matchLabels:
+              app: volnux-worker
+      ports:
+        - port: 45545
+          protocol: TCP
+
+    # External HTTPS — EventHub API, LLM providers (OpenAI, Anthropic, Gemini),
+    # Slack HITL adapter, email SMTP TLS.
+    # Restrict to specific IPs with an egress firewall if your environment supports it.
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 587     # SMTP STARTTLS for email adapter
+          protocol: TCP
+
+
+---
+# ── Volnux Worker ─────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: volnux-worker
+  namespace: volnux
+spec:
+  podSelector:
+    matchLabels:
+      app: volnux-worker
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # gRPC from API pods (RemoteExecutor command routing)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: volnux-api
+      ports:
+        - port: 45545
+          protocol: TCP
+
+    # gRPC from other worker pods (peer-to-peer event dispatch)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: volnux-worker
+      ports:
+        - port: 45545
+          protocol: TCP
+
+    # Prometheus metrics scraping
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9464
+          protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - port: 9464
+          protocol: TCP
+
+  egress:
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+    # PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+
+    # Redis checkpoints
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis-checkpoints
+      ports:
+        - port: 6379
+          protocol: TCP
+
+    # Redis broker
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis-broker
+      ports:
+        - port: 6379
+          protocol: TCP
+
+    # OTel collector
+    - to:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - port: 4317
+          protocol: TCP
+
+    # Inter-worker gRPC (RemoteExecutor peer dispatch)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: volnux-worker
+      ports:
+        - port: 45545
+          protocol: TCP
+
+    # External HTTPS — LLM providers, EventHub, external webhooks
+    - ports:
+        - port: 443
+          protocol: TCP
+
+
+---
+# ── PostgreSQL ────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  namespace: volnux
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Accept connections from API and worker pods only
+    - from:
+        - podSelector:
+            matchLabels:
+              app: volnux-api
+        - podSelector:
+            matchLabels:
+              app: volnux-worker
+      ports:
+        - port: 5432
+          protocol: TCP
+
+    # Accept connections from backup CronJob pod
+    - from:
+        - podSelector:
+            matchLabels:
+              app: postgres-backup
+      ports:
+        - port: 5432
+          protocol: TCP
+
+    # Prometheus metrics from postgres-exporter (sidecar — same pod, no policy needed)
+    # Allow external scraping of the exporter port
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9187
+          protocol: TCP
+
+  egress:
+    # DNS only — PostgreSQL does not need external access
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+
+---
+# ── Redis Checkpoints ─────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-checkpoints
+  namespace: volnux
+spec:
+  podSelector:
+    matchLabels:
+      app: redis-checkpoints
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: volnux-api
+        - podSelector:
+            matchLabels:
+              app: volnux-worker
+      ports:
+        - port: 6379
+          protocol: TCP
+    # Prometheus scraping of redis-exporter sidecar
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9121
+          protocol: TCP
+
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+
+---
+# ── Redis Broker ──────────────────────────────────────────────────────────────
+# This policy was MISSING in the original document.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-broker
+  namespace: volnux
+spec:
+  podSelector:
+    matchLabels:
+      app: redis-broker
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: volnux-api
+        - podSelector:
+            matchLabels:
+              app: volnux-worker
+      ports:
+        - port: 6379
+          protocol: TCP
+    # Prometheus scraping of redis-exporter sidecar
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9121
+          protocol: TCP
+
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+
+---
+# ── OTel Collector ────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otel-collector
+  namespace: volnux
+spec:
+  podSelector:
+    matchLabels:
+      app: otel-collector
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Accept OTLP from API and worker pods
+    - from:
+        - podSelector:
+            matchLabels:
+              app: volnux-api
+        - podSelector:
+            matchLabels:
+              app: volnux-worker
+      ports:
+        - port: 4317
+          protocol: TCP
+        - port: 4318
+          protocol: TCP
+
+    # Prometheus scraping of the collector's own metrics endpoint
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8889
+          protocol: TCP
+
+  egress:
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+    # Tempo — trace export
+    # Install Tempo: helm install tempo grafana/tempo -n volnux
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tempo
+      ports:
+        - port: 4317
+          protocol: TCP
+
+    # If Tempo is in a separate namespace (e.g. monitoring):
+    # Uncomment and adjust the namespaceSelector below instead.
+    # - to:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: monitoring
+    #   ports:
+    #     - port: 4317
+    #       protocol: TCP

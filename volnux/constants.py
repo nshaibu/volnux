@@ -4,6 +4,8 @@ PIPELINE_FIELDS = "__pipeline_fields__"
 
 PIPELINE_STATE = "_state"
 
+PIPELINE_AST = "_pointy_ast"
+
 MAX_RETRIES = 5
 MAX_BACKOFF_FACTOR = 0.05
 

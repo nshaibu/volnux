@@ -1,7 +1,7 @@
 import os
 
 from volnux.pipeline import Pipeline
-from volnux.fields import FileInputDataField, InputDataField
+from volnux.execution.pipeline.fields import FileInputDataField, InputDataField
 
 
 class SentimentAnalysisPipeline(Pipeline):

@@ -2,11 +2,15 @@ import inspect
 from unittest import mock
 
 from volnux.parser.options import StopCondition
-from volnux.utils import (_extend_recursion_depth,
-                          build_event_arguments_from_pipeline,
-                          generate_unique_id, get_expected_args,
-                          get_function_call_args, get_obj_klass_import_str,
-                          get_obj_state)
+from volnux.utils import (
+    _extend_recursion_depth,
+    build_event_arguments_from_pipeline,
+    generate_unique_id,
+    get_expected_args,
+    get_function_call_args,
+    get_obj_klass_import_str,
+    get_obj_state,
+)
 
 
 def test_generate_unique_id():
@@ -22,10 +26,10 @@ def test_generate_unique_id():
     obj3 = Klass2()
     obj4 = Klass1()
 
-    generate_unique_id(obj1)
-    generate_unique_id(obj2)
-    generate_unique_id(obj3)
-    generate_unique_id(obj4)
+    generate_unique_id(obj1, None)
+    generate_unique_id(obj2, None)
+    generate_unique_id(obj3, None)
+    generate_unique_id(obj4, None)
 
     assert hasattr(obj1, "_id")
     assert hasattr(obj2, "_id")
@@ -61,7 +65,7 @@ def test_get_function_call_args():
 
 def test_build_event_arguments_from_pipeline():
     from volnux import EventBase, Pipeline
-    from volnux.fields import InputDataField
+    from volnux.execution.pipeline.fields import InputDataField
 
     class A(EventBase):
         def process(self, name, school):
@@ -80,10 +84,13 @@ def test_build_event_arguments_from_pipeline():
         {
             "execution_context": None,
             "task_id": None,
+            "checkpoint_manager": None,
+            "command_channel": None,
             "previous_result": None,
             "stop_condition": StopCondition.NEVER,
             "run_bypass_event_checks": False,
             "options": None,
+            "sequence_number": None,
         },
         {"name": "nafiu", "school": "knust"},
     )

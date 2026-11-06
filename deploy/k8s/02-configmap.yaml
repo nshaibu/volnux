@@ -1,0 +1,295 @@
+---
+#
+# Non-sensitive configuration for all Volnux pods.
+# Sensitive values (passwords, API keys, secrets) come from 01-secrets.yaml.
+#
+# The settings.py block is mounted as a file into every pod at
+# /opt/volnux/settings.py. It overrides the project's local config.py
+# entirely in production.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: volnux-config
+  namespace: volnux
+  labels:
+    app: volnux
+data:
+  # ── Environment variables injected into all pods ──────────────────────────
+  VOLNUX_ENV:          "production"
+  VOLNUX_LOG_LEVEL:    "INFO"
+  VOLNUX_LOG_FORMAT:   "json"
+
+  # API server
+  VOLNUX_API_HOST:    "0.0.0.0"
+  VOLNUX_API_PORT:    "8080"
+  VOLNUX_API_WORKERS: "1"
+  VOLNUX_API_DOCS:    "false"
+
+  # Prometheus metrics scrape port (separate from REST API)
+  VOLNUX_PROMETHEUS_PORT: "9464"
+
+  # OTel collector endpoint (deployed in this same namespace)
+  VOLNUX_OTEL_ENABLED:   "true"
+  VOLNUX_OTEL_ENDPOINT:  "http://otel-collector.volnux.svc.cluster.local:4317"
+  VOLNUX_OTEL_PROTOCOL:  "grpc"
+
+  # Command channel backend
+  VOLNUX_CHANNEL_BACKEND: "redis"
+
+  # Checkpoint drain timeout — workers wait this long on SIGTERM.
+  # terminationGracePeriodSeconds on worker pods must be greater than this.
+  VOLNUX_CHECKPOINT_DRAIN_TIMEOUT: "120"
+
+  # Kubernetes executor namespace (for KubernetesWorkflowExecutor)
+  VOLNUX_K8S_NAMESPACE: "volnux"
+  VOLNUX_K8S_IMAGE:     "your-registry/volnux-engine:2.0.0"
+
+  # Ollama base URL (if running Ollama as a K8s service)
+  OLLAMA_BASE_URL: "http://ollama.volnux.svc.cluster.local:11434"
+  OLLAMA_TIMEOUT:  "120"
+
+  # ── settings.py — mounted as a file, overrides project config.py ─────────
+  settings.py: |
+    """
+    Production settings for Volnux on Kubernetes.
+    Loaded by the engine on startup. Overrides project config.py.
+    Secrets are injected as environment variables from volnux-secrets.
+    """
+    import os
+    from pathlib import Path
+
+    PROJECT_DIR  = Path("/opt/volnux")
+    PROJECT_NAME = os.environ.get("VOLNUX_PROJECT_NAME", "production")
+    VERSION      = "1.0.0"
+    DESCRIPTION  = "Volnux production deployment"
+    ORGANISATION = os.environ.get("VOLNUX_ORGANISATION", "my-organisation")
+
+    # ── Node identity ─────────────────────────────────────────────────────────
+    # Injected from pod metadata.name via downward API in each Deployment.
+    # Provides stable, unique node identity for command channel routing,
+    # heartbeat keys, and audit trail records.
+    NODE_ID = os.environ.get("VOLNUX_NODE_ID", "unknown-node")
+
+    # ── Persistence backends ──────────────────────────────────────────────────
+    # Multi-backend configuration. Each backend is named and referenced
+    # by GOVERNANCE_BACKEND, CHECKPOINT_BACKEND, RESULT_BACKEND, etc.
+
+    BACKENDS = {
+        # PostgreSQL — governance data, audit trail, asset catalog, RBAC.
+        # Survives all infrastructure restarts. Long-term retention.
+        "default": {
+            "ENGINE": "volnux.backends.stores.postgres_store.PostgresStoreBackend",
+            "CONNECTOR_CONFIG": {
+                "host":         os.environ.get("VOLNUX_POSTGRES_HOST", "postgres.volnux.svc.cluster.local"),
+                "port":         int(os.environ.get("VOLNUX_POSTGRES_PORT", "5432")),
+                "database":     os.environ.get("VOLNUX_POSTGRES_DB", "volnux"),
+                "username":     os.environ.get("VOLNUX_POSTGRES_USER", "volnux"),
+                "password":     os.environ.get("VOLNUX_POSTGRES_PASSWORD", ""),
+                "pool_min_size": 2,
+                "pool_max_size": 20,
+                "connect_timeout": 10,
+                "ssl":          os.environ.get("VOLNUX_POSTGRES_SSL", "require"),
+            },
+        },
+
+        # Redis checkpoints — event checkpoints, HITL queue, task location,
+        # node heartbeats, command channel routing.
+        # AOF persistence enabled on the Redis instance.
+        # TTL-based cleanup — no manual purging required.
+        "checkpoints": {
+            "ENGINE": "volnux.backends.stores.redis_store.RedisStoreBackend",
+            "CONNECTOR_CONFIG": {
+                "url":             os.environ.get("VOLNUX_REDIS_CHECKPOINT_URL", "redis://redis-checkpoints.volnux.svc.cluster.local:6379/0"),
+                "max_connections": 50,
+                "socket_timeout":  5.0,
+                "retry_on_timeout": True,
+                "health_check_interval": 30,
+            },
+        },
+
+        # Redis checkpoints db 1 — DURABLE EventResult objects.
+        # Separate DB index from checkpoints to allow independent flush.
+        "results": {
+            "ENGINE": "volnux.backends.stores.redis_store.RedisStoreBackend",
+            "CONNECTOR_CONFIG": {
+                "url":             os.environ.get("VOLNUX_REDIS_CHECKPOINT_URL", "redis://redis-checkpoints.volnux.svc.cluster.local:6379/1"),
+                "max_connections": 50,
+                "socket_timeout":  5.0,
+                "retry_on_timeout": True,
+            },
+        },
+
+        # Redis broker — Celery task queue for ScheduleTrigger.
+        # Separate Redis instance with noeviction policy.
+        # Broker must never lose messages.
+        "broker": {
+            "ENGINE": "volnux.backends.stores.redis_store.RedisStoreBackend",
+            "CONNECTOR_CONFIG": {
+                "url":             os.environ.get("VOLNUX_REDIS_BROKER_URL", "redis://redis-broker.volnux.svc.cluster.local:6379/0"),
+                "max_connections": 50,
+            },
+        },
+
+        # SQLite — per-node operational state.
+        # Trigger state records, dirty flags, local CLI IPC.
+        # Written to emptyDir volume — does not need persistent storage.
+        "local_state": {
+            "ENGINE": "volnux.backends.stores.sqlite_store.SqliteStoreBackend",
+            "CONNECTOR_CONFIG": {
+                "database": "/data/volnux.db",
+                "wal_mode":  True,
+                "timeout":   10.0,
+            },
+        },
+    }
+
+    # Backend routing — which named backend each subsystem uses
+    GOVERNANCE_BACKEND  = "default"
+    CHECKPOINT_BACKEND  = "checkpoints"
+    RESULT_BACKEND      = "results"
+    LOCAL_STATE_BACKEND = "local_state"
+
+    # ── Execution ─────────────────────────────────────────────────────────────
+    WORKFLOW_EXECUTOR         = "celery"
+    MAX_CONCURRENT_WORKFLOWS  = 200
+    PROCESS_POOL_MAX_WORKERS  = 16
+    THREAD_POOL_MAX_WORKERS   = 20
+    DEFAULT_TRAVERSAL_STRATEGY = "adaptive"
+    DEFAULT_GRAPH_MODE         = "CFG"
+
+    # ── Celery ────────────────────────────────────────────────────────────────
+    CELERY_BROKER_URL      = os.environ.get("VOLNUX_REDIS_BROKER_URL", "redis://redis-broker.volnux.svc.cluster.local:6379/0")
+    CELERY_RESULT_BACKEND  = os.environ.get("VOLNUX_REDIS_BROKER_URL", "redis://redis-broker.volnux.svc.cluster.local:6379/0")
+    CELERY_EXECUTOR_CONFIG = {
+        "queue":                "volnux_workflows",
+        "task_soft_time_limit": 3600,
+        "task_time_limit":      3900,
+        "priority_queue":       "volnux_workflows_high",
+    }
+
+    # ── Checkpointing ─────────────────────────────────────────────────────────
+    PROJECT_CHECKPOINTING      = True
+    CHECKPOINT_INTERVAL        = 30.0
+    CHECKPOINT_TTL_SECONDS     = 604800   # 7 days — must exceed longest HITL timeout
+    CHECKPOINT_DRAIN_TIMEOUT   = 120.0   # Must be less than terminationGracePeriodSeconds
+    CHECKPOINT_QUEUE_MAX_SIZE  = 5000
+    AGENT_STEP_CHECKPOINTING   = True
+
+    # ── Results ───────────────────────────────────────────────────────────────
+    DEFAULT_RESULT_PERSISTENCE = "TRANSIENT"
+    RESULT_TTL_SECONDS         = 86400    # 24 hours
+    DEFAULT_STREAM_BATCH_SIZE  = 50
+
+    # ── Command channel ───────────────────────────────────────────────────────
+    CHANNEL_BACKEND              = "redis"
+    COMMAND_RECEIVE_TIMEOUT      = 0.01
+    COMMAND_QUEUE_MAX_SIZE       = 1000
+    TASK_LOCATION_TTL            = 300
+    TASK_LOCATION_REFRESH_INTERVAL = 60
+    NODE_HEARTBEAT_TTL           = 30
+
+    # ── HITL ──────────────────────────────────────────────────────────────────
+    # HITL queue lives on the checkpoint Redis (AOF persistence).
+    # This ensures pending approvals survive Redis pod restarts.
+    DEFAULT_HITL_TIMEOUT_HOURS    = 24
+    HITL_QUEUE_KEY_PREFIX         = "volnux:hitl:queue"
+    HITL_RESPONSE_CHANNEL_PREFIX  = "volnux:hitl:response"
+    HITL_CLAIM_TTL                = 30
+    HITL_TIMEOUT_POLL_INTERVAL    = 60.0
+    HITL_ADAPTERS                 = ["volnux_ui", "slack"]
+    HITL_ADAPTER_CONFIG = {
+        "slack": {
+            "webhook_url":       os.environ.get("VOLNUX_SLACK_WEBHOOK_URL", ""),
+            "channel":           os.environ.get("VOLNUX_SLACK_CHANNEL", "#volnux-approvals"),
+            "signing_secret":    os.environ.get("VOLNUX_SLACK_SIGNING_SECRET", ""),
+            "callback_base_url": os.environ.get("VOLNUX_CALLBACK_BASE_URL", "https://api.volnux.example.com"),
+        },
+        "email": {
+            "smtp_host":         os.environ.get("VOLNUX_SMTP_HOST", ""),
+            "smtp_port":         int(os.environ.get("VOLNUX_SMTP_PORT", "587")),
+            "smtp_user":         os.environ.get("VOLNUX_SMTP_USER", ""),
+            "smtp_password":     os.environ.get("VOLNUX_SMTP_PASSWORD", ""),
+            "from_address":      os.environ.get("VOLNUX_EMAIL_FROM", ""),
+            "callback_base_url": os.environ.get("VOLNUX_CALLBACK_BASE_URL", "https://api.volnux.example.com"),
+            "token_secret":      os.environ.get("VOLNUX_EMAIL_TOKEN_SECRET", ""),
+        },
+        "volnux_ui": {},
+    }
+
+    # ── Observability ─────────────────────────────────────────────────────────
+    OTEL_ENABLED            = True
+    OTEL_EXPORTER_ENDPOINT  = os.environ.get("VOLNUX_OTEL_ENDPOINT", "http://otel-collector.volnux.svc.cluster.local:4317")
+    OTEL_EXPORTER_PROTOCOL  = "grpc"
+    OTEL_SERVICE_NAME       = PROJECT_NAME
+    OTEL_SERVICE_VERSION    = VERSION
+    OTEL_SAMPLE_RATIO       = 1.0
+    OTEL_PROPAGATE_CONTEXT  = True
+    LOG_LEVEL               = os.environ.get("VOLNUX_LOG_LEVEL", "INFO")
+    LOG_FORMAT              = os.environ.get("VOLNUX_LOG_FORMAT", "json")
+    LOG_INCLUDE_TRACE_CONTEXT = True
+    PROMETHEUS_ENABLED      = True
+    PROMETHEUS_PORT         = int(os.environ.get("VOLNUX_PROMETHEUS_PORT", "9464"))
+    SOFT_SIGNALS_ENABLED    = True
+    SOFT_SIGNALS_OTEL_EVENTS = True
+
+    # ── Security ──────────────────────────────────────────────────────────────
+    JWT_SECRET_KEY                  = os.environ.get("VOLNUX_JWT_SECRET", "")
+    JWT_ALGORITHM                   = "HS256"
+    JWT_ACCESS_TOKEN_EXPIRE_SECONDS = 3600
+    JWT_REFRESH_TOKEN_EXPIRE_SECONDS = 86400 * 7
+    WEBHOOK_DEFAULT_SECRET          = os.environ.get("VOLNUX_WEBHOOK_SECRET", "")
+    API_AUTH_REQUIRED               = True
+    API_CORS_ORIGINS                = []
+
+    # ── Governance ────────────────────────────────────────────────────────────
+    AUDIT_RETENTION_DAYS          = 365 * 7
+    AUDIT_RECORD_ALL_EVENTS       = True
+    AUDIT_RECORD_AGENT_TRACES     = True
+    BREAK_GLASS_REQUIRE_REASON    = True
+    BREAK_GLASS_SESSION_TTL_MINUTES = 30
+    BREAK_GLASS_NOTIFY_ON_INVOKE  = True
+    MAX_DELEGATION_DEPTH          = 3
+
+    # ── Asset layer ───────────────────────────────────────────────────────────
+    ASSET_LAYER_ENABLED                   = True
+    ASSET_CATALOG_BACKEND                 = "default"
+    ASSET_UPSTREAM_STALENESS_PROPAGATION  = True
+    ASSET_MATERIALISATION_RETENTION_DAYS  = 365
+
+    # ── Agent / LLM ───────────────────────────────────────────────────────────
+    DEFAULT_LLM_PROVIDER          = os.environ.get("VOLNUX_DEFAULT_LLM_PROVIDER", "ollama")
+    DEFAULT_LLM_MODEL             = os.environ.get("VOLNUX_DEFAULT_LLM_MODEL", "llama3")
+    DEFAULT_LLM_TEMPERATURE       = 0.0
+    DEFAULT_LLM_MAX_TOKENS        = 4096
+    DEFAULT_MAX_REASONING_STEPS   = 20
+    DEFAULT_MAX_TOTAL_TOKENS      = 0
+    DEFAULT_TOOL_TIMEOUT_SECONDS  = 30.0
+    DEFAULT_HALLUCINATION_DETECTION = False
+    DEFAULT_INCLUDE_TRACE_IN_RESULT = False
+    LLM_PROVIDER_CONFIG = {
+        "openai":    {"api_key": os.environ.get("OPENAI_API_KEY", "")},
+        "anthropic": {"api_key": os.environ.get("ANTHROPIC_API_KEY", "")},
+        "gemini":    {"api_key": os.environ.get("GEMINI_API_KEY", "")},
+        "ollama":    {
+            "base_url": os.environ.get("OLLAMA_BASE_URL", "http://ollama.volnux.svc.cluster.local:11434"),
+            "timeout":  float(os.environ.get("OLLAMA_TIMEOUT", "120")),
+        },
+    }
+
+    # ── EventHub ──────────────────────────────────────────────────────────────
+    EVENTHUB_BASE_URL              = os.environ.get("VOLNUX_EVENTHUB_URL", "https://eventhub.volnux.dev")
+    EVENTHUB_API_KEY               = os.environ.get("VOLNUX_EVENTHUB_API_KEY", "")
+    MANIFEST_DEPRECATION_WARNINGS  = True
+    STRICT_MANIFEST_COMPATIBILITY  = False
+
+    # ── Health monitoring ─────────────────────────────────────────────────────
+    HEALTH_CHECK_INTERVAL         = 10.0
+    HEALTH_MAX_RESTART_ATTEMPTS   = 3
+    HEALTH_RESTART_DELAY          = 2.0
+
+    # ── Development flags (all False in production) ───────────────────────────
+    IS_DEVELOPMENT          = False
+    DEV_HOT_RELOAD          = False
+    AUTO_MIGRATE            = False
+    IMPLICIT_MANUAL_TRIGGER = False

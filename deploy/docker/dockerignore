@@ -1,0 +1,115 @@
+# .dockerignore
+# Excludes files from the Docker build context.
+# Keep this tight — a large build context slows every docker build.
+
+# ── Version control ───────────────────────────────────────────────────────────
+.git/
+.gitignore
+.github/
+
+# ── Python artifacts ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-link
+.installed.cfg
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+nosetests.xml
+*.cover
+*.log
+.hypothesis/
+
+# ── Type checking ─────────────────────────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# ── IDEs and editors ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Documentation source ──────────────────────────────────────────────────────
+# Exclude docs source but keep the built docs if any
+docs/
+*.md
+!README.md
+
+# ── Local development ─────────────────────────────────────────────────────────
+.env.local
+.env.development
+.env.test
+secrets.yaml
+secrets.*.yaml
+*.secret
+*.key
+*.pem
+*.crt
+
+# ── Database files ────────────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+volnux.db
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
+log/
+
+# ── Kubernetes manifests (not needed in image) ────────────────────────────────
+deploy/
+
+# ── Node modules (if any frontend tooling) ───────────────────────────────────
+node_modules/
+
+# ── Temporary files ───────────────────────────────────────────────────────────
+tmp/
+temp/
+.tmp/
+*.tmp
+*.bak
+*.backup
+
+# ── EventHub cache ────────────────────────────────────────────────────────────
+.eventhub_cache/
+
+# ── CI/CD ─────────────────────────────────────────────────────────────────────
+.circleci/
+.travis.yml
+Jenkinsfile
+.drone.yml

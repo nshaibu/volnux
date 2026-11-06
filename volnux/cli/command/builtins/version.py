@@ -10,5 +10,8 @@ class VersionCommand(BaseCommand):
     name = "version"
     category = CommandCategory.PROJECT_MANAGEMENT
 
+    def add_arguments(self, parser) -> None:
+        return
+
     def handle(self, *args, **options) -> Optional[str]:
         return f"Volnux {version}"

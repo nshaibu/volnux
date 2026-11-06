@@ -1,5 +1,5 @@
 from volnux import Pipeline
-from volnux.fields import InputDataField
+from volnux.execution.pipeline.fields import InputDataField
 
 
 class BroadcastPipeline(Pipeline):

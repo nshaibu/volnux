@@ -1,0 +1,300 @@
+---
+#
+# Prometheus Operator ServiceMonitor CRDs.
+# Requires the Prometheus Operator to be installed:
+#   helm install prometheus kube-prometheus-stack/kube-prometheus-stack \
+#     -n monitoring --create-namespace
+#
+# These replace manual prometheus.yml scrape configs in Kubernetes.
+# The Prometheus Operator discovers ServiceMonitors automatically.
+
+# ── Volnux API ────────────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: volnux-api
+  namespace: volnux
+  labels:
+    app:     volnux-api
+    release: prometheus   # Must match the Prometheus Operator's serviceMonitorSelector
+spec:
+  selector:
+    matchLabels:
+      app: volnux-api
+  namespaceSelector:
+    matchNames:
+      - volnux
+  endpoints:
+    - port:     metrics
+      path:     /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+
+---
+# ── Volnux Worker ─────────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: volnux-worker
+  namespace: volnux
+  labels:
+    app:     volnux-worker
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: volnux-worker
+  namespaceSelector:
+    matchNames:
+      - volnux
+  endpoints:
+    - port:     metrics
+      path:     /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+
+---
+# ── OTel Collector (aggregated metrics) ──────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: otel-collector
+  namespace: volnux
+  labels:
+    app:     otel-collector
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: otel-collector
+  namespaceSelector:
+    matchNames:
+      - volnux
+  endpoints:
+    - port:     metrics
+      path:     /metrics
+      interval: 15s
+
+---
+# ── Redis Checkpoints ─────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redis-checkpoints
+  namespace: volnux
+  labels:
+    app:     redis-checkpoints
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: redis-checkpoints
+  namespaceSelector:
+    matchNames:
+      - volnux
+  endpoints:
+    - port:     metrics
+      path:     /metrics
+      interval: 30s
+
+---
+# ── Redis Broker ──────────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redis-broker
+  namespace: volnux
+  labels:
+    app:     redis-broker
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: redis-broker
+  namespaceSelector:
+    matchNames:
+      - volnux
+  endpoints:
+    - port:     metrics
+      path:     /metrics
+      interval: 30s
+
+---
+# ── PostgreSQL ────────────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: postgres
+  namespace: volnux
+  labels:
+    app:     postgres
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: postgres
+  namespaceSelector:
+    matchNames:
+      - volnux
+  endpoints:
+    - port:     metrics
+      path:     /metrics
+      interval: 30s
+
+---
+# ── PrometheusRule — alerting rules ──────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: volnux-alerts
+  namespace: volnux
+  labels:
+    release: prometheus
+spec:
+  groups:
+
+    - name: volnux.workers
+      interval: 30s
+      rules:
+
+        - alert: VolnuxAllWorkersDown
+          expr: count(up{job=~"volnux-worker.*"} == 1) == 0
+          for:  1m
+          labels:
+            severity: critical
+          annotations:
+            summary:     "All Volnux workers are down"
+            description: "No Volnux worker pods are reachable. In-flight workflows cannot execute."
+
+        - alert: VolnuxWorkerCountLow
+          expr: count(up{job=~"volnux-worker.*"} == 1) < 2
+          for:  5m
+          labels:
+            severity: warning
+          annotations:
+            summary:     "Volnux worker count below minimum"
+            description: "Fewer than 2 workers are running. Increase replicas or investigate pod failures."
+
+        - alert: VolnuxWorkerCPUHigh
+          expr: >
+            avg(rate(container_cpu_usage_seconds_total{
+              namespace="volnux",
+              pod=~"volnux-worker.*"
+            }[5m])) > 0.85
+          for:  10m
+          labels:
+            severity: warning
+          annotations:
+            summary:     "Volnux workers under CPU pressure"
+            description: "Average worker CPU > 85% for 10 minutes. HPA may not scale fast enough."
+
+    - name: volnux.checkpoints
+      interval: 30s
+      rules:
+
+        - alert: VolnuxCheckpointQueueHigh
+          expr: sum(volnux_checkpoint_queue_depth) > 1000
+          for:  5m
+          labels:
+            severity: warning
+          annotations:
+            summary:     "Checkpoint queue depth high"
+            description: "{{ $value }} checkpoints pending. Redis may be slow or unreachable."
+
+        - alert: VolnuxCheckpointQueueCritical
+          expr: sum(volnux_checkpoint_queue_depth) > 5000
+          for:  2m
+          labels:
+            severity: critical
+          annotations:
+            summary:     "Checkpoint queue critically high"
+            description: "{{ $value }} checkpoints pending. Checkpoints are not draining. Check Redis connectivity."
+
+        - alert: VolnuxCheckpointWriteSlow
+          expr: >
+            histogram_quantile(0.95,
+              sum(rate(volnux_checkpoint_write_seconds_bucket[5m])) by (le)
+            ) > 0.5
+          for:  5m
+          labels:
+            severity: warning
+          annotations:
+            summary:     "Checkpoint writes are slow (p95 > 500ms)"
+            description: "Redis write latency is high. Check Redis memory pressure and network."
+
+    - name: volnux.hitl
+      interval: 60s
+      rules:
+
+        - alert: VolnuxHITLQueueHigh
+          expr: sum(volnux_hitl_pending_count) > 100
+          for:  10m
+          labels:
+            severity: warning
+          annotations:
+            summary:     "High number of pending HITL approvals"
+            description: "{{ $value }} HITL requests are awaiting human response. Check Slack/email adapters."
+
+        - alert: VolnuxHITLQueueCritical
+          expr: sum(volnux_hitl_pending_count) > 500
+          for:  5m
+          labels:
+            severity: critical
+          annotations:
+            summary:     "HITL queue overloaded"
+            description: "{{ $value }} HITL requests pending. Human approvers may be overwhelmed or adapters failing."
+
+    - name: volnux.governance
+      interval: 60s
+      rules:
+
+        - alert: VolnuxAgentGovernanceViolation
+          expr: increase(volnux_agent_governance_violations_total[5m]) > 0
+          for:  0m
+          labels:
+            severity: critical
+          annotations:
+            summary:     "Agent governance violation detected"
+            description: "An agent attempted to call an undeclared tool or handoff target. Possible prompt injection. Review audit trail immediately."
+
+        - alert: VolnuxBreakGlassUsed
+          expr: increase(volnux_break_glass_invocations_total[1h]) > 0
+          for:  0m
+          labels:
+            severity: warning
+          annotations:
+            summary:     "Break-glass access invoked"
+            description: "Emergency access was used. Review the audit trail for the reason and action taken."
+
+    - name: volnux.infrastructure
+      interval: 30s
+      rules:
+
+        - alert: VolnuxRedisCheckpointsDown
+          expr: up{job="redis-checkpoints"} == 0
+          for:  1m
+          labels:
+            severity: critical
+          annotations:
+            summary:     "Redis checkpoints instance is down"
+            description: "Checkpoint persistence and HITL queue are unavailable. Workers cannot checkpoint."
+
+        - alert: VolnuxPostgresDown
+          expr: up{job="postgres"} == 0
+          for:  1m
+          labels:
+            severity: critical
+          annotations:
+            summary:     "PostgreSQL is down"
+            description: "Governance data, audit trail, and asset catalog are unavailable."
+
+        - alert: VolnuxHighWorkflowErrorRate
+          expr: >
+            sum(rate(volnux_event_errors_total[5m])) /
+            sum(rate(volnux_event_duration_seconds_count[5m])) > 0.05
+          for:  5m
+          labels:
+            severity: warning
+          annotations:
+            summary:     "Workflow error rate above 5%"
+            description: "More than 5% of event executions are failing. Check event logs and retry policies."

@@ -10,7 +10,9 @@ class PipelineType(Enum):
     BATCH = "batch"
 
 
-cmd_parser = argparse.ArgumentParser(prog="profiler", description="Process event pipeline with flags", add_help=True)
+cmd_parser = argparse.ArgumentParser(
+    prog="profiler", description="Process event pipeline with flags", add_help=True
+)
 cmd_parser.add_argument(
     "-t",
     "--type",
@@ -26,5 +28,9 @@ cmd_parser.add_argument(
     help="This is the type of pipeline that's being run, whether a linear,decision_tree, parallel or batch",
 )
 cmd_parser.add_argument(
-    "-o", "--output_file", type=str, default=None, help="The output file path for the profiler"
+    "-o",
+    "--output_file",
+    type=str,
+    default=None,
+    help="The output file path for the profiler",
 )

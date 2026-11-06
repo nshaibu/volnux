@@ -2,6 +2,8 @@ import typing
 from io import IOBase
 from itertools import islice
 
+from volnux.config import setting
+
 try:
     from more_itertools import batched
 except ImportError:
@@ -23,9 +25,9 @@ except ImportError:
             yield batch
 
 
-DEFAULT_BATCH_SIZE: typing.Final[int] = 100
+DEFAULT_BATCH_SIZE: typing.Final[int] = int(setting("DEFAULT_BATCH_SIZE", 100))
 
-DEFAULT_CHUNK_SIZE: typing.Final[int] = 10240  # 10K
+DEFAULT_CHUNK_SIZE: typing.Final[int] = int(setting("DEFAULT_CHUNK_SIZE", 10240))  # 10K
 
 
 def list_batch_processor(

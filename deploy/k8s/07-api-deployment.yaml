@@ -1,0 +1,313 @@
+---
+#
+# Volnux API Deployment.
+# Runs: REST API (FastAPI), TriggerEngine, RehydrationManager,
+#       Web Dashboard, OTel instrumentation.
+#
+# Fixes applied vs original:
+#   - terminationGracePeriodSeconds = 180 (exceeds CHECKPOINT_DRAIN_TIMEOUT=120)
+#   - preStop lifecycle hook for graceful drain signalling
+#   - VOLNUX_NODE_ID injected from pod metadata.name via downward API
+#   - Init container runs migrations before API starts
+#   - Full securityContext on pod and container
+#   - Liveness probe on /api/v1/health (not /metrics)
+#   - All secrets loaded from volnux-secrets
+#   - envFrom for non-sensitive config from ConfigMap
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: volnux-api
+  namespace: volnux
+  labels:
+    app:                            volnux-api
+    app.kubernetes.io/component:    api
+    app.kubernetes.io/part-of:      volnux
+    app.kubernetes.io/version:      "2.0.0"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: volnux-api
+  # Zero-downtime rolling update
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0   # Never remove a pod before a new one is ready
+      maxSurge:       1   # One extra pod during rollout
+  template:
+    metadata:
+      labels:
+        app:                            volnux-api
+        app.kubernetes.io/component:    api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "9464"
+        prometheus.io/path:   "/metrics"
+    spec:
+      serviceAccountName: volnux-api
+      automountServiceAccountToken: false
+
+      # ── Graceful shutdown ────────────────────────────────────────────────
+      # Must exceed CHECKPOINT_DRAIN_TIMEOUT (120s) to allow checkpoint queue
+      # to drain before the pod is forcibly terminated.
+      terminationGracePeriodSeconds: 180
+
+      # ── Pod security context ─────────────────────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser:    1000
+        runAsGroup:   1000
+        fsGroup:      1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ── Spread API pods across nodes ─────────────────────────────────────
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: volnux-api
+                topologyKey: kubernetes.io/hostname
+
+      # ── Init container: run migrations before API starts ─────────────────
+      # Migrations are idempotent — safe to run on every deployment.
+      # If migration fails, the API pod does not start.
+      initContainers:
+        - name: migrate
+          image: your-registry/volnux-engine:2.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["volnux", "migrate", "up"]
+          envFrom:
+            - configMapRef:
+                name: volnux-config
+          env:
+            - name: VOLNUX_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: volnux-secrets
+                  key: postgres-password
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem:   true
+            capabilities:
+              drop: ["ALL"]
+
+      containers:
+        - name: volnux-api
+          image: your-registry/volnux-engine:2.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["volnux", "serve", "--role", "api"]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9464
+              protocol: TCP
+
+          # ── Graceful shutdown hook ───────────────────────────────────────
+          # preStop runs before SIGTERM is sent. The sleep gives the
+          # load balancer time to stop routing new requests before the
+          # drain begins. volnux shutdown signals the engine to stop
+          # accepting new workflows and drain the checkpoint queue.
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    sleep 5
+                    volnux shutdown --drain-timeout 110
+
+          # ── Non-sensitive config from ConfigMap ──────────────────────────
+          envFrom:
+            - configMapRef:
+                name: volnux-config
+
+          # ── Environment variables ────────────────────────────────────────
+          env:
+            # Node identity — set to pod name for stable tracking
+            # across command channel routing, heartbeats, and audit trail.
+            - name: VOLNUX_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+            # Namespace for downward API (used by KubernetesWorkflowExecutor)
+            - name: VOLNUX_K8S_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+            # Secrets injected individually — never expose full secret as envFrom
+            - name: VOLNUX_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: volnux-secrets
+                  key: postgres-password
+
+            - name: VOLNUX_REDIS_CHECKPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: volnux-secrets
+                  key: redis-checkpoint-url
+
+            - name: VOLNUX_REDIS_BROKER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: volnux-secrets
+                  key: redis-broker-url
+
+            - name: VOLNUX_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: volnux-secrets
+                  key: jwt-secret-key
+
+            - name: VOLNUX_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: volnux-secrets
+                  key: webhook-default-secret
+
+            - name: VOLNUX_EVENTHUB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: volnux-secrets
+                  key: eventhub-api-key
+
+            - name: VOLNUX_SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: volnux-secrets
+                  key: slack-webhook-url
+
+            - name: VOLNUX_SLACK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: volnux-secrets
+                  key: slack-signing-secret
+
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: volnux-secrets
+                  key: openai-api-key
+
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: volnux-secrets
+                  key: anthropic-api-key
+
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: volnux-secrets
+                  key: gemini-api-key
+
+          # ── Volume mounts ────────────────────────────────────────────────
+          volumeMounts:
+            - name: settings
+              mountPath: /opt/volnux/settings.py
+              subPath:   settings.py
+              readOnly:  true
+            - name: workflows
+              mountPath: /opt/volnux/workflows
+              readOnly:  true
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /data
+
+          # ── Resource limits ──────────────────────────────────────────────
+          resources:
+            requests:
+              cpu:    "500m"
+              memory: "1Gi"
+            limits:
+              cpu:    "2"
+              memory: "4Gi"
+
+          # ── Health probes ────────────────────────────────────────────────
+          # liveness: restart the pod if the API is deadlocked
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds:       15
+            timeoutSeconds:      5
+            failureThreshold:    3
+          # readiness: stop routing traffic until the API is fully initialised
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds:       5
+            timeoutSeconds:      3
+            failureThreshold:    3
+          # startup: give the migration init container enough time on first boot
+          startupProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            failureThreshold:    20
+            periodSeconds:       10
+
+          # ── Container security context ───────────────────────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem:   true
+            capabilities:
+              drop: ["ALL"]
+
+      # ── Volumes ───────────────────────────────────────────────────────────
+      volumes:
+        - name: settings
+          configMap:
+            name: volnux-config
+            items:
+              - key:  settings.py
+                path: settings.py
+        - name: workflows
+          persistentVolumeClaim:
+            claimName: volnux-workflows-pvc
+            readOnly:  true
+        # Ephemeral scratch space — readOnlyRootFilesystem requires this
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        # Per-pod SQLite state (trigger state, dirty flags, local CLI IPC)
+        - name: data
+          emptyDir:
+            sizeLimit: 1Gi
+
+---
+# ClusterIP service for API pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: volnux-api
+  namespace: volnux
+  labels:
+    app: volnux-api
+spec:
+  type: ClusterIP
+  selector:
+    app: volnux-api
+  ports:
+    - name: http
+      port:       8080
+      targetPort: 8080
+      protocol:   TCP
+    - name: metrics
+      port:       9464
+      targetPort: 9464
+      protocol:   TCP

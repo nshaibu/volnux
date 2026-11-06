@@ -2,7 +2,7 @@ from concurrent.futures import Future
 
 import pytest
 
-from volnux.executors import default_executor
+from volnux.executors import default
 
 
 def test_default_executor():
@@ -12,12 +12,12 @@ def test_default_executor():
     def exception_func():
         raise ValueError
 
-    executor = default_executor.DefaultExecutor()
+    executor = default.DefaultExecutor()
     future = executor.submit(func, "knust")
     assert isinstance(future, Future)
     assert future.result() == "knust"
 
     with pytest.raises(ValueError):
-        executor = default_executor.DefaultExecutor()
+        executor = default.DefaultExecutor()
         future = executor.submit(exception_func)
         raise future.exception()

@@ -1,0 +1,10 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: volnux
+  labels:
+    app: volnux
+    environment: production
+    # Required for NetworkPolicy DNS egress to work with some CNI plugins
+    kubernetes.io/metadata.name: volnux

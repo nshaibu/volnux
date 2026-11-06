@@ -1,6 +1,9 @@
+from typing import Tuple, Optional
 from volnux.parser import pointy_parser
 from volnux.parser.code_gen import ExecutableASTGenerator
 from volnux.exceptions import PointyNotExecutable
+from volnux.parser.ast import ProgramNode
+from volnux.parser.protocols import TaskType
 
 from .group import PipelineTaskGrouping
 from .task import PipelineTask
@@ -24,13 +27,15 @@ def is_workflow_executable(code: str) -> bool:
     return len(executables) != 0
 
 
-def build_pipeline_flow_from_pointy_code(code: str):
+def build_pipeline_flow_from_pointy_code(
+    code: str,
+) -> Tuple[Optional[TaskType], ProgramNode]:
     """
     Build a pipeline flow from Pointy code.
     Args:
         code (str): The Pointy code as a string.
     Returns:
-        The constructed pipeline flow.
+        The constructed pipeline flows.
     """
     if not is_workflow_executable(code):
         raise PointyNotExecutable(
@@ -40,4 +45,4 @@ def build_pipeline_flow_from_pointy_code(code: str):
     ast = pointy_parser(code)
     code_generator = ExecutableASTGenerator(PipelineTask, PipelineTaskGrouping)
     code_generator.visit_program(ast)
-    return code_generator.generate()
+    return code_generator.generate(), ast

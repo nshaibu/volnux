@@ -1,0 +1,42 @@
+# deploy/docker/prometheus.yml
+# Prometheus scrape configuration for local development.
+# In Kubernetes, Prometheus Operator ServiceMonitor CRDs replace this file.
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: development
+
+scrape_configs:
+
+  # ── Volnux API ──────────────────────────────────────────────────────────────
+  - job_name: volnux-api
+    static_configs:
+      - targets: ["volnux-api:9464"]
+        labels:
+          component: api
+
+  # ── Volnux Worker ───────────────────────────────────────────────────────────
+  - job_name: volnux-worker
+    static_configs:
+      - targets: ["volnux-worker:9464"]
+        labels:
+          component: worker
+
+  # ── OTel Collector (aggregated metrics from all Volnux pods) ───────────────
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  # ── Redis Checkpoints ───────────────────────────────────────────────────────
+  # Redis exporter is not included in Docker Compose for simplicity.
+  # Uncomment if you add the redis_exporter sidecar.
+  # - job_name: redis-checkpoints
+  #   static_configs:
+  #     - targets: ["redis-checkpoints:9121"]
+
+  # ── Prometheus self-monitoring ─────────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
